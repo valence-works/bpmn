@@ -95,6 +95,10 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 /// </para>
 /// </summary>
 /// <param name="Index">The one-based position of this evaluation within its scope.</param>
+/// <param name="Sequence">
+/// The one-based position of this evaluation across every scope on the host, so a nested process's transcript
+/// can be interleaved with its parent's in the order things actually happened.
+/// </param>
 /// <param name="ScopeInstanceId">The scope that was evaluated.</param>
 /// <param name="At">The virtual instant of the evaluation.</param>
 /// <param name="Trigger">What provoked it.</param>
@@ -104,6 +108,7 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 /// <param name="Disposition">For a fault, whether a BPMN catcher took the error or it propagated; otherwise <c>null</c>.</param>
 public sealed record BpmnTranscriptEntry(
     int Index,
+    int Sequence,
     string ScopeInstanceId,
     TimeSpan At,
     BpmnTranscriptTrigger Trigger,

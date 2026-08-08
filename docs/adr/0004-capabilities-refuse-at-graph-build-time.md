@@ -54,10 +54,27 @@ It reports which capabilities the definition requires and which element ids driv
 
 | Construct | Requires |
 | --- | --- |
-| Interrupting boundary events, event subprocesses | `SubtreeCancellation` |
+| Interrupting boundary events | `SubtreeCancellation` |
+| Non-interrupting **catch** boundary events | `SubtreeCancellation` |
+| Event subprocesses | `SubtreeCancellation` |
+| Event-based gateways | `SubtreeCancellation` |
 | Escalation throw and end events | `ScopeSignalling` |
+| Escalation boundary events and event subprocesses | `ScopeSignalling` |
 | Multi-instance activities | `IterationScopes` |
 | Collection-mode multi-instance | `ScopeVariables` |
+
+Two of those rows are less obvious than the rest and were missed in the first draft of this decision.
+
+A **non-interrupting catch boundary event** does not tear down the activity it is attached to — that is
+what non-interrupting means — but its armed listener still has to be retired when the activity
+completes, and retiring it is a teardown. An **event-based gateway** races several catch events and must
+tear down every loser once one wins.
+
+Both therefore emit `CancelWorkSubtree`. Had the analysis omitted them, a host declaring no capabilities
+at all would have passed the check and then silently skipped a teardown at runtime — which is precisely
+the failure this decision exists to prevent, arriving through the door left open by the check meant to
+close it. The rule is derived from which constructs demonstrably emit teardown commands, not from
+intuition about which ones sound interrupting.
 
 `BpmnGraph.Build(definition, boundWork, capabilities)` throws when the host's declared set does not
 cover the requirements, naming every unmet capability and the elements that need it.

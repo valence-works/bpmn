@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Bpmn.Semantics/Bpmn.Semantics.csproj" />
+    <ProjectReference Include="../../src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj" />
   </ItemGroup>
 </Project>

@@ -47,6 +47,7 @@ public sealed class InMemoryBpmnHost
     private bool _draining;
     private int _handleCounter;
     private int _scopeCounter;
+    private int _transcriptCounter;
 
     /// <summary>Creates a host with the default options: full capabilities, an empty clock, no seeded variables.</summary>
     public InMemoryBpmnHost()
@@ -171,6 +172,8 @@ public sealed class InMemoryBpmnHost
 
     internal string NextHandle() => $"work-{++_handleCounter}";
 
+    internal int NextTranscriptSequence() => ++_transcriptCounter;
+
     internal void RegisterWork(string handle, InMemoryProcessInstance owner) => _workOwners[handle] = owner;
 
     internal void UnregisterWork(string handle) => _workOwners.Remove(handle);
@@ -288,7 +291,7 @@ public sealed class InMemoryBpmnHost
         var bodyStart = body?.Elements.FirstOrDefault(candidate =>
             StringComparer.Ordinal.Equals(candidate.ElementId, catcher.BodyStartElementId));
 
-        return bodyStart is null ? null : TimerDefinition(bodyStart) is { } definition ? ReadInterval(definition) : null;
+        return bodyStart is not null && TimerDefinition(bodyStart) is { } bodyTimer ? ReadInterval(bodyTimer) : null;
     }
 
     private static BpmnEventDefinition? TimerDefinition(BpmnElement element) =>

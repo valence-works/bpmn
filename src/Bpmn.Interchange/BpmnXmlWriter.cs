@@ -62,12 +62,15 @@ public sealed class BpmnXmlWriter
         var exporterVersion = options?.ExporterVersion ?? definitions.ExporterVersion;
         if (!string.IsNullOrWhiteSpace(exporterVersion)) root.SetAttributeValue("exporterVersion", exporterVersion);
 
-        AppendRootDeclarations(root, definitions, context);
         AppendCollaboration(root, definitions, context);
 
         foreach (var process in definitions.Processes)
             AppendProcess(root, process, context);
 
+        // Declarations are collected last and emitted last, because writing the processes is what discovers
+        // the message, signal, and escalation names that only a work binding knew about. The canonical child
+        // order moves them ahead of the collaboration and processes in the output.
+        AppendRootDeclarations(root, definitions, context);
         AppendDiagrams(root, definitions, context);
         ApplyExtensions(root, definitions.Extensions);
         DeclareForeignNamespaces(root);
@@ -147,6 +150,7 @@ public sealed class BpmnXmlWriter
             element.Add(messageFlow);
         }
 
+        ApplyExtensions(element, collaboration.Extensions);
         root.Add(element);
     }
 
@@ -233,6 +237,7 @@ public sealed class BpmnXmlWriter
                 flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
             }
 
+            ApplyExtensions(flowElement, flow.Extensions);
             container.Add(flowElement);
         }
 
@@ -291,7 +296,7 @@ public sealed class BpmnXmlWriter
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Escalation) is { } escalation)
             endEvent.Add(BuildEscalationEventDefinition(escalation, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
-            AppendEventDefinition(endEvent, message, context, isCatch: false);
+            AppendEventDefinition(endEvent, element, message, context, isCatch: false);
         return endEvent;
     }
 
@@ -303,7 +308,7 @@ public sealed class BpmnXmlWriter
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Escalation) is { } escalation)
             throwEvent.Add(BuildEscalationEventDefinition(escalation, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
-            AppendEventDefinition(throwEvent, message, context, isCatch: false);
+            AppendEventDefinition(throwEvent, element, message, context, isCatch: false);
         return throwEvent;
     }
 
@@ -347,12 +352,12 @@ public sealed class BpmnXmlWriter
             }
             else if (isEventSubprocessBodyStart)
             {
-                AppendEventDefinition(xmlElement, definition, context, isCatch: true);
+                AppendEventDefinition(xmlElement, element, definition, context, isCatch: true);
                 if (!element.CancelActivity) xmlElement.SetAttributeValue("isInterrupting", "false");
             }
             else
             {
-                AppendEventDefinition(xmlElement, definition, context, isCatch);
+                AppendEventDefinition(xmlElement, element, definition, context, isCatch);
             }
         }
 
@@ -387,51 +392,59 @@ public sealed class BpmnXmlWriter
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Cancel))
                 boundary.Add(new XElement(BpmnXmlNames.Model + "cancelEventDefinition"));
             else
-                AppendEventDefinition(boundary, definition, context, isCatch: true);
+                AppendEventDefinition(boundary, element, definition, context, isCatch: true);
         }
 
         return boundary;
     }
 
-    private static void AppendEventDefinition(XElement host, BpmnEventDefinition definition, WriteContext context, bool isCatch)
+    /// <summary>
+    /// Emits an event definition. The detail can live in either of two places: the event definition's own
+    /// properties, which is where a read puts it, or the element's <see cref="BpmnWorkBinding"/>, which is
+    /// where a model built in code puts it. Both are consulted.
+    /// <para>
+    /// The element is emitted even when neither supplies the detail. Dropping it instead would turn a timer
+    /// boundary into a bare boundary and a message end into a plain end - a silent change of meaning that the
+    /// reader then reports as "declares 0 event definitions". An incomplete definition at least round-trips
+    /// into an accurate finding about what is missing.
+    /// </para>
+    /// </summary>
+    private static void AppendEventDefinition(XElement host, BpmnElement element, BpmnEventDefinition definition, WriteContext context, bool isCatch)
     {
         switch (definition.Type)
         {
             case BpmnEventDefinitionTypes.Message:
             case BpmnEventDefinitionTypes.Signal:
             {
-                if (!definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) || string.IsNullOrWhiteSpace(name))
-                    return;
                 var isMessage = definition.Type == BpmnEventDefinitionTypes.Message;
-                host.Add(new XElement(
-                    BpmnXmlNames.Model + (isMessage ? "messageEventDefinition" : "signalEventDefinition"),
-                    new XAttribute(
+                var name = Property(definition, BpmnEventDefinitionProperties.Name) ?? context.EventNameFor(element, isMessage);
+                var child = new XElement(BpmnXmlNames.Model + (isMessage ? "messageEventDefinition" : "signalEventDefinition"));
+                if (name is not null)
+                    child.SetAttributeValue(
                         isMessage ? "messageRef" : "signalRef",
-                        isMessage ? context.MessageDeclarationId(name) : context.SignalDeclarationId(name))));
+                        isMessage ? context.MessageDeclarationId(name) : context.SignalDeclarationId(name));
+                host.Add(child);
                 break;
             }
             case BpmnEventDefinitionTypes.Timer:
             {
                 var timer = new XElement(BpmnXmlNames.Model + "timerEventDefinition");
+                var interval = Property(definition, BpmnEventDefinitionProperties.Interval) ?? context.TimerDurationFor(element);
+                var cron = Property(definition, BpmnEventDefinitionProperties.Cron);
+
                 if (isCatch)
                 {
                     // A catching timer is a one-shot relative delay.
-                    if (!definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) || string.IsNullOrWhiteSpace(interval))
-                        return;
-                    timer.Add(new XElement(BpmnXmlNames.Model + "timeDuration", interval.Trim()));
+                    if (interval is not null) timer.Add(new XElement(BpmnXmlNames.Model + "timeDuration", interval));
                 }
-                else if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Cron, out var cron) && !string.IsNullOrWhiteSpace(cron))
+                else if (cron is not null)
                 {
-                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", cron.Trim()));
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", cron));
                 }
-                else if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) && !string.IsNullOrWhiteSpace(interval))
+                else if (interval is not null)
                 {
                     // A recurring start interval, which reads back as an interval because of its P/R prefix.
-                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", interval.Trim()));
-                }
-                else
-                {
-                    return;
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", interval));
                 }
 
                 host.Add(timer);
@@ -439,6 +452,9 @@ public sealed class BpmnXmlWriter
             }
         }
     }
+
+    private static string? Property(BpmnEventDefinition definition, string key) =>
+        definition.Properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
 
     /// <summary>
     /// A <c>&lt;callActivity&gt;</c>: <c>calledElement</c> from the element's recorded property or its call
@@ -465,7 +481,10 @@ public sealed class BpmnXmlWriter
     private static XElement BuildMessageTask(string localName, BpmnElement element, WriteContext context)
     {
         var task = new XElement(BpmnXmlNames.Model + localName);
-        if (element.Properties.TryGetValue(BpmnXmlReader.MessageNamePropertyKey, out var name) && !string.IsNullOrWhiteSpace(name))
+        var name = element.Properties.TryGetValue(BpmnXmlReader.MessageNamePropertyKey, out var recorded) && !string.IsNullOrWhiteSpace(recorded)
+            ? recorded.Trim()
+            : context.EventNameFor(element, isMessage: true);
+        if (name is not null)
             task.SetAttributeValue("messageRef", context.MessageDeclarationId(name));
         return task;
     }
@@ -711,7 +730,7 @@ public sealed class BpmnXmlWriter
     private sealed class WriteContext
     {
         private readonly Dictionary<string, BpmnProcessDefinition> _nestedByBindingRef = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, BpmnWorkBinding.CallProcess> _callsByBindingRef = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, BpmnWorkBinding> _bindingsByRef = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _messageIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _signalIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
@@ -721,15 +740,9 @@ public sealed class BpmnXmlWriter
         {
             foreach (var binding in bindings ?? [])
             {
-                switch (binding)
-                {
-                    case BpmnWorkBinding.NestedProcess nested:
-                        _nestedByBindingRef[nested.BindingRef] = nested.Definition;
-                        break;
-                    case BpmnWorkBinding.CallProcess call:
-                        _callsByBindingRef[call.BindingRef] = call;
-                        break;
-                }
+                _bindingsByRef[binding.BindingRef] = binding;
+                if (binding is BpmnWorkBinding.NestedProcess nested)
+                    _nestedByBindingRef[nested.BindingRef] = nested.Definition;
             }
 
             foreach (var message in definitions.Messages.Where(entry => !string.IsNullOrWhiteSpace(entry.Name)))
@@ -777,8 +790,28 @@ public sealed class BpmnXmlWriter
         public BpmnProcessDefinition? NestedProcess(string bindingRef) =>
             _nestedByBindingRef.TryGetValue(bindingRef, out var nested) ? nested : null;
 
-        public BpmnWorkBinding.CallProcess? CallBinding(string bindingRef) =>
-            _callsByBindingRef.TryGetValue(bindingRef, out var call) ? call : null;
+        public BpmnWorkBinding.CallProcess? CallBinding(string bindingRef) => Binding(bindingRef) as BpmnWorkBinding.CallProcess;
+
+        /// <summary>The work an element binds, through either of its two binding channels.</summary>
+        public BpmnWorkBinding? WorkFor(BpmnElement element) => Binding(element.BindingRef) ?? Binding(element.ListenerBindingRef);
+
+        /// <summary>The duration an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerDurationFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerWait timer && !string.IsNullOrWhiteSpace(timer.IsoDuration) ? timer.IsoDuration.Trim() : null;
+
+        /// <summary>The message or signal name an element's binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? EventNameFor(BpmnElement element, bool isMessage) => WorkFor(element) switch
+        {
+            BpmnWorkBinding.MessageWait wait when isMessage => Trimmed(wait.MessageName),
+            BpmnWorkBinding.MessagePublish publish when isMessage => Trimmed(publish.MessageName),
+            BpmnWorkBinding.SignalWait signal when !isMessage => Trimmed(signal.SignalName),
+            _ => null
+        };
+
+        private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+        private BpmnWorkBinding? Binding(string? bindingRef) =>
+            bindingRef is not null && _bindingsByRef.TryGetValue(bindingRef, out var binding) ? binding : null;
 
         public string MessageDeclarationId(string name) => EnsureMessage(name.Trim());
         public string SignalDeclarationId(string name) => EnsureSignal(name.Trim());

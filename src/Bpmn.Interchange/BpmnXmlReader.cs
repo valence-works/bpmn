@@ -253,11 +253,11 @@ public sealed class BpmnXmlReader
         if (collaborationElement is null && pools.Count == 0 && resolvedFlows.Count == 0)
             return null;
 
-        var collaborationId = collaborationElement is null ? null : IdOf(collaborationElement);
-        if (collaborationElement is not null && collaborationId is not null)
-            ReportUnretainable(collaborationElement, "Collaboration", collaborationId, IsCollaborationChildConsumed, context);
+        var collaborationExtensions = collaborationElement is null
+            ? BpmnExtensions.Empty
+            : BpmnExtensionCapture.Capture(collaborationElement, context.Fidelity, IsCollaborationChildConsumed, context.Retention);
 
-        return new BpmnCollaboration(collaborationId, pools, resolvedFlows);
+        return new BpmnCollaboration(collaborationElement is null ? null : IdOf(collaborationElement), pools, resolvedFlows, collaborationExtensions);
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -532,8 +532,8 @@ public sealed class BpmnXmlReader
                     if (conditionOutcome is null && conditionExpression is not null)
                         context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Value.Trim()}'); expression conditions are not evaluated by this model, so the flow read as unconditional.", id);
 
-                    ReportUnretainable(child, "Sequence flow", id, IsFlowNodeChildConsumed, context);
-                    flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome));
+                    flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
+                        extensions: BpmnExtensionCapture.Capture(child, context.Fidelity, IsFlowNodeChildConsumed, context.Retention)));
                     break;
                 }
                 case "laneSet":
@@ -1637,7 +1637,7 @@ public sealed class BpmnXmlReader
     /// <summary>
     /// Flow nodes whose own foreign content is retained onto <see cref="BpmnElement.Extensions"/>.
     /// Subprocesses are excluded: their content is the nested process, which retains its own. Sequence flows
-    /// are excluded because the model has no place to keep it on them; see <see cref="ReportUnretainable"/>.
+    /// are excluded because they are constructed once, in one place, and take their retained content directly.
     /// </summary>
     private static bool IsRetainableFlowNode(string localName) =>
         localName is "startEvent" or "endEvent" or "intermediateCatchEvent" or "intermediateThrowEvent"
@@ -1645,21 +1645,6 @@ public sealed class BpmnXmlReader
         || BpmnXmlNames.TaskLocalNamesToElementTypes.ContainsKey(localName)
         || BpmnXmlNames.GatewayLocalNamesToElementTypes.ContainsKey(localName);
 
-    /// <summary>
-    /// Reports foreign content the model cannot hold. Definitions, processes, and flow elements all carry
-    /// retained content; sequence flows and the collaboration element do not, so content found on them is
-    /// named in a finding rather than disappearing quietly. It is deliberately not counted in the retention
-    /// tally, which reports only what actually survived.
-    /// </summary>
-    private static void ReportUnretainable(XElement source, string description, string id, Func<XElement, bool> isConsumed, ReadContext context)
-    {
-        var retained = BpmnExtensionCapture.Capture(source, context.Fidelity, isConsumed, new RetentionLog());
-        if (retained.IsEmpty) return;
-
-        var namespaces = retained.RetainedNamespaces();
-        var origin = namespaces.Count == 0 ? "documentation" : string.Join(", ", namespaces);
-        context.Report(BpmnImportIssueSeverity.Degraded, $"{description} '{id}' carries foreign content ({origin}) that the model has nowhere to keep; it was dropped.", id);
-    }
 
     private static bool IsFlowNodeChildConsumed(XElement child) =>
         child.Name.Namespace == BpmnXmlNames.Model
