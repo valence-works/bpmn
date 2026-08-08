@@ -11,7 +11,7 @@
     PackageReference from this file, the host-agnostic promise is broken - fix the design, not the list.
   -->
   <ItemGroup Label="Build-time only">
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
   </ItemGroup>
 
   <ItemGroup Label="Test only">
