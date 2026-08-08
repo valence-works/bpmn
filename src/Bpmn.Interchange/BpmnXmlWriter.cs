@@ -26,29 +26,28 @@ public sealed class BpmnXmlWriter
     private const double PoolHeaderWidth = 30d;
     private const double RowGap = 60d;
 
-    /// <summary>Writes back exactly what a read produced, including its bindings and retained per-element content.</summary>
+    /// <summary>Writes back exactly what a read produced, including its bindings.</summary>
     public string Write(BpmnImportResult result, BpmnExportOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return Write(result.Definitions, result.Bindings, result.ElementExtensions, options);
+        return Write(result.Definitions, result.Bindings, options);
     }
 
     /// <summary>
     /// Writes a document. <paramref name="bindings"/> supplies the nested process behind each subprocess
-    /// element; without it, subprocesses are written as empty. <paramref name="elementExtensions"/> supplies
-    /// the foreign content retained from individual elements.
+    /// element; without it, subprocesses are written as empty. Retained foreign content rides on the model
+    /// itself, so nothing else has to be threaded through alongside it.
     /// </summary>
     public string Write(
         BpmnDefinitions definitions,
         IReadOnlyList<BpmnWorkBinding>? bindings = null,
-        IReadOnlyList<BpmnRetainedElement>? elementExtensions = null,
         BpmnExportOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(definitions);
         if (definitions.Processes.Count == 0)
             throw new BpmnInterchangeException("The definitions carry no <process> to write.");
 
-        var context = new WriteContext(definitions, bindings, elementExtensions);
+        var context = new WriteContext(definitions, bindings);
 
         var root = new XElement(BpmnXmlNames.Model + "definitions",
             new XAttribute(XNamespace.Xmlns + "bpmndi", BpmnXmlNames.Di.NamespaceName),
@@ -148,7 +147,6 @@ public sealed class BpmnXmlWriter
             element.Add(messageFlow);
         }
 
-        ApplyExtensions(element, context.RetainedFor(collaborationId, collaborationId));
         root.Add(element);
     }
 
@@ -215,7 +213,7 @@ public sealed class BpmnXmlWriter
 
             // A subprocess already had the nested process's retained content applied while its body was written.
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                ApplyExtensions(xmlElement, context.RetainedFor(process.ProcessId, element.ElementId));
+                ApplyExtensions(xmlElement, element.Extensions);
 
             container.Add(xmlElement);
         }
@@ -235,7 +233,6 @@ public sealed class BpmnXmlWriter
                 flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
             }
 
-            ApplyExtensions(flowElement, context.RetainedFor(process.ProcessId, flow.FlowId));
             container.Add(flowElement);
         }
 
@@ -715,13 +712,12 @@ public sealed class BpmnXmlWriter
     {
         private readonly Dictionary<string, BpmnProcessDefinition> _nestedByBindingRef = new(StringComparer.Ordinal);
         private readonly Dictionary<string, BpmnWorkBinding.CallProcess> _callsByBindingRef = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, BpmnExtensions> _retained = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _messageIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _signalIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
         private readonly List<SynthesizedDeclaration> _synthesized = [];
 
-        public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, IReadOnlyList<BpmnRetainedElement>? elementExtensions)
+        public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings)
         {
             foreach (var binding in bindings ?? [])
             {
@@ -735,9 +731,6 @@ public sealed class BpmnXmlWriter
                         break;
                 }
             }
-
-            foreach (var retained in elementExtensions ?? [])
-                _retained[Key(retained.ProcessId, retained.ElementId)] = retained.Extensions;
 
             foreach (var message in definitions.Messages.Where(entry => !string.IsNullOrWhiteSpace(entry.Name)))
                 _messageIdByName.TryAdd(message.Name!.Trim(), message.Id);
@@ -786,9 +779,6 @@ public sealed class BpmnXmlWriter
 
         public BpmnWorkBinding.CallProcess? CallBinding(string bindingRef) =>
             _callsByBindingRef.TryGetValue(bindingRef, out var call) ? call : null;
-
-        public BpmnExtensions? RetainedFor(string processId, string elementId) =>
-            _retained.TryGetValue(Key(processId, elementId), out var extensions) ? extensions : null;
 
         public string MessageDeclarationId(string name) => EnsureMessage(name.Trim());
         public string SignalDeclarationId(string name) => EnsureSignal(name.Trim());
@@ -841,7 +831,6 @@ public sealed class BpmnXmlWriter
             return id;
         }
 
-        private static string Key(string processId, string elementId) => $"{processId} {elementId}";
     }
 
     /// <summary>

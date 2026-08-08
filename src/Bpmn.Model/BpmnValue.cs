@@ -12,9 +12,9 @@ namespace Bpmn.Model;
 /// <param name="TypeHint">A type name from <see cref="BpmnValueTypes"/>, or a host-specific one.</param>
 /// <param name="Json">The value itself, when <see cref="Presence"/> is <see cref="BpmnValuePresence.Present"/>.</param>
 public sealed record BpmnValue(
- [property: JsonPropertyName("presence")] BpmnValuePresence Presence,
- [property: JsonPropertyName("typeHint")] string? TypeHint = null,
- [property: JsonPropertyName("json")] JsonElement? Json = null)
+    [property: JsonPropertyName("presence")] BpmnValuePresence Presence,
+    [property: JsonPropertyName("typeHint")] string? TypeHint = null,
+    [property: JsonPropertyName("json")] JsonElement? Json = null)
 {
     /// <summary>A value the host does not have.</summary>
     public static BpmnValue Absent { get; } = new(BpmnValuePresence.Absent);

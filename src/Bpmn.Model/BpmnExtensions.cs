@@ -21,10 +21,10 @@ namespace Bpmn.Model;
 /// <param name="ForeignAttributes">Attributes from a namespace the reader does not own.</param>
 /// <param name="ForeignChildren">Unrecognized child elements, with the index needed to restore their position.</param>
 public sealed record BpmnExtensions(
- IReadOnlyList<BpmnDocumentation>? Documentation = null,
- IReadOnlyList<BpmnExtensionElement>? ExtensionElements = null,
- IReadOnlyList<BpmnForeignAttribute>? ForeignAttributes = null,
- IReadOnlyList<BpmnForeignChild>? ForeignChildren = null)
+    IReadOnlyList<BpmnDocumentation>? Documentation = null,
+    IReadOnlyList<BpmnExtensionElement>? ExtensionElements = null,
+    IReadOnlyList<BpmnForeignAttribute>? ForeignAttributes = null,
+    IReadOnlyList<BpmnForeignChild>? ForeignChildren = null)
 {
     /// <summary>An empty, shared instance.</summary>
     public static BpmnExtensions Empty { get; } = new();
@@ -116,8 +116,8 @@ public sealed record BpmnExtensions(
 /// <param name="Namespace">The namespace URI, or <c>null</c> for an unqualified name.</param>
 /// <param name="LocalName">The local name.</param>
 public readonly record struct BpmnQName(
- [property: JsonPropertyName("ns")] string? Namespace,
- [property: JsonPropertyName("localName")] string LocalName)
+    [property: JsonPropertyName("ns")] string? Namespace,
+    [property: JsonPropertyName("localName")] string LocalName)
 {
     /// <summary>Renders as <c>{namespace}localName</c>, matching the XName convention.</summary>
     public override string ToString() => string.IsNullOrEmpty(Namespace) ? LocalName : $"{{{Namespace}}}{LocalName}";
@@ -127,15 +127,15 @@ public readonly record struct BpmnQName(
 /// <param name="Name">The qualified attribute name.</param>
 /// <param name="Value">The attribute value.</param>
 public sealed record BpmnForeignAttribute(
- [property: JsonPropertyName("name")] BpmnQName Name,
- [property: JsonPropertyName("value")] string Value);
+    [property: JsonPropertyName("name")] BpmnQName Name,
+    [property: JsonPropertyName("value")] string Value);
 
 /// <summary>A <c>&lt;documentation&gt;</c> entry.</summary>
 /// <param name="Text">The documentation text.</param>
 /// <param name="TextFormat">The declared <c>textFormat</c>, when present.</param>
 public sealed record BpmnDocumentation(
- [property: JsonPropertyName("text")] string Text,
- [property: JsonPropertyName("textFormat")] string? TextFormat = null);
+    [property: JsonPropertyName("text")] string Text,
+    [property: JsonPropertyName("textFormat")] string? TextFormat = null);
 
 /// <summary>
 /// One retained XML subtree, held as data rather than as a live XML node so it survives JSON
@@ -146,10 +146,10 @@ public sealed record BpmnDocumentation(
 /// <param name="Children">Child elements, in document order.</param>
 /// <param name="Value">Text content, when the element has no element children.</param>
 public sealed record BpmnExtensionElement(
- [property: JsonPropertyName("name")] BpmnQName Name,
- IReadOnlyList<BpmnForeignAttribute>? Attributes = null,
- IReadOnlyList<BpmnExtensionElement>? Children = null,
- [property: JsonPropertyName("value")] string? Value = null)
+    [property: JsonPropertyName("name")] BpmnQName Name,
+    IReadOnlyList<BpmnForeignAttribute>? Attributes = null,
+    IReadOnlyList<BpmnExtensionElement>? Children = null,
+    [property: JsonPropertyName("value")] string? Value = null)
 {
     /// <summary>Attributes. Never null.</summary>
     [JsonPropertyName("attributes")]
@@ -192,8 +192,8 @@ public sealed record BpmnExtensionElement(
 /// <param name="Element">The retained subtree.</param>
 /// <param name="Index">The zero-based position this child occupied among its siblings.</param>
 public sealed record BpmnForeignChild(
- [property: JsonPropertyName("element")] BpmnExtensionElement Element,
- [property: JsonPropertyName("index")] int Index);
+    [property: JsonPropertyName("element")] BpmnExtensionElement Element,
+    [property: JsonPropertyName("index")] int Index);
 
 /// <summary>How much of a source document the reader retains.</summary>
 public enum BpmnFidelity
