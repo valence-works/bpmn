@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>A reference host for the BPMN interpreter: runs processes in memory with a virtual clock, for simulation, analysis and testing. Non-durable and single-process; not a production workflow engine.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Bpmn.Semantics/Bpmn.Semantics.csproj" />
+  </ItemGroup>
+</Project>

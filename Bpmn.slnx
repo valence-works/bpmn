@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Bpmn.Model/Bpmn.Model.csproj" />
+    <Project Path="src/Bpmn.Interchange/Bpmn.Interchange.csproj" />
+    <Project Path="src/Bpmn.Semantics/Bpmn.Semantics.csproj" />
+    <Project Path="src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Bpmn.Model.Tests/Bpmn.Model.Tests.csproj" />
+    <Project Path="tests/Bpmn.Interchange.Tests/Bpmn.Interchange.Tests.csproj" />
+    <Project Path="tests/Bpmn.Semantics.Tests/Bpmn.Semantics.Tests.csproj" />
+    <Project Path="tests/Bpmn.Conformance.Tests/Bpmn.Conformance.Tests.csproj" />
+    <Project Path="tests/Bpmn.Architecture.Tests/Bpmn.Architecture.Tests.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Bpmn.Samples.Read/Bpmn.Samples.Read.csproj" />
+    <Project Path="samples/Bpmn.Samples.Build/Bpmn.Samples.Build.csproj" />
+    <Project Path="samples/Bpmn.Samples.RoundTrip/Bpmn.Samples.RoundTrip.csproj" />
+    <Project Path="samples/Bpmn.Samples.Interpret/Bpmn.Samples.Interpret.csproj" />
+  </Folder>
+</Solution>

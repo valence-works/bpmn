@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore Bpmn.slnx
+
+      - name: Build
+        run: dotnet build Bpmn.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test Bpmn.slnx --configuration Release --no-build --verbosity normal
+
+  samples:
+    name: Samples run
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # The samples are documentation that has to keep working. Running them in CI is what stops them
+      # rotting into snippets that no longer compile against the current API.
+      - name: Run samples in non-interactive mode
+        run: |
+          set -euo pipefail
+          for sample in samples/*/; do
+            name=$(basename "$sample")
+            echo "::group::$name"
+            dotnet run --project "$sample" --configuration Release -- --non-interactive
+            echo "::endgroup::"
+          done
+
+  host-agnostic:
+    name: Host-agnostic guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # This library must not name, depend on, or assume any particular host. The architecture test
+      # enforces the assembly graph; this grep enforces the prose, identifiers and literals. Both are
+      # needed: an assembly reference test cannot catch a doc comment.
+      - name: No host-specific references
+        run: |
+          set -euo pipefail
+
+          if matches=$(grep -rniE 'elsa' \
+                --include='*.cs' --include='*.csproj' --include='*.props' --include='*.md' \
+                --include='*.yml' --include='*.json' --include='*.bpmn' --include='*.slnx' \
+                --exclude-dir=bin --exclude-dir=obj --exclude-dir=.git \
+                --exclude='ci.yml' --exclude='HostAgnosticBoundaryTests.cs' \
+                . 2>/dev/null); then
+            echo "This repository must contain no host-specific references."
+            echo "$matches"
+            exit 1
+          fi
+
+          echo "No host-specific references found."

@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>The neutral BPMN 2.0 object model: processes, flow elements, sequence flows, event definitions, DI layout, retained vendor extensions, and the versioned on-disk format. No dependencies.</Description>
+  </PropertyGroup>
+</Project>

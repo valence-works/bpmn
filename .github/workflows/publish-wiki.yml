@@ -1,0 +1,54 @@
+name: Publish Wiki
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - ".github/workflows/publish-wiki.yml"
+
+concurrency:
+  group: publish-wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish wiki pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout wiki
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # docs/ is authored as a normal docs tree with nested folders and relative links. The GitHub wiki
+      # is a FLAT namespace with no directories, so the sync flattens paths into "Folder-Page" names and
+      # rewrites relative links to match. Authoring stays natural; the wiki stays navigable.
+      - name: Flatten docs into wiki pages
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sync-wiki.py docs wiki-repo
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          cd wiki-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+          else
+            git commit -m "Sync wiki from docs/ (${GITHUB_SHA::7}) [skip ci]"
+            git push
+            echo "Wiki updated."
+          fi

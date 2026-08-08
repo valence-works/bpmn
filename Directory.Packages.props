@@ -1,0 +1,24 @@
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <!--
+    The four shipped packages carry ZERO external NuGet dependencies. Everything below is either a
+    build-time-only asset (SourceLink) or a test-only dependency. If a shipped project ever needs a
+    PackageReference from this file, the host-agnostic promise is broken - fix the design, not the list.
+  -->
+  <ItemGroup Label="Build-time only">
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test only">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Shouldly" Version="4.2.1" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>The BPMN 2.0 token-semantics interpreter: a pure, synchronous state transition function over a process graph. Gateways, events, boundary events, subprocesses, multi-instance, compensation, transactions and escalation. No dependencies, no clock, no I/O.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Bpmn.Model/Bpmn.Model.csproj" />
+  </ItemGroup>
+</Project>

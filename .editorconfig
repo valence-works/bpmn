@@ -1,0 +1,223 @@
+# EditorConfig for the BPMN library — https://editorconfig.org
+#
+# This file codifies conventions the codebase ALREADY follows. It was written
+# from a census of src/ rather than from a template, so that adopting it flags
+# regressions rather than reformatting the tree. Severities are graded:
+#
+#   warning    - the convention is already near-universal; a violation is new drift
+#   suggestion - the convention is the direction of travel but a real tail exists
+#   silent     - deliberately not policed
+#
+# Measured at the time of writing (src/, excluding obj/bin):
+#   file-scoped namespaces 2,632 vs 19 block-scoped (all generated EF migrations)
+#   `is null` 2,074 vs `== null` 44; `is not null` 1,880 vs `!= null` 75
+#   `var` 13,284 uses; zero tab-indented .cs files; zero CRLF files
+#   `this.` qualification: 56 occurrences repo-wide
+#   primary constructors in 1,039 files, 221 files still on classic ctor+field
+#   `new List<T>()` 265, `new Dictionary<>()` 113, `Array.Empty<T>()` 68
+#
+# Nothing here is an error. Promoting rules to errors is a deliberate, separate
+# step once the tree is clean under them.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml,csproj,props,targets,slnx,md}]
+indent_size = 2
+
+[*.md]
+# trailing double-space is a hard line break in Markdown
+trim_trailing_whitespace = false
+
+[*.cs]
+indent_size = 4
+
+#### Namespaces ####
+
+# 2,632 files already do this; the 19 exceptions are generated EF migrations,
+# which are exempted in the generated-code section at the bottom.
+csharp_style_namespace_declarations = file_scoped:warning
+
+#### Null checking ####
+
+# Pattern-based null checks dominate ~40:1.
+dotnet_style_prefer_is_null_check_over_reference_equality_method = true:warning
+csharp_style_prefer_null_check_over_type_check = true:warning
+dotnet_style_null_propagation = true:warning
+dotnet_style_coalesce_expression = true:warning
+
+#### `this.` qualification — effectively unused ####
+
+dotnet_style_qualification_for_field = false:warning
+dotnet_style_qualification_for_property = false:warning
+dotnet_style_qualification_for_method = false:warning
+dotnet_style_qualification_for_event = false:warning
+
+#### Types: use language keywords, not framework names ####
+
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_style_predefined_type_for_member_access = true:warning
+
+#### `var` ####
+
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+
+#### Modern expression-level preferences ####
+
+csharp_style_pattern_matching_over_is_with_cast_check = true:warning
+csharp_style_pattern_matching_over_as_with_null_check = true:warning
+csharp_prefer_switch_expression = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_collection_expression = when_types_loosely_match:suggestion
+# Measured at suggestion, not warning: several persisted-state records
+# (DurableValueState, SchedulerState, ActivityTransition) hand-expand their
+# backing fields deliberately, so this has a real tail.
+dotnet_style_prefer_auto_properties = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:silent
+dotnet_style_prefer_conditional_expression_over_return = true:silent
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+
+# 1,039 files already use primary constructors, but 221 do not - this is the
+# direction of travel, not yet a rule.
+csharp_style_prefer_primary_constructors = true:suggestion
+
+#### Expression-bodied members — genuinely mixed, not policed ####
+
+csharp_style_expression_bodied_methods = when_on_single_line:silent
+csharp_style_expression_bodied_constructors = when_on_single_line:silent
+csharp_style_expression_bodied_properties = when_on_single_line:silent
+csharp_style_expression_bodied_accessors = when_on_single_line:silent
+csharp_style_expression_bodied_lambdas = when_on_single_line:silent
+
+#### Modifiers ####
+
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:warning
+csharp_prefer_static_local_function = true:suggestion
+csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async:suggestion
+
+#### `using` directives ####
+
+csharp_using_directive_placement = outside_namespace:warning
+dotnet_sort_system_directives_first = false
+dotnet_separate_import_directive_groups = false
+csharp_style_prefer_simple_using_statement = true:suggestion
+
+#### Braces and blocks — Allman throughout ####
+
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_new_line_before_members_in_object_initializers = true
+csharp_new_line_before_members_in_anonymous_types = true
+csharp_new_line_between_query_expression_clauses = true
+
+# The codebase routinely omits braces on single-line guard clauses
+# (`if (x is null) return;`), so this is deliberately not enforced.
+csharp_prefer_braces = true:silent
+
+#### Indentation ####
+
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true
+csharp_indent_labels = one_less_than_current
+csharp_indent_block_contents = true
+csharp_indent_braces = false
+csharp_indent_case_contents_when_block = false
+
+#### Spacing ####
+
+csharp_space_after_cast = false
+csharp_space_after_keywords_in_control_flow_statements = true
+csharp_space_between_method_declaration_parameter_list_parentheses = false
+csharp_space_between_method_call_parameter_list_parentheses = false
+csharp_space_between_parentheses = false
+csharp_space_before_colon_in_inheritance_clause = true
+csharp_space_after_colon_in_inheritance_clause = true
+csharp_space_around_binary_operators = before_and_after
+csharp_space_between_method_declaration_empty_parameter_list_parentheses = false
+csharp_space_between_method_call_name_and_opening_parenthesis = false
+csharp_space_between_method_call_empty_parameter_list_parentheses = false
+
+#### Wrapping ####
+
+csharp_preserve_single_line_statements = false
+csharp_preserve_single_line_blocks = true
+
+#### Naming ####
+
+dotnet_naming_rule.interfaces_start_with_i.symbols = interface_symbol
+dotnet_naming_rule.interfaces_start_with_i.style = prefix_i_style
+dotnet_naming_rule.interfaces_start_with_i.severity = warning
+dotnet_naming_symbols.interface_symbol.applicable_kinds = interface
+dotnet_naming_style.prefix_i_style.required_prefix = I
+dotnet_naming_style.prefix_i_style.capitalization = pascal_case
+
+dotnet_naming_rule.types_are_pascal_case.symbols = type_symbol
+dotnet_naming_rule.types_are_pascal_case.style = pascal_case_style
+dotnet_naming_rule.types_are_pascal_case.severity = warning
+dotnet_naming_symbols.type_symbol.applicable_kinds = class,struct,enum,delegate
+dotnet_naming_style.pascal_case_style.capitalization = pascal_case
+
+dotnet_naming_rule.members_are_pascal_case.symbols = member_symbol
+dotnet_naming_rule.members_are_pascal_case.style = pascal_case_style
+dotnet_naming_rule.members_are_pascal_case.severity = suggestion
+dotnet_naming_symbols.member_symbol.applicable_kinds = property,method,event
+dotnet_naming_symbols.member_symbol.applicable_accessibilities = public,protected
+
+dotnet_naming_rule.constants_are_pascal_case.symbols = constant_symbol
+dotnet_naming_rule.constants_are_pascal_case.style = pascal_case_style
+dotnet_naming_rule.constants_are_pascal_case.severity = suggestion
+dotnet_naming_symbols.constant_symbol.applicable_kinds = field
+dotnet_naming_symbols.constant_symbol.required_modifiers = const
+
+dotnet_naming_rule.private_fields_are_camel_case.symbols = private_field_symbol
+dotnet_naming_rule.private_fields_are_camel_case.style = camel_case_style
+dotnet_naming_rule.private_fields_are_camel_case.severity = suggestion
+dotnet_naming_symbols.private_field_symbol.applicable_kinds = field
+dotnet_naming_symbols.private_field_symbol.applicable_accessibilities = private
+dotnet_naming_style.camel_case_style.capitalization = camel_case
+
+#### Analyzer rules deliberately turned down ####
+
+# IDE0270 ("null check can be simplified") wants `x ?? throw new ...` in place of
+# an explicit `if (x is null) throw ...`. Measured 32 hits, and reviewing them the
+# analyzer is wrong for this codebase: the guard sites throw multi-line messages
+# carrying structured error codes (e.g. VF-ACT-005 in
+# RuntimeActivityInputMaterializer), and the explicit form reads better than a
+# coalesce. The surrounding coalesce preferences stay on.
+dotnet_diagnostic.IDE0270.severity = none
+
+# CA1848 (LoggerMessage delegates) and CA1727 would each fire hundreds of times
+# across the logging surface; adopting them is a separate decision, not a
+# side effect of switching analyzers on.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1727.severity = none
+
+# CA1515: this repo ships ~148 NuGet packages, so public types are frequently
+# intentional. Narrowing the surface is tracked as its own work unit
+# (docs/reports/simplification-review-2026-07.md finding A1) rather than being
+# driven by an analyzer that cannot tell a contract from an implementation.
+dotnet_diagnostic.CA1515.severity = none
+
+#### Generated code ####
+
+[**/Migrations/*.cs]
+generated_code = true
+dotnet_analyzer_diagnostic.severity = none
+
+[*.{Designer,g,generated}.cs]
+generated_code = true
+dotnet_analyzer_diagnostic.severity = none

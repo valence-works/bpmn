@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Shouldly" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Bpmn.Interchange/Bpmn.Interchange.csproj" />
+    <ProjectReference Include="../../src/Bpmn.Semantics/Bpmn.Semantics.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="corpus/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

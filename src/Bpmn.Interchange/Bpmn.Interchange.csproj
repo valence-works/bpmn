@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Reads and writes BPMN 2.0 XML over the Bpmn.Model object model, preserving BPMN DI layout and vendor extensionElements, with element-scoped import diagnostics. No dependencies.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Bpmn.Model/Bpmn.Model.csproj" />
+  </ItemGroup>
+</Project>
