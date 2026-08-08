@@ -11,20 +11,20 @@ public sealed record BpmnExecutionState
 {
     [JsonConstructor]
     public BpmnExecutionState(
-        IReadOnlyCollection<BpmnToken>? tokens = null,
-        IReadOnlyCollection<BpmnActiveWork>? activeChildren = null,
-        IReadOnlyCollection<BpmnDiagnosticEvent>? diagnostics = null,
-        int sequence = 0,
-        bool terminated = false,
-        BpmnPendingFault? pendingFault = null,
-        IReadOnlyCollection<BpmnEventRace>? races = null,
-        IReadOnlyCollection<BpmnLoopState>? loops = null,
-        IReadOnlyCollection<BpmnCompensable>? compensables = null,
-        IReadOnlyCollection<BpmnCompensationRun>? compensationRuns = null,
-        bool cancelling = false)
+    IReadOnlyCollection<BpmnToken>? tokens = null,
+    IReadOnlyCollection<BpmnActiveWork>? activeWork = null,
+    IReadOnlyCollection<BpmnDiagnosticEvent>? diagnostics = null,
+    int sequence = 0,
+    bool terminated = false,
+    BpmnPendingFault? pendingFault = null,
+    IReadOnlyCollection<BpmnEventRace>? races = null,
+    IReadOnlyCollection<BpmnLoopState>? loops = null,
+    IReadOnlyCollection<BpmnCompensable>? compensables = null,
+    IReadOnlyCollection<BpmnCompensationRun>? compensationRuns = null,
+    bool cancelling = false)
     {
         Tokens = tokens ?? [];
-        ActiveChildren = activeChildren ?? [];
+        ActiveWork = activeWork ?? [];
         Diagnostics = diagnostics ?? [];
         Sequence = sequence;
         Terminated = terminated;
@@ -37,27 +37,27 @@ public sealed record BpmnExecutionState
     }
 
     public IReadOnlyCollection<BpmnToken> Tokens { get; init; }
-    public IReadOnlyCollection<BpmnActiveWork> ActiveChildren { get; init; }
+    public IReadOnlyCollection<BpmnActiveWork> ActiveWork { get; init; }
     public IReadOnlyCollection<BpmnDiagnosticEvent> Diagnostics { get; init; }
     public int Sequence { get; init; }
 
-    /// <summary>The open/resolved first-catch-wins races opened by event-based gateways (spec 119); additive, schema stays v1.</summary>
+    /// <summary>The open/resolved first-catch-wins races opened by event-based gateways; additive, schema stays v1.</summary>
     public IReadOnlyCollection<BpmnEventRace> Races { get; init; }
 
-    /// <summary>The live multi-instance loops (spec 121); each is a coordinator token with private per-instance sub-tokens. Additive, schema stays v1.</summary>
+    /// <summary>The live multi-instance loops; each is a coordinator token with private per-instance sub-tokens. Additive, schema stays v1.</summary>
     public IReadOnlyCollection<BpmnLoopState> Loops { get; init; }
 
-    /// <summary>The durable reverse-order compensation log (spec 124); each host completion carrying an attached compensation boundary is registered here. Never pruned. Additive, schema stays v1.</summary>
+    /// <summary>The durable reverse-order compensation log; each host completion carrying an attached compensation boundary is registered here. Never pruned. Additive, schema stays v1.</summary>
     public IReadOnlyCollection<BpmnCompensable> Compensables { get; init; }
 
-    /// <summary>The in-flight compensation replay runs (spec 124); each is a compensate throw/end coordinator token replaying its claimed handlers sequentially. Additive, schema stays v1.</summary>
+    /// <summary>The in-flight compensation replay runs; each is a compensate throw/end coordinator token replaying its claimed handlers sequentially. Additive, schema stays v1.</summary>
     public IReadOnlyCollection<BpmnCompensationRun> CompensationRuns { get; init; }
 
     /// <summary>Set when a terminate end event ended the process; late child completions are ignored.</summary>
     public bool Terminated { get; init; }
 
     /// <summary>
-    /// Set when a cancel end event began cancelling a transaction scope (spec 125): all other live work is
+    /// Set when a cancel end event began cancelling a transaction scope: all other live work is
     /// stopped, the registered compensables are replayed, and the process then completes with the
     /// <c>Cancelled</c> outcome (parallel to <see cref="Terminated"/>, but completing with a distinct outcome
     /// rather than <c>Done</c>). Additive, schema stays v1.
@@ -81,7 +81,7 @@ public sealed record BpmnExecutionState
     /// process never re-serializes an ever-growing blob.
     /// <para>
     /// <see cref="BpmnTokenStatus.Canceled"/> tokens are <b>never</b> pruned. A terminate strips in-flight
-    /// work from <see cref="ActiveChildren"/> while that work may still complete, and the late completion is
+    /// work from <see cref="ActiveWork"/> while that work may still complete, and the late completion is
     /// absorbed by the by-id token lookup; prune the record and that lookup faults the process instead.
     /// Cancelled counts are bounded by graph structure.
     /// </para>
@@ -92,14 +92,14 @@ public sealed record BpmnExecutionState
     /// </summary>
     public BpmnExecutionState Prune()
     {
-        var retainedTokenIds = ActiveChildren.Select(work => work.TokenId).ToHashSet(StringComparer.Ordinal);
+        var retainedTokenIds = ActiveWork.Select(work => work.TokenId).ToHashSet(StringComparer.Ordinal);
         var tokens = Tokens
-            .Where(token => token.Status != BpmnTokenStatus.Consumed || retainedTokenIds.Contains(token.TokenId))
-            .ToArray();
+        .Where(token => token.Status != BpmnTokenStatus.Consumed || retainedTokenIds.Contains(token.TokenId))
+        .ToArray();
 
         var diagnostics = Diagnostics.Count <= DiagnosticsCap
-            ? Diagnostics
-            : Diagnostics.Skip(Diagnostics.Count - DiagnosticsCap).ToArray();
+        ? Diagnostics
+        : Diagnostics.Skip(Diagnostics.Count - DiagnosticsCap).ToArray();
 
         return this with { Tokens = tokens, Diagnostics = diagnostics };
     }

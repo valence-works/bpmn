@@ -30,7 +30,6 @@ public enum BpmnBindingSlot
 public abstract record BpmnWorkBinding(string ProcessId, string ElementId, string BindingRef, BpmnBindingSlot Slot)
 {
     /// <summary>A wait that ends after an ISO-8601 duration: a timer catch event, timer boundary event, or timer event-subprocess trigger.</summary>
-    /// <param name="IsoDuration">The ISO-8601 duration the wait lasts.</param>
     public sealed record TimerWait(
         string ProcessId,
         string ElementId,
@@ -39,7 +38,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string IsoDuration) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named message: a message catch event, message boundary event, receive task, or message event-subprocess trigger.</summary>
-    /// <param name="MessageName">The message name to wait for.</param>
     public sealed record MessageWait(
         string ProcessId,
         string ElementId,
@@ -48,7 +46,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named signal: a signal catch event, signal boundary event, or signal event-subprocess trigger.</summary>
-    /// <param name="SignalName">The signal name to wait for.</param>
     public sealed record SignalWait(
         string ProcessId,
         string ElementId,
@@ -57,7 +54,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string SignalName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A publish of a named message: a message throw event, message end event, or send task.</summary>
-    /// <param name="MessageName">The message name to publish.</param>
     public sealed record MessagePublish(
         string ProcessId,
         string ElementId,
@@ -66,8 +62,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A call activity: run a separately defined process the host resolves.</summary>
-    /// <param name="CalledElement">The BPMN <c>calledElement</c>, or <c>null</c> when the document names none.</param>
-    /// <param name="WaitForCompletion">Whether the caller waits for the called process, the BPMN default.</param>
     public sealed record CallProcess(
         string ProcessId,
         string ElementId,
@@ -77,7 +71,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         bool WaitForCompletion) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>An embedded subprocess, transaction, or event subprocess: run the nested process carried here.</summary>
-    /// <param name="Definition">The nested process, read from the subprocess element's own content.</param>
     public sealed record NestedProcess(
         string ProcessId,
         string ElementId,
@@ -89,7 +82,6 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
     /// A task the document describes but does not say how to perform: the host decides what a
     /// <c>userTask</c>, <c>serviceTask</c>, <c>scriptTask</c>, and so on actually does.
     /// </summary>
-    /// <param name="TaskType">The BPMN element type of the task (see <see cref="BpmnElementTypes"/>).</param>
     public sealed record UnboundTask(
         string ProcessId,
         string ElementId,

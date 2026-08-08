@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Bpmn.Model;
 
 /// <summary>
-/// Wiring documentation for a BPMN <c>&lt;messageFlow&gt;</c> (spec 136): the resolved send/receive endpoint
+/// Wiring documentation for a BPMN <c>&lt;messageFlow&gt;</c>: the resolved send/receive endpoint
 /// elements and their pools, plus the flow's message name. This is authored-side metadata only — execution
 /// rides the name-keyed stimulus fabric (a send publishes by name; receivers subscribe by name), so the engine
 /// never reads a message flow, the graph validator ignores it, and it is stripped from the compiled executable
@@ -15,13 +15,13 @@ public sealed class BpmnMessageFlow
 {
     [JsonConstructor]
     public BpmnMessageFlow(
-        string flowId,
-        string? name = null,
-        string? sourceElementId = null,
-        string? sourcePoolId = null,
-        string? targetElementId = null,
-        string? targetPoolId = null,
-        string? messageName = null)
+    string flowId,
+    string? name = null,
+    string? sourceElementId = null,
+    string? sourcePoolId = null,
+    string? targetElementId = null,
+    string? targetPoolId = null,
+    string? messageName = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
 

@@ -22,27 +22,34 @@ using Bpmn.Interchange;
 using Bpmn.Model;
 
 var xml = File.ReadAllText("order.bpmn");
-var result = BpmnXmlReader.Read(xml);
+var result = new BpmnXmlReader().Read(xml);
 ```
 
-`BpmnImportResult` has three parts, and each answers a different question:
+`BpmnXmlReader` and `BpmnXmlWriter` are ordinary instantiable classes. They hold no state between
+calls, so keep one around or new one up per call; both are fine.
+
+`BpmnImportResult` has four parts, and each answers a different question:
 
 | Part | Question it answers |
 | --- | --- |
 | `Definitions` | What is in the document? |
 | `Bindings` | What work would a host have to be able to do to run it? |
 | `Analysis` | What could the reader not fully use, and where? |
+| `ElementExtensions` | What foreign content did individual elements carry? |
 
-Read the analysis first. It is the only one that can tell you the other two are incomplete.
+Read the analysis first. It is the only one that can tell you the others are incomplete.
+
+A document that is not readable at all raises a `BpmnInterchangeException`. Everything that parsed
+but could not be fully used is a finding, not an exception.
 
 ```csharp
 foreach (var issue in result.Analysis.Issues)
     Console.WriteLine($"[{issue.Severity}] {issue.ProcessId}/{issue.ElementId}: {issue.Message}");
 ```
 
-Severities are `Info` (something was noted), `Degraded` (something was kept but is less capable than
-the source intended), and `Dropped` (something in the source is not represented at all). Nothing is
-ever discarded silently.
+`BpmnImportIssueSeverity` has three values: `Info` (something was noted), `Degraded` (the element read
+in a reduced form), and `Dropped` (the element could not be represented and was dropped, along with
+the flows that referenced it). Nothing is ever discarded silently.
 
 ## Inspect the model
 
@@ -98,14 +105,20 @@ name can be added without breaking anything already serialized.
 
 ### What survived that you did not ask for
 
-Layout and vendor annotations are in the model, not thrown away:
+Layout and vendor annotations are in the result, not thrown away:
 
 ```csharp
 var plane = definitions.Diagrams[0].Plane;
 Console.WriteLine($"{plane.Shapes.Count} shapes, {plane.Edges.Count} edges");
 
+// The definitions and process elements carry their retained content on the model itself.
 foreach (var ns in process.Extensions.RetainedNamespaces())
     Console.WriteLine($"retained foreign namespace: {ns}");
+
+// Per-element retained content travels alongside, matched back by process and element id.
+foreach (var retained in result.ElementExtensions)
+    Console.WriteLine($"{retained.ProcessId}/{retained.ElementId}: " +
+                      $"{retained.Extensions.ExtensionElements.Count} extension elements");
 ```
 
 `RetainedNamespaces()` is the quick way to see whose annotations a document is carrying.
@@ -113,8 +126,10 @@ foreach (var ns in process.Extensions.RetainedNamespaces())
 ## Write it back
 
 ```csharp
-var output = BpmnXmlWriter.Write(definitions);
-File.WriteAllText("order.out.bpmn", output);
+var writer = new BpmnXmlWriter();
+
+// Hand the whole result back and everything the reader retained is written where it came from.
+File.WriteAllText("order.out.bpmn", writer.Write(result));
 ```
 
 The round-trip is **lossless for content, lossy for formatting**. Element structure, names, values,
@@ -140,8 +155,13 @@ var updated = definitions with
         .ToList()
 };
 
-File.WriteAllText("order.revised.bpmn", BpmnXmlWriter.Write(updated));
+File.WriteAllText(
+    "order.revised.bpmn",
+    writer.Write(updated, result.Bindings, result.ElementExtensions));
 ```
+
+Pass the bindings and the retained element content along with an edited model: the bindings supply
+the nested process behind each subprocess element, and without them subprocesses are written empty.
 
 Nothing you held before the edit changed. That property is what makes analyze-then-commit workflows
 safe; see [the analyze-then-commit contract](reading-and-writing-bpmn.md#analyze-then-commit).

@@ -16,25 +16,28 @@ public sealed class BpmnElement
     /// <summary>Creates a BPMN flow element.</summary>
     [JsonConstructor]
     public BpmnElement(
-        string elementId,
-        string elementType,
-        string? name = null,
-        string? bindingRef = null,
-        string? laneId = null,
-        string? defaultFlowId = null,
-        IReadOnlyCollection<BpmnEventDefinition>? eventDefinitions = null,
-        IReadOnlyDictionary<string, string>? properties = null,
-        string? attachedToRef = null,
-        bool cancelActivity = true,
-        BpmnLoopCharacteristics? loopCharacteristics = null,
-        bool isForCompensation = false,
-        string? compensationHandlerElementId = null,
-        bool isTransaction = false,
-        bool triggeredByEvent = false,
-        string? listenerBindingRef = null)
+    string elementId,
+    string elementType,
+    string? name = null,
+    string? bindingRef = null,
+    string? laneId = null,
+    string? defaultFlowId = null,
+    IReadOnlyCollection<BpmnEventDefinition>? eventDefinitions = null,
+    IReadOnlyDictionary<string, string>? properties = null,
+    string? attachedToRef = null,
+    bool cancelActivity = true,
+    BpmnLoopCharacteristics? loopCharacteristics = null,
+    bool isForCompensation = false,
+    string? compensationHandlerElementId = null,
+    bool isTransaction = false,
+    bool triggeredByEvent = false,
+    string? listenerBindingRef = null,
+    BpmnExtensions? extensions = null)
     {
-        if (string.IsNullOrWhiteSpace(elementId)) throw new ArgumentException("An element id is required.", nameof(elementId));
-        if (string.IsNullOrWhiteSpace(elementType)) throw new ArgumentException("An element type is required.", nameof(elementType));
+        if (string.IsNullOrWhiteSpace(elementId))
+            throw new ArgumentException("An element id is required.", nameof(elementId));
+        if (string.IsNullOrWhiteSpace(elementType))
+            throw new ArgumentException("An element type is required.", nameof(elementType));
 
         ElementId = elementId;
         ElementType = elementType;
@@ -52,6 +55,7 @@ public sealed class BpmnElement
         CompensationHandlerElementId = string.IsNullOrWhiteSpace(compensationHandlerElementId) ? null : compensationHandlerElementId.Trim();
         IsTransaction = isTransaction;
         TriggeredByEvent = triggeredByEvent;
+        Extensions = extensions ?? BpmnExtensions.Empty;
     }
 
     /// <summary>The BPMN <c>id</c> of this element, unique within its process.</summary>
@@ -162,6 +166,19 @@ public sealed class BpmnElement
     /// </summary>
     [JsonPropertyName("listenerBindingRef")]
     public string? ListenerBindingRef { get; }
+
+    /// <summary>
+    /// Foreign XML retained from this element: its <c>&lt;documentation&gt;</c>, its
+    /// <c>&lt;extensionElements&gt;</c> children, and any attributes or child elements from namespaces the
+    /// reader does not own.
+    /// <para>
+    /// This is where vendor annotations live. A modeler writes <c>camunda:formData</c> on a user task and
+    /// <c>zeebe:taskDefinition</c> on a service task, so element level is the position that matters most
+    /// for surviving a read-modify-write cycle.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("extensions")]
+    public BpmnExtensions Extensions { get; }
 }
 
 /// <summary>

@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Bpmn.Model.State;
 
 /// <summary>
-/// The live state of one multi-instance loop (spec 121). A coordinator token
+/// The live state of one multi-instance loop. A coordinator token
 /// (<see cref="TokenId"/>) stays <c>AwaitingChild</c> at the host <see cref="ElementId"/> while its instance
 /// sub-tokens run the bound child; this record tracks how many instances remain. It is additive engine state
 /// (schema stays version 1) whose only mutation home is <c>BpmnStateMutator</c>; <see cref="LoopId"/> and the
@@ -15,14 +15,14 @@ public sealed record BpmnLoopState
 {
     [JsonConstructor]
     public BpmnLoopState(
-        string loopId,
-        string tokenId,
-        string elementId,
-        bool isSequential,
-        int totalCount,
-        int nextIndex,
-        int completedCount,
-        IReadOnlyList<JsonElement>? items = null)
+    string loopId,
+    string tokenId,
+    string elementId,
+    bool isSequential,
+    int totalCount,
+    int nextIndex,
+    int completedCount,
+    IReadOnlyList<JsonElement>? items = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(loopId);
         ArgumentException.ThrowIfNullOrWhiteSpace(tokenId);
@@ -60,7 +60,7 @@ public sealed record BpmnLoopState
     public int CompletedCount { get; init; }
 
     /// <summary>
-    /// The collection-mode per-instance items, snapshotted at loop start (spec 123 D2): <c>Items[k]</c> is the
+    /// The collection-mode per-instance items, snapshotted at loop start: <c>Items[k]</c> is the
     /// value seeded under the host's <c>ItemVariable</c> for instance <c>k</c>. <c>null</c> in cardinality mode.
     /// Persisted on the record because sequential mode seeds instance <c>k+1</c> in a later evaluation (instance
     /// <c>k</c>'s completion) and the snapshot semantics forbid re-reading the variable; parallel mode reads the

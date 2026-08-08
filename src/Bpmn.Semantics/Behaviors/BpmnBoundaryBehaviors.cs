@@ -1,4 +1,5 @@
 using Bpmn.Model;
+using Bpmn.Model.State;
 
 namespace Bpmn.Semantics.Behaviors;
 

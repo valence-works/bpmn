@@ -7,20 +7,30 @@ migration tool never needs the interpreter at all.
 This page covers what the reader reports, what the round-trip guarantees, what it deliberately does
 not guarantee, and why analyzing a document and importing it are the same operation.
 
-## The three-part result
+## What a read gives you
 
 ```csharp
 using Bpmn.Interchange;
 
-var result = BpmnXmlReader.Read(File.ReadAllText("order.bpmn"));
+var reader = new BpmnXmlReader();
+var result = reader.Read(File.ReadAllText("order.bpmn"));
 
 BpmnDefinitions definitions = result.Definitions;
 IReadOnlyList<BpmnWorkBinding> bindings = result.Bindings;
 BpmnImportAnalysis analysis = result.Analysis;
+IReadOnlyList<BpmnRetainedElement> retained = result.ElementExtensions;
 ```
 
 `Definitions` is the document. `Bindings` is the work the document implies. `Analysis` is everything
-the reader wants to tell you about the gap between the two.
+the reader wants to tell you about the gap between the two. `ElementExtensions` is the foreign
+content individual elements carried, which travels beside the model rather than inside it.
+
+Alongside the issues, the analysis carries `ProcessIds` (every `<process>` id, in document order) and
+`ElementCounts` (a histogram of BPMN local names encountered). A histogram is a cheap way to answer
+"does this document use anything I do not handle?" without walking it yourself.
+
+A document that cannot be read at all raises a `BpmnInterchangeException`. Anything that parsed is
+reported as a finding instead.
 
 ## Diagnostics
 
@@ -35,7 +45,9 @@ actionable and "this timer on `Escalate` has no duration" is.
 | `Dropped` | Something in the source is not represented in the model at all. | Decide whether the document is still the document you meant. |
 
 ```csharp
-var dropped = analysis.Issues.Where(i => i.Severity == BpmnImportSeverity.Dropped).ToList();
+var dropped = analysis.Issues
+    .Where(i => i.Severity == BpmnImportIssueSeverity.Dropped)
+    .ToList();
 
 if (dropped.Count > 0)
 {
@@ -59,10 +71,10 @@ The reader exposes two entry points over one implementation:
 
 ```csharp
 // Look, without building anything.
-BpmnImportAnalysis preview = BpmnXmlReader.Analyze(xml);
+BpmnImportAnalysis preview = reader.Analyze(xml);
 
 // Look and build.
-BpmnImportResult imported = BpmnXmlReader.Read(xml);
+BpmnImportResult imported = reader.Read(xml);
 ```
 
 `Analyze` runs the same code path as `Read` and stops short of handing you the result. It does not
@@ -77,12 +89,12 @@ that class of bug rather than testing for it.
 The practical pattern:
 
 ```csharp
-var preview = BpmnXmlReader.Analyze(xml);
+var preview = reader.Analyze(xml);
 
-if (preview.Issues.Any(i => i.Severity == BpmnImportSeverity.Dropped) && !userConfirmed)
+if (preview.Issues.Any(i => i.Severity == BpmnImportIssueSeverity.Dropped) && !userConfirmed)
     return ImportOutcome.NeedsConfirmation(preview);
 
-var result = BpmnXmlReader.Read(xml);   // same findings, now with a model
+var result = reader.Read(xml);   // same findings, now with a model
 ```
 
 Reading twice costs a second parse. If that matters, call `Read` once and use `result.Analysis`; the
@@ -98,9 +110,13 @@ findings are identical.
 | `BpmnFidelity.Semantic` | Only what the semantics need. Foreign content is reported as a finding and dropped. |
 
 ```csharp
-var options = new BpmnReadOptions { Fidelity = BpmnFidelity.Semantic };
-var stripped = BpmnXmlReader.Read(xml, options);
+var stripped = reader.Read(xml, new BpmnImportOptions { Fidelity = BpmnFidelity.Semantic });
 ```
+
+`BpmnImportOptions` carries two other knobs. `ProcessId` names the process you care about — every
+process in the document is still read, but naming one the document does not declare fails fast
+instead of silently reading something else. `BindingRefPrefix` sets the prefix for generated binding
+refs, which default to `node-{elementId}`.
 
 Use `Semantic` when you are producing a clean document from a messy one and want the removals
 enumerated. Use the default for everything else — in particular, for anything that will write the
@@ -108,23 +124,35 @@ document back.
 
 ## What gets retained
 
-Retained content hangs off `BpmnExtensions`, which is attached to the `<definitions>` element, to
-each process, and to each flow element:
+Retained content is a `BpmnExtensions` record: documentation, extension elements, foreign
+attributes, and unrecognized children.
 
 ```csharp
-var element = process.Elements.First(e => e.ElementId == "approve");
+var extensions = definitions.Extensions;      // or process.Extensions
 
-foreach (var doc in element.Extensions.Documentation)
+foreach (var doc in extensions.Documentation)
     Console.WriteLine(doc.Text);
 
-foreach (var extension in element.Extensions.ExtensionElements)
+foreach (var extension in extensions.ExtensionElements)
     Console.WriteLine($"{extension.Name} ({extension.Attributes.Count} attributes)");
 
-foreach (var attribute in element.Extensions.ForeignAttributes)
+foreach (var attribute in extensions.ForeignAttributes)
     Console.WriteLine($"{attribute.Name} = {attribute.Value}");
 
-Console.WriteLine(element.Extensions.IsEmpty ? "nothing retained" : "carrying foreign content");
+Console.WriteLine(extensions.IsEmpty ? "nothing retained" : "carrying foreign content");
 ```
+
+`BpmnDefinitions` and `BpmnProcessDefinition` hold their retained content directly. The per-element
+types do not, so element-scoped retention rides alongside the model as `BpmnRetainedElement` records,
+matched back by process id plus element id:
+
+```csharp
+var approve = result.ElementExtensions
+    .FirstOrDefault(r => r.ElementId == "approve")?.Extensions
+    ?? BpmnExtensions.Empty;
+```
+
+Hand that list straight back to the writer and the content is written where it came from.
 
 `BpmnQName` renders as `{namespace}localName`, matching the `XName` convention, so a `camunda:`
 attribute prints as `{http://camunda.org/schema/1.0/bpmn}assignee`.
@@ -136,9 +164,17 @@ foreach (var ns in definitions.Extensions.RetainedNamespaces())
     Console.WriteLine(ns);
 ```
 
+The reader emits one informational finding per retained namespace, so a user can see that their
+annotations survived rather than hoping.
+
 Retained subtrees are held as data — `BpmnExtensionElement` records with a name, attributes, children
 and text — rather than as live XML nodes. That is deliberate: data survives JSON serialization,
-compares by value, and cannot be mutated behind the model's back.
+compares by value, and cannot be mutated behind the model's back. A conversion helper bridges to and
+from XML nodes for consumers who want one.
+
+Extensions are carried, never interpreted. The library does not know what a `camunda:formData` means
+and does not try. It preserves vendor annotations so that something else can act on them; it is not a
+migration tool between vendors.
 
 ### Position is retained too
 
@@ -218,11 +254,30 @@ the unbound tasks in a document is how you find out what an integration still ow
 ## Writing
 
 ```csharp
-var xml = BpmnXmlWriter.Write(definitions);
+var writer = new BpmnXmlWriter();
+
+// Round-trip: writes back exactly what a read produced.
+var xml = writer.Write(result);
+
+// Or write a model you assembled or edited yourself.
+var edited = writer.Write(definitions, bindings, elementExtensions, new BpmnExportOptions
+{
+    Exporter = "my-tool",
+    ExporterVersion = "1.4.0"
+});
 ```
 
-The writer emits the model, including retained extensions at their recorded positions and DI layout
-as authored. What it does not do is reproduce the source byte for byte.
+Prefer the first overload whenever you have a `BpmnImportResult`. The second takes the pieces
+separately: `bindings` supplies the nested process behind each subprocess element — without it,
+subprocesses are written empty — and `elementExtensions` supplies the per-element retained content.
+`BpmnExportOptions` can also override the target namespace and omit the XML declaration.
+
+Layout in the output is always complete. Every element, pool and lane gets a `BPMNShape`, and every
+sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints BPMN DI demands,
+synthesized from the endpoint boxes when the source carried none. A flow that runs backwards is
+routed as an elbow below the row, so a cyclic graph does not render as a pile of overlapping lines.
+
+What the writer does not do is reproduce the source byte for byte.
 
 **Lossless for content, lossy for formatting.** Preserved: element structure, names, values, document
 order, layout, foreign content. Not preserved: attribute order, whitespace, comments, CDATA-versus-text,
@@ -252,3 +307,4 @@ A short checklist for BPMN arriving from a modeling tool you do not control:
   degraded, what is dropped.
 - [Building a process in code](building-a-process-in-code.md) — the same model, without XML.
 - [Hosting the interpreter](hosting-the-interpreter.md) — what to do with those bindings.
+- [ADR 0006: Vendor extensions are retained as typed data](../adr/0006-vendor-extensions-are-retained-as-typed-data.md)

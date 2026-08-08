@@ -66,20 +66,10 @@ public sealed record BpmnImportOptions
 /// <param name="Definitions">The document as a neutral object model.</param>
 /// <param name="Bindings">One entry per element that needs host-provided work, keyed back by <see cref="BpmnWorkBinding.BindingRef"/>.</param>
 /// <param name="Analysis">The same analysis <see cref="BpmnXmlReader.Analyze"/> would have produced for this document.</param>
-/// <param name="ElementExtensions">
-/// Foreign XML retained from individual flow elements, sequence flows, and the collaboration. The definitions
-/// and process elements carry their own retained content on the model; the per-element types do not, so it
-/// rides here. Hand this straight back to <see cref="BpmnXmlWriter"/> to write it out again.
-/// </param>
 public sealed record BpmnImportResult(
     BpmnDefinitions Definitions,
     IReadOnlyList<BpmnWorkBinding> Bindings,
-    BpmnImportAnalysis Analysis,
-    IReadOnlyList<BpmnRetainedElement>? ElementExtensions = null)
-{
-    /// <summary>Retained per-element content. Never null.</summary>
-    public IReadOnlyList<BpmnRetainedElement> ElementExtensions { get; init; } = ElementExtensions ?? [];
-}
+    BpmnImportAnalysis Analysis);
 
 /// <summary>Options for a write.</summary>
 public sealed record BpmnExportOptions

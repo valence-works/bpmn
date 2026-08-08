@@ -35,7 +35,7 @@ like, not a shortcut around building one.
 using Bpmn.Interchange;
 using Bpmn.Runtime.InMemory;
 
-var imported = BpmnXmlReader.Read(File.ReadAllText("order.bpmn"));
+var imported = new BpmnXmlReader().Read(File.ReadAllText("order.bpmn"));
 var definition = imported.Definitions.FindProcess("order-approval")!;
 
 var host = new InMemoryBpmnHost();
@@ -75,19 +75,24 @@ simulation does not model.
 A simulation is a conversation: the host runs what it can, then stops and waits for you.
 
 ```csharp
-// Finish a task, optionally naming the outcome a conditional sequence flow selects on.
-instance.CompleteWork(workId, outcome: "Approved");
+// Finish a unit of work, naming the outcomes a conditional sequence flow selects on.
+instance.CompleteWork(handle, "Approved");
 
-// Fail one, with a BPMN error code an error boundary event may catch.
-instance.FaultWork(workId, errorCode: "CREDIT_DECLINED", message: "Limit exceeded");
+// Fail one. An error boundary event on the activity may catch it.
+instance.FaultWork(handle, "Credit limit exceeded");
 
 // Move time.
 host.Clock.Advance(TimeSpan.FromHours(2));
 ```
 
+`handle` is the opaque identifier the host assigned when it started the work, exactly as in a host
+you write yourself — see [The host port](../concepts/host-port.md).
+
 Outcome names are the whole conditional-routing story: the library evaluates no expressions, so a
-sequence flow's `ConditionOutcome` is matched against the outcome string the completing work
-reported. See [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
+sequence flow's `ConditionOutcome` is matched against an outcome name the completing work reported.
+Note that faulting does not name an error code — which error a catcher matches is a property of the
+model, not of the report. See
+[Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
 
 ## Inspecting what happened
 

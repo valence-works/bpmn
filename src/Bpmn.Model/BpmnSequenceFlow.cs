@@ -12,12 +12,12 @@ public sealed class BpmnSequenceFlow
 {
     [JsonConstructor]
     public BpmnSequenceFlow(
-        string flowId,
-        string sourceRef,
-        string targetRef,
-        string? name = null,
-        string? conditionOutcome = null,
-        bool isDefault = false)
+    string flowId,
+    string sourceRef,
+    string targetRef,
+    string? name = null,
+    string? conditionOutcome = null,
+    bool isDefault = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceRef);

@@ -12,14 +12,14 @@ public sealed record BpmnToken
 {
     [JsonConstructor]
     public BpmnToken(
-        string tokenId,
-        string atElementId,
-        string? flowId = null,
-        string? parentTokenId = null,
-        BpmnTokenStatus status = BpmnTokenStatus.Active,
-        string? producingActivityExecutionId = null,
-        string? iterationKey = null,
-        BpmnTokenKind? kind = null)
+    string tokenId,
+    string atElementId,
+    string? flowId = null,
+    string? parentTokenId = null,
+    BpmnTokenStatus status = BpmnTokenStatus.Active,
+    string? producingWorkHandle = null,
+    string? iterationKey = null,
+    BpmnTokenKind? kind = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tokenId);
         ArgumentException.ThrowIfNullOrWhiteSpace(atElementId);
@@ -29,7 +29,7 @@ public sealed record BpmnToken
         FlowId = flowId;
         ParentTokenId = parentTokenId;
         Status = status;
-        ProducingActivityExecutionId = producingActivityExecutionId;
+        ProducingWorkHandle = producingWorkHandle;
         IterationKey = iterationKey;
         Kind = kind;
     }
@@ -43,11 +43,11 @@ public sealed record BpmnToken
     public string? ParentTokenId { get; init; }
     public BpmnTokenStatus Status { get; init; }
 
-    /// <summary>The activity execution whose completion produced this token, when known.</summary>
-    public string? ProducingActivityExecutionId { get; init; }
+    /// <summary>The unit of host work whose completion produced this token, when known.</summary>
+    public string? ProducingWorkHandle { get; init; }
 
     /// <summary>
-    /// The loop-iteration key (spec 122; the token analog of the Flowchart #382 loop-iteration scope). It is
+    /// The loop-iteration key. It is
     /// <c>null</c> for the implicit first pass ("iteration 0") and is minted fresh only when a token traverses
     /// a backward (loop-back) sequence flow (<c>BpmnGraph.IsBackwardFlow</c>);
     /// every other minting site inherits its source/parent/group token's key. Join accounting groups arrivals
@@ -56,8 +56,8 @@ public sealed record BpmnToken
     public string? IterationKey { get; init; }
 
     /// <summary>
-    /// The token-role discriminator (spec 134): <c>null</c> for every ordinary token; <see cref="BpmnTokenKind.Activation"/>
-    /// on an event-subprocess activation token (spec 128), and <see cref="BpmnTokenKind.Listener"/> on a tier-2 scope
+    /// The token-role discriminator: <c>null</c> for every ordinary token; <see cref="BpmnTokenKind.Activation"/>
+    /// on an event-subprocess activation token, and <see cref="BpmnTokenKind.Listener"/> on a message, signal and timer triggered scope
     /// listener token (message/signal/timer-triggered event subprocess). A listener token and an activation token both
     /// sit at the same <c>TriggeredByEvent</c> element with a <c>null</c> <see cref="ParentTokenId"/>, so position no
     /// longer discriminates them — the completion-routing fork and the liveness gates read this field. It is an additive
@@ -68,13 +68,13 @@ public sealed record BpmnToken
     public BpmnTokenKind? Kind { get; init; }
 }
 
-/// <summary>The token-role discriminator (spec 134); see <see cref="BpmnToken.Kind"/>. Additive and nullable — it is never a token status.</summary>
+/// <summary>The token-role discriminator; see <see cref="BpmnToken.Kind"/>. Additive and nullable — it is never a token status.</summary>
 public enum BpmnTokenKind
 {
-    /// <summary>A tier-2 scope listener token (spec 134): a suspending catcher armed at scope start (and re-armed per non-interrupting fire) that waits for a message/signal/timer stimulus without blocking the scope from completing.</summary>
+    /// <summary>A message, signal and timer triggered scope listener token: a suspending catcher armed at scope start (and re-armed per non-interrupting fire) that waits for a message/signal/timer stimulus without blocking the scope from completing.</summary>
     Listener,
 
-    /// <summary>An event-subprocess activation token (spec 128): the scope-level token minted when an event subprocess activates, kept alive until its body completes.</summary>
+    /// <summary>An event-subprocess activation token: the scope-level token minted when an event subprocess activates, kept alive until its body completes.</summary>
     Activation
 }
 

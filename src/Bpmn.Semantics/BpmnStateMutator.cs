@@ -20,10 +20,10 @@ internal static class BpmnStateMutator
         string? flowId,
         string? parentTokenId,
         BpmnTokenStatus status,
-        string? producingActivityExecutionId,
+        string? producingWorkHandle,
         string? iterationKey = null,
         BpmnTokenKind? kind = null) =>
-        new(NewId(state, "token"), atElementId, flowId, parentTokenId, status, producingActivityExecutionId, iterationKey, kind);
+        new(NewId(state, "token"), atElementId, flowId, parentTokenId, status, producingWorkHandle, iterationKey, kind);
 
     /// <summary>
     /// The loop-iteration key minted when a token traverses a backward (loop-back) sequence flow:
@@ -48,12 +48,12 @@ internal static class BpmnStateMutator
         };
 
     public static BpmnExecutionState AddActiveWork(BpmnExecutionState state, BpmnActiveWork work) =>
-        state with { ActiveChildren = state.ActiveChildren.Append(work).ToArray(), Sequence = state.Sequence + 1 };
+        state with { ActiveWork = state.ActiveWork.Append(work).ToArray(), Sequence = state.Sequence + 1 };
 
     public static BpmnExecutionState RemoveActiveWork(BpmnExecutionState state, string tokenId) =>
         state with
         {
-            ActiveChildren = state.ActiveChildren
+            ActiveWork = state.ActiveWork
                 .Where(work => !StringComparer.Ordinal.Equals(work.TokenId, tokenId))
                 .ToArray(),
             Sequence = state.Sequence + 1

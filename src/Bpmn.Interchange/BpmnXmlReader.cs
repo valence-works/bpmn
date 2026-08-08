@@ -58,7 +58,7 @@ public sealed class BpmnXmlReader
     {
         var context = new ReadContext(options);
         var definitions = ReadCore(xml, options, context);
-        return new BpmnImportResult(definitions, context.Bindings.ToArray(), context.ToAnalysis(), context.RetainedElements.ToArray());
+        return new BpmnImportResult(definitions, context.Bindings.ToArray(), context.ToAnalysis());
     }
 
     private static BpmnDefinitions ReadCore(string xml, BpmnImportOptions? options, ReadContext context)
@@ -255,11 +255,7 @@ public sealed class BpmnXmlReader
 
         var collaborationId = collaborationElement is null ? null : IdOf(collaborationElement);
         if (collaborationElement is not null && collaborationId is not null)
-        {
-            var retained = BpmnExtensionCapture.Capture(collaborationElement, context.Fidelity, IsCollaborationChildConsumed, context.Retention);
-            if (!retained.IsEmpty)
-                context.RetainedElements.Add(new BpmnRetainedElement(collaborationId, collaborationId, retained));
-        }
+            ReportUnretainable(collaborationElement, "Collaboration", collaborationId, IsCollaborationChildConsumed, context);
 
         return new BpmnCollaboration(collaborationId, pools, resolvedFlows);
     }
@@ -290,6 +286,9 @@ public sealed class BpmnXmlReader
         var pendingCompensateThrows = new List<XElement>();
         var pendingCompensateEnds = new List<XElement>();
         var associations = new List<(string Source, string Target)>();
+        // Retained per-element content is collected as each child is visited and stamped onto the elements in
+        // one pass at the end, alongside the lane ids, because the element type is immutable.
+        var retainedByElementId = new Dictionary<string, BpmnExtensions>(StringComparer.Ordinal);
 
         // The container's declared variables gate collection-mode multi-instance loops, so they are read
         // before the element loop that resolves those loops.
@@ -308,8 +307,9 @@ public sealed class BpmnXmlReader
             var id = IdOf(child);
             context.CountElement(localName);
 
-            if (id is not null && IsRetainableFlowNode(localName))
-                CaptureFlowNode(child, processId, id, context);
+            if (id is not null && IsRetainableFlowNode(localName)
+                && BpmnExtensionCapture.Capture(child, context.Fidelity, IsFlowNodeChildConsumed, context.Retention) is { IsEmpty: false } captured)
+                retainedByElementId[id] = captured;
 
             switch (localName)
             {
@@ -532,6 +532,7 @@ public sealed class BpmnXmlReader
                     if (conditionOutcome is null && conditionExpression is not null)
                         context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Value.Trim()}'); expression conditions are not evaluated by this model, so the flow read as unconditional.", id);
 
+                    ReportUnretainable(child, "Sequence flow", id, IsFlowNodeChildConsumed, context);
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome));
                     break;
                 }
@@ -646,13 +647,16 @@ public sealed class BpmnXmlReader
             context.Report(BpmnImportIssueSeverity.Dropped, $"Activity '{orphan.ElementId}' is marked isForCompensation but is referenced by no compensation boundary; it cannot take part in normal flow and was dropped.", orphan.ElementId);
         }
 
-        var elementsWithLanes = elements
-            .Select(element => context.LaneByElementId.TryGetValue(element.ElementId, out var laneId)
-                ? WithLane(element, laneId)
-                : element)
+        var finishedElements = elements
+            .Select(element =>
+            {
+                var laneId = context.LaneByElementId.TryGetValue(element.ElementId, out var lane) ? lane : null;
+                var retained = retainedByElementId.TryGetValue(element.ElementId, out var extensions) ? extensions : null;
+                return laneId is null && retained is null ? element : CopyElement(element, laneId, extensions: retained);
+            })
             .ToArray();
 
-        var elementIds = elementsWithLanes.Select(element => element.ElementId).ToHashSet(StringComparer.Ordinal);
+        var elementIds = finishedElements.Select(element => element.ElementId).ToHashSet(StringComparer.Ordinal);
         var connectedFlows = flows.Where(flow =>
         {
             var connected = elementIds.Contains(flow.SourceRef) && elementIds.Contains(flow.TargetRef);
@@ -669,7 +673,7 @@ public sealed class BpmnXmlReader
             NameOf(container),
             isExecutable,
             isTransaction,
-            elementsWithLanes,
+            finishedElements,
             connectedFlows,
             lanes,
             declaredVariables,
@@ -1195,10 +1199,9 @@ public sealed class BpmnXmlReader
             return null;
         }
 
-        var hostIsTaskFamily = BpmnXmlNames.TaskLocalNamesToElementTypes.Values.Contains(host.ElementType, StringComparer.Ordinal);
-        if (!hostIsTaskFamily && !StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess))
+        if (!IsBoundaryHost(host.ElementType))
         {
-            context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' is attached to '{attachedToRef}' ({host.ElementType}), which is not a task-family or subprocess host, and was dropped.", id);
+            context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' is attached to '{attachedToRef}' ({host.ElementType}), which is not an activity a boundary event can attach to, and was dropped.", id);
             return null;
         }
 
@@ -1258,12 +1261,13 @@ public sealed class BpmnXmlReader
             }
             case "escalationEventDefinition":
             {
-                // Only a subprocess can escalate outward, so an escalation boundary on a task host could never
-                // fire. A ref-less boundary is the code-less catch-all; a code collision or a second catch-all
-                // on one host drops.
-                if (!StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess))
+                // Only something that contains a process - a subprocess or a call activity - can escalate
+                // outward, so an escalation boundary on a plain task could never fire. A ref-less boundary is
+                // the code-less catch-all; a code collision or a second catch-all on one host drops.
+                if (!StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess)
+                    && !StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.CallActivity))
                 {
-                    context.Report(BpmnImportIssueSeverity.Dropped, $"Escalation boundary event '{id}' is attached to '{attachedToRef}' ({host.ElementType}), which is not a subprocess host; it was dropped.", id);
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Escalation boundary event '{id}' is attached to '{attachedToRef}' ({host.ElementType}), which contains no process that could escalate outward; it was dropped.", id);
                     return null;
                 }
 
@@ -1364,9 +1368,7 @@ public sealed class BpmnXmlReader
                 : null;
             if (other is null || !elementsById.TryGetValue(other, out var candidate) || flowParticipantIds.Contains(other))
                 continue;
-            var isTaskFamily = BpmnXmlNames.TaskLocalNamesToElementTypes.Values.Contains(candidate.ElementType, StringComparer.Ordinal);
-            var isSubProcess = StringComparer.Ordinal.Equals(candidate.ElementType, BpmnElementTypes.SubProcess);
-            if ((isTaskFamily || isSubProcess) && candidate.BindingRef is not null)
+            if (IsBoundaryHost(candidate.ElementType) && candidate.BindingRef is not null)
                 return other;
         }
 
@@ -1604,14 +1606,18 @@ public sealed class BpmnXmlReader
         return null;
     }
 
-    private static BpmnElement WithLane(BpmnElement element, string laneId) => CopyElement(element, laneId: laneId);
-
-    /// <summary>Copies an element, overriding only what is named. The model's element type is immutable, so a late-resolved fact means a new instance.</summary>
-    private static BpmnElement CopyElement(BpmnElement element, string? laneId = null, bool? isForCompensation = null) =>
+    /// <summary>Copies an element, overriding only what is named. The model's element is immutable, so a late-resolved fact means a new instance.</summary>
+    private static BpmnElement CopyElement(BpmnElement element, string? laneId = null, bool? isForCompensation = null, BpmnExtensions? extensions = null) =>
         new(element.ElementId, element.ElementType, element.Name, element.BindingRef, laneId ?? element.LaneId,
             element.DefaultFlowId, element.EventDefinitions, element.Properties, element.AttachedToRef, element.CancelActivity,
             element.LoopCharacteristics, isForCompensation ?? element.IsForCompensation, element.CompensationHandlerElementId,
-            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef);
+            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef, extensions ?? element.Extensions);
+
+    /// <summary>The activities BPMN lets a boundary event attach to, and therefore also the activities that can act as a compensation handler.</summary>
+    private static bool IsBoundaryHost(string elementType) =>
+        BpmnXmlNames.TaskLocalNamesToElementTypes.Values.Contains(elementType, StringComparer.Ordinal)
+        || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.SubProcess)
+        || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.CallActivity);
 
     private static bool IsEventDefinition(XElement element) =>
         element.Name.Namespace == BpmnXmlNames.Model && element.Name.LocalName.EndsWith("EventDefinition", StringComparison.Ordinal);
@@ -1628,18 +1634,31 @@ public sealed class BpmnXmlReader
     // Retention
     // ---------------------------------------------------------------------------------------------------
 
-    /// <summary>Flow nodes whose own foreign content is retained. Subprocesses are excluded: their content is the nested process, which retains its own.</summary>
+    /// <summary>
+    /// Flow nodes whose own foreign content is retained onto <see cref="BpmnElement.Extensions"/>.
+    /// Subprocesses are excluded: their content is the nested process, which retains its own. Sequence flows
+    /// are excluded because the model has no place to keep it on them; see <see cref="ReportUnretainable"/>.
+    /// </summary>
     private static bool IsRetainableFlowNode(string localName) =>
         localName is "startEvent" or "endEvent" or "intermediateCatchEvent" or "intermediateThrowEvent"
-            or "callActivity" or "boundaryEvent" or "sequenceFlow"
+            or "callActivity" or "boundaryEvent"
         || BpmnXmlNames.TaskLocalNamesToElementTypes.ContainsKey(localName)
         || BpmnXmlNames.GatewayLocalNamesToElementTypes.ContainsKey(localName);
 
-    private static void CaptureFlowNode(XElement child, string processId, string elementId, ReadContext context)
+    /// <summary>
+    /// Reports foreign content the model cannot hold. Definitions, processes, and flow elements all carry
+    /// retained content; sequence flows and the collaboration element do not, so content found on them is
+    /// named in a finding rather than disappearing quietly. It is deliberately not counted in the retention
+    /// tally, which reports only what actually survived.
+    /// </summary>
+    private static void ReportUnretainable(XElement source, string description, string id, Func<XElement, bool> isConsumed, ReadContext context)
     {
-        var retained = BpmnExtensionCapture.Capture(child, context.Fidelity, IsFlowNodeChildConsumed, context.Retention);
-        if (!retained.IsEmpty)
-            context.RetainedElements.Add(new BpmnRetainedElement(processId, elementId, retained));
+        var retained = BpmnExtensionCapture.Capture(source, context.Fidelity, isConsumed, new RetentionLog());
+        if (retained.IsEmpty) return;
+
+        var namespaces = retained.RetainedNamespaces();
+        var origin = namespaces.Count == 0 ? "documentation" : string.Join(", ", namespaces);
+        context.Report(BpmnImportIssueSeverity.Degraded, $"{description} '{id}' carries foreign content ({origin}) that the model has nowhere to keep; it was dropped.", id);
     }
 
     private static bool IsFlowNodeChildConsumed(XElement child) =>
@@ -1704,7 +1723,6 @@ public sealed class BpmnXmlReader
         public List<string> ProcessIds { get; } = [];
         public List<BpmnImportIssue> Issues { get; } = [];
         public List<BpmnWorkBinding> Bindings { get; } = [];
-        public List<BpmnRetainedElement> RetainedElements { get; } = [];
         public Dictionary<string, string> LaneByElementId { get; } = new(StringComparer.Ordinal);
         public RetentionLog Retention { get; } = new();
         public string? CurrentProcessId { get; set; }

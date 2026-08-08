@@ -7,11 +7,11 @@ public sealed record BpmnActiveWork
 {
     [JsonConstructor]
     public BpmnActiveWork(
-        string nodeId,
-        string elementId,
-        string tokenId,
-        string schedulingCause,
-        string? iterationId = null)
+    string nodeId,
+    string elementId,
+    string tokenId,
+    string schedulingCause,
+    string? iterationId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nodeId);
         ArgumentException.ThrowIfNullOrWhiteSpace(elementId);
@@ -33,7 +33,7 @@ public sealed record BpmnActiveWork
     public string SchedulingCause { get; init; }
 
     /// <summary>
-    /// The iteration id the child was scheduled with (spec 121 multi-instance instance children); <c>null</c>
+    /// The iteration id the child was scheduled with; <c>null</c>
     /// for ordinary single-run children. A teardown resolves this child's live activity-execution id from the
     /// <c>(NodeId, IterationId)</c> live-child map so N concurrent same-node instances resolve distinctly.
     /// </summary>

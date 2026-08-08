@@ -120,12 +120,19 @@ internal static class BpmnExtensionCapture
         return new BpmnExtensionElement(ToQName(element.Name), attributes, children, value);
     }
 
+    /// <summary>
+    /// Counts retained content per namespace, for the one-finding-per-namespace report. BPMN's own namespaces
+    /// are skipped: an unrecognized BPMN element is still retained, but it is not somebody else's extension
+    /// and it already has its own finding.
+    /// </summary>
     private static void Tally(XElement element, HashSet<string> namespaces, Dictionary<string, int> retainedNodes)
     {
-        var ns = element.Name.Namespace.NamespaceName;
-        if (string.IsNullOrEmpty(ns)) ns = "(no namespace)";
-        namespaces.Add(ns);
-        retainedNodes[ns] = retainedNodes.TryGetValue(ns, out var count) ? count + 1 : 1;
+        var ns = element.Name.Namespace;
+        if (!BpmnXmlNames.IsOwnedNamespace(ns) && ns != XNamespace.None)
+        {
+            namespaces.Add(ns.NamespaceName);
+            retainedNodes[ns.NamespaceName] = retainedNodes.TryGetValue(ns.NamespaceName, out var count) ? count + 1 : 1;
+        }
 
         foreach (var child in element.Elements())
             Tally(child, namespaces, retainedNodes);

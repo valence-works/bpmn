@@ -167,9 +167,28 @@ Each instance gets a per-iteration frame seeding a zero-based `loopIndex`
 (`BpmnLoopCharacteristics.LoopIndexVariable`). `isSequential: false` schedules all instances up front;
 `true` runs one at a time.
 
-Collection mode — `collectionVariable` instead of `cardinality` — is modeled for authoring but is not
-executable: the graph builder rejects it and the importer degrades it. Exactly one of `cardinality`
-and `collectionVariable` may be set.
+Collection mode uses `collectionVariable` instead of `cardinality`, and seeds each instance's item
+under `itemVariable` (default `item`). The named collection must be a **declared container-scoped
+variable** of the process, or the graph build throws; the collection is read once at loop start and
+snapshotted, so a later change to the variable does not resize a running loop.
+
+```csharp
+var process = new BpmnProcessDefinition(
+    ProcessId: "review-all",
+    Variables: [new BpmnVariableDeclaration("documents", TypeHint: "any")],
+    Elements:
+    [
+        new BpmnElement("review", BpmnElementTypes.UserTask,
+            bindingRef: "task:review",
+            loopCharacteristics: new BpmnLoopCharacteristics(
+                isSequential: true,
+                collectionVariable: "documents",
+                itemVariable: "document"))
+    ]);
+```
+
+Exactly one of `cardinality` and `collectionVariable` may be set. `loopIndex` is reserved and cannot
+be used as an item variable name. Collection mode needs the `ScopeVariables` host capability.
 
 ## Compensation, transactions and event subprocesses
 
@@ -282,8 +301,11 @@ var updated = definitions with
 ```csharp
 using Bpmn.Interchange;
 
-File.WriteAllText("generated.bpmn", BpmnXmlWriter.Write(definitions));
+File.WriteAllText("generated.bpmn", new BpmnXmlWriter().Write(definitions));
 ```
+
+The writer synthesizes complete BPMN DI layout for a definition that carries none, so a
+code-generated process still opens in a modeling tool as something a human can read.
 
 A definition built in code and a definition read from XML are the same type, so everything on
 [Reading and writing BPMN XML](reading-and-writing-bpmn.md) applies to both.

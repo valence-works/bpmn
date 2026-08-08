@@ -114,7 +114,7 @@ public sealed class BpmnTokenCoordinator
             flowId: null,
             parentTokenId: consumed[0].TokenId,
             status: BpmnTokenStatus.Active,
-            producingActivityExecutionId: consumed[0].ProducingActivityExecutionId,
+            producingWorkHandle: consumed[0].ProducingWorkHandle,
             iterationKey: iterationKey);
         state = AddToken(state, mergedToken);
 

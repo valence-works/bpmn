@@ -12,9 +12,9 @@ namespace Bpmn.Model;
 /// <param name="TypeHint">A type name from <see cref="BpmnValueTypes"/>, or a host-specific one.</param>
 /// <param name="Json">The value itself, when <see cref="Presence"/> is <see cref="BpmnValuePresence.Present"/>.</param>
 public sealed record BpmnValue(
-    [property: JsonPropertyName("presence")] BpmnValuePresence Presence,
-    [property: JsonPropertyName("typeHint")] string? TypeHint = null,
-    [property: JsonPropertyName("json")] JsonElement? Json = null)
+ [property: JsonPropertyName("presence")] BpmnValuePresence Presence,
+ [property: JsonPropertyName("typeHint")] string? TypeHint = null,
+ [property: JsonPropertyName("json")] JsonElement? Json = null)
 {
     /// <summary>A value the host does not have.</summary>
     public static BpmnValue Absent { get; } = new(BpmnValuePresence.Absent);
@@ -24,11 +24,11 @@ public sealed record BpmnValue(
 
     /// <summary>Wraps an available value.</summary>
     public static BpmnValue From(JsonElement json, string? typeHint = null) =>
-        new(BpmnValuePresence.Present, typeHint, json);
+    new(BpmnValuePresence.Present, typeHint, json);
 
     /// <summary>Wraps an integer, the shape multi-instance cardinality and loop indices use.</summary>
     public static BpmnValue FromInteger(int value) =>
-        new(BpmnValuePresence.Present, BpmnValueTypes.Integer, JsonSerializer.SerializeToElement(value));
+    new(BpmnValuePresence.Present, BpmnValueTypes.Integer, JsonSerializer.SerializeToElement(value));
 
     /// <summary>Whether the value is readable inline.</summary>
     public bool HasValue => Presence == BpmnValuePresence.Present && Json.HasValue;

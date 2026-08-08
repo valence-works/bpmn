@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Bpmn.Model;
 
 /// <summary>
-/// A BPMN pool: a collaboration <c>&lt;participant&gt;</c> (spec 136). A white-box pool references an imported
+/// A BPMN pool: a collaboration <c>&lt;participant&gt;</c>. A white-box pool references an imported
 /// process through <see cref="ProcessRef"/>; a black-box pool (no <c>processRef</c>) is recorded as a finding
 /// only. Visual/organizational: each pool runs as a separately published definition on the name-keyed stimulus
 /// fabric, so this record carries no executable semantics the engine reads.
@@ -27,7 +27,7 @@ public sealed class BpmnPool
     [JsonPropertyName("name")]
     public string? Name { get; }
 
-    /// <summary>The id of the BPMN process this participant references (spec 136); <c>null</c> for a black-box pool.</summary>
+    /// <summary>The id of the BPMN process this participant references; <c>null</c> for a black-box pool.</summary>
     [JsonPropertyName("processRef")]
     public string? ProcessRef { get; }
 

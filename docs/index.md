@@ -60,7 +60,7 @@ See [Packages](reference/packages.md).
 using Bpmn.Interchange;
 
 // Read a .bpmn file. Vendor extensions and DI layout survive the trip.
-var result = BpmnXmlReader.Read(File.ReadAllText("order.bpmn"));
+var result = new BpmnXmlReader().Read(File.ReadAllText("order.bpmn"));
 
 // Every element the reader could not fully use says so, and says where.
 foreach (var issue in result.Analysis.Issues)
@@ -74,7 +74,7 @@ foreach (var binding in result.Bindings)
     Console.WriteLine($"{binding.ElementId} -> {binding.GetType().Name}");
 
 // Nothing ran, nothing was scheduled, nothing was persisted. Write it back out.
-File.WriteAllText("order.out.bpmn", BpmnXmlWriter.Write(result.Definitions));
+File.WriteAllText("order.out.bpmn", new BpmnXmlWriter().Write(result));
 ```
 
 ## Where to go next
@@ -115,8 +115,8 @@ then [Hosting the interpreter](guides/hosting-the-interpreter.md) for how to imp
 
 ### Decisions
 
-- [ADR 0001: BPMN semantics ship as a host-agnostic library](adr/0001-bpmn-semantics-ship-as-a-host-agnostic-library.md)
-- [ADR 0002: The host port is synchronous and command-returning](adr/0002-the-host-port-is-synchronous-and-command-returning.md)
+Why the library is shaped the way it is, argued rather than asserted:
+[Decision records](adr/index.md).
 
 ## License
 

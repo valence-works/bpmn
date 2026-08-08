@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Bpmn.Model.State;
 
 /// <summary>
-/// One first-catch-wins race opened by an <c>eventBasedGateway</c> (spec 119): the gateway minted one
+/// One first-catch-wins race opened by an <c>eventBasedGateway</c>: the gateway minted one
 /// member token per outbound flow (each arriving at an intermediate catch event that arms). The first
 /// member whose child completes wins and routes; every other member token is cancelled and its armed child
 /// subtree torn down. <see cref="RaceId"/> derives from <c>BpmnExecutionState.Sequence</c> (the only id
@@ -13,10 +13,10 @@ public sealed record BpmnEventRace
 {
     [JsonConstructor]
     public BpmnEventRace(
-        string raceId,
-        string gatewayElementId,
-        IReadOnlyCollection<string> memberTokenIds,
-        bool resolved = false)
+    string raceId,
+    string gatewayElementId,
+    IReadOnlyCollection<string> memberTokenIds,
+    bool resolved = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(raceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(gatewayElementId);

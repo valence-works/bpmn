@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # The shipped packages carry no runtime dependencies, so this only ever touches build-time and test
+  # packages. Grouped, because a scattering of single-package PRs on a small repo is noise.
+  - package-ecosystem: nuget
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      test-dependencies:
+        patterns: ["xunit*", "Microsoft.NET.Test.Sdk", "Shouldly"]
+      build-dependencies:
+        patterns: ["Microsoft.SourceLink.*"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

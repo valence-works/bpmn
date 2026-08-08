@@ -3,18 +3,21 @@ using System.Text.Json.Serialization;
 namespace Bpmn.Model;
 
 /// <summary>
-/// Multi-instance loop characteristics (spec 121) authored on a task-family or <c>subProcess</c> host
-/// element that binds a child: the bound child runs <see cref="Cardinality"/> times (cardinality mode) or
-/// once per item of <see cref="CollectionVariable"/> (collection mode), either <see cref="IsSequential"/>
-/// (one instance at a time) or in parallel (all instances up front). Exactly one of
-/// <see cref="Cardinality"/> XOR <see cref="CollectionVariable"/> is set — <see cref="BpmnGraph"/> rejects
-/// any other shape. Each instance receives a per-iteration frame seeding a zero-based <c>loopIndex</c> (and,
-/// in collection mode, the item under <see cref="ItemVariable"/>).
+/// Multi-instance loop characteristics on a task-family or <c>subProcess</c> element that binds work: the
+/// bound work runs <see cref="Cardinality"/> times (cardinality mode) or once per item of
+/// <see cref="CollectionVariable"/> (collection mode), either <see cref="IsSequential"/> (one instance at a
+/// time) or in parallel (all instances up front).
+/// <para>
+/// Exactly one of <see cref="Cardinality"/> or <see cref="CollectionVariable"/> is set; any other shape is
+/// rejected during graph construction. Each instance receives a per-iteration scope seeding a zero-based
+/// <c>loopIndex</c> and, in collection mode, the current item under <see cref="ItemVariable"/>.
+/// </para>
 /// </summary>
 /// <remarks>
-/// Collection mode is authoring-modeled but <b>not executable in this slice</b> (its per-instance item read
-/// needs a container-variable read seam that structural evaluations do not yet expose); the graph validator
-/// rejects it and the importer degrades it. Cardinality mode is fully executable.
+/// Both modes are executable. Collection mode additionally requires the host to declare
+/// <c>BpmnHostCapabilities.ScopeVariables</c>, since the interpreter has to read the collection to know how
+/// many instances to start; graph construction refuses the definition when that capability is absent. The
+/// collection variable itself must be declared on the process.
 /// </remarks>
 public sealed record BpmnLoopCharacteristics
 {
@@ -26,10 +29,10 @@ public sealed record BpmnLoopCharacteristics
 
     [JsonConstructor]
     public BpmnLoopCharacteristics(
-        bool isSequential = false,
-        int? cardinality = null,
-        string? collectionVariable = null,
-        string? itemVariable = null)
+    bool isSequential = false,
+    int? cardinality = null,
+    string? collectionVariable = null,
+    string? itemVariable = null)
     {
         IsSequential = isSequential;
         Cardinality = cardinality;

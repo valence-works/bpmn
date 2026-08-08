@@ -21,10 +21,10 @@ namespace Bpmn.Model;
 /// <param name="ForeignAttributes">Attributes from a namespace the reader does not own.</param>
 /// <param name="ForeignChildren">Unrecognized child elements, with the index needed to restore their position.</param>
 public sealed record BpmnExtensions(
-    IReadOnlyList<BpmnDocumentation>? Documentation = null,
-    IReadOnlyList<BpmnExtensionElement>? ExtensionElements = null,
-    IReadOnlyList<BpmnForeignAttribute>? ForeignAttributes = null,
-    IReadOnlyList<BpmnForeignChild>? ForeignChildren = null)
+ IReadOnlyList<BpmnDocumentation>? Documentation = null,
+ IReadOnlyList<BpmnExtensionElement>? ExtensionElements = null,
+ IReadOnlyList<BpmnForeignAttribute>? ForeignAttributes = null,
+ IReadOnlyList<BpmnForeignChild>? ForeignChildren = null)
 {
     /// <summary>An empty, shared instance.</summary>
     public static BpmnExtensions Empty { get; } = new();
@@ -54,30 +54,34 @@ public sealed record BpmnExtensions(
     /// </para>
     /// </summary>
     public bool Equals(BpmnExtensions? other) =>
-        other is not null
-        && Documentation.SequenceEqual(other.Documentation)
-        && ExtensionElements.SequenceEqual(other.ExtensionElements)
-        && ForeignAttributes.SequenceEqual(other.ForeignAttributes)
-        && ForeignChildren.SequenceEqual(other.ForeignChildren);
+    other is not null
+    && Documentation.SequenceEqual(other.Documentation)
+    && ExtensionElements.SequenceEqual(other.ExtensionElements)
+    && ForeignAttributes.SequenceEqual(other.ForeignAttributes)
+    && ForeignChildren.SequenceEqual(other.ForeignChildren);
 
     /// <inheritdoc />
     public override int GetHashCode()
     {
         var hash = new HashCode();
-        foreach (var item in Documentation) hash.Add(item);
-        foreach (var item in ExtensionElements) hash.Add(item);
-        foreach (var item in ForeignAttributes) hash.Add(item);
-        foreach (var item in ForeignChildren) hash.Add(item);
+        foreach (var item in Documentation)
+            hash.Add(item);
+        foreach (var item in ExtensionElements)
+            hash.Add(item);
+        foreach (var item in ForeignAttributes)
+            hash.Add(item);
+        foreach (var item in ForeignChildren)
+            hash.Add(item);
         return hash.ToHashCode();
     }
 
     /// <summary>Whether nothing at all was retained.</summary>
     [JsonIgnore]
     public bool IsEmpty =>
-        Documentation.Count == 0
-        && ExtensionElements.Count == 0
-        && ForeignAttributes.Count == 0
-        && ForeignChildren.Count == 0;
+    Documentation.Count == 0
+    && ExtensionElements.Count == 0
+    && ForeignAttributes.Count == 0
+    && ForeignChildren.Count == 0;
 
     /// <summary>Every distinct namespace appearing in the retained content, for reporting.</summary>
     public IReadOnlyCollection<string> RetainedNamespaces()
@@ -85,20 +89,26 @@ public sealed record BpmnExtensions(
         var namespaces = new SortedSet<string>(StringComparer.Ordinal);
 
         foreach (var attribute in ForeignAttributes)
-            if (!string.IsNullOrEmpty(attribute.Name.Namespace)) namespaces.Add(attribute.Name.Namespace!);
+            if (!string.IsNullOrEmpty(attribute.Name.Namespace))
+                namespaces.Add(attribute.Name.Namespace!);
 
-        foreach (var element in ExtensionElements) Collect(element, namespaces);
-        foreach (var child in ForeignChildren) Collect(child.Element, namespaces);
+        foreach (var element in ExtensionElements)
+            Collect(element, namespaces);
+        foreach (var child in ForeignChildren)
+            Collect(child.Element, namespaces);
 
         return namespaces;
     }
 
     private static void Collect(BpmnExtensionElement element, SortedSet<string> namespaces)
     {
-        if (!string.IsNullOrEmpty(element.Name.Namespace)) namespaces.Add(element.Name.Namespace!);
+        if (!string.IsNullOrEmpty(element.Name.Namespace))
+            namespaces.Add(element.Name.Namespace!);
         foreach (var attribute in element.Attributes)
-            if (!string.IsNullOrEmpty(attribute.Name.Namespace)) namespaces.Add(attribute.Name.Namespace!);
-        foreach (var child in element.Children) Collect(child, namespaces);
+            if (!string.IsNullOrEmpty(attribute.Name.Namespace))
+                namespaces.Add(attribute.Name.Namespace!);
+        foreach (var child in element.Children)
+            Collect(child, namespaces);
     }
 }
 
@@ -106,8 +116,8 @@ public sealed record BpmnExtensions(
 /// <param name="Namespace">The namespace URI, or <c>null</c> for an unqualified name.</param>
 /// <param name="LocalName">The local name.</param>
 public readonly record struct BpmnQName(
-    [property: JsonPropertyName("ns")] string? Namespace,
-    [property: JsonPropertyName("localName")] string LocalName)
+ [property: JsonPropertyName("ns")] string? Namespace,
+ [property: JsonPropertyName("localName")] string LocalName)
 {
     /// <summary>Renders as <c>{namespace}localName</c>, matching the XName convention.</summary>
     public override string ToString() => string.IsNullOrEmpty(Namespace) ? LocalName : $"{{{Namespace}}}{LocalName}";
@@ -117,15 +127,15 @@ public readonly record struct BpmnQName(
 /// <param name="Name">The qualified attribute name.</param>
 /// <param name="Value">The attribute value.</param>
 public sealed record BpmnForeignAttribute(
-    [property: JsonPropertyName("name")] BpmnQName Name,
-    [property: JsonPropertyName("value")] string Value);
+ [property: JsonPropertyName("name")] BpmnQName Name,
+ [property: JsonPropertyName("value")] string Value);
 
 /// <summary>A <c>&lt;documentation&gt;</c> entry.</summary>
 /// <param name="Text">The documentation text.</param>
 /// <param name="TextFormat">The declared <c>textFormat</c>, when present.</param>
 public sealed record BpmnDocumentation(
-    [property: JsonPropertyName("text")] string Text,
-    [property: JsonPropertyName("textFormat")] string? TextFormat = null);
+ [property: JsonPropertyName("text")] string Text,
+ [property: JsonPropertyName("textFormat")] string? TextFormat = null);
 
 /// <summary>
 /// One retained XML subtree, held as data rather than as a live XML node so it survives JSON
@@ -136,10 +146,10 @@ public sealed record BpmnDocumentation(
 /// <param name="Children">Child elements, in document order.</param>
 /// <param name="Value">Text content, when the element has no element children.</param>
 public sealed record BpmnExtensionElement(
-    [property: JsonPropertyName("name")] BpmnQName Name,
-    IReadOnlyList<BpmnForeignAttribute>? Attributes = null,
-    IReadOnlyList<BpmnExtensionElement>? Children = null,
-    [property: JsonPropertyName("value")] string? Value = null)
+ [property: JsonPropertyName("name")] BpmnQName Name,
+ IReadOnlyList<BpmnForeignAttribute>? Attributes = null,
+ IReadOnlyList<BpmnExtensionElement>? Children = null,
+ [property: JsonPropertyName("value")] string? Value = null)
 {
     /// <summary>Attributes. Never null.</summary>
     [JsonPropertyName("attributes")]
@@ -151,11 +161,11 @@ public sealed record BpmnExtensionElement(
 
     /// <summary>Compares the whole subtree by value, recursing through <see cref="Children"/>.</summary>
     public bool Equals(BpmnExtensionElement? other) =>
-        other is not null
-        && Name.Equals(other.Name)
-        && string.Equals(Value, other.Value, StringComparison.Ordinal)
-        && Attributes.SequenceEqual(other.Attributes)
-        && Children.SequenceEqual(other.Children);
+    other is not null
+    && Name.Equals(other.Name)
+    && string.Equals(Value, other.Value, StringComparison.Ordinal)
+    && Attributes.SequenceEqual(other.Attributes)
+    && Children.SequenceEqual(other.Children);
 
     /// <inheritdoc />
     public override int GetHashCode()
@@ -163,8 +173,10 @@ public sealed record BpmnExtensionElement(
         var hash = new HashCode();
         hash.Add(Name);
         hash.Add(Value);
-        foreach (var attribute in Attributes) hash.Add(attribute);
-        foreach (var child in Children) hash.Add(child);
+        foreach (var attribute in Attributes)
+            hash.Add(attribute);
+        foreach (var child in Children)
+            hash.Add(child);
         return hash.ToHashCode();
     }
 }
@@ -180,8 +192,8 @@ public sealed record BpmnExtensionElement(
 /// <param name="Element">The retained subtree.</param>
 /// <param name="Index">The zero-based position this child occupied among its siblings.</param>
 public sealed record BpmnForeignChild(
-    [property: JsonPropertyName("element")] BpmnExtensionElement Element,
-    [property: JsonPropertyName("index")] int Index);
+ [property: JsonPropertyName("element")] BpmnExtensionElement Element,
+ [property: JsonPropertyName("index")] int Index);
 
 /// <summary>How much of a source document the reader retains.</summary>
 public enum BpmnFidelity

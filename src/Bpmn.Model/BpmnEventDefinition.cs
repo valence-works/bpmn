@@ -6,7 +6,7 @@ namespace Bpmn.Model;
 /// An event definition attached to a BPMN event element. The engine interprets
 /// <see cref="BpmnEventDefinitionTypes.Terminate"/> on end events and
 /// <see cref="BpmnEventDefinitionTypes.Timer"/>/<see cref="BpmnEventDefinitionTypes.Message"/>/
-/// <see cref="BpmnEventDefinitionTypes.Signal"/> on intermediate catch events (spec 116); other
+/// <see cref="BpmnEventDefinitionTypes.Signal"/> on intermediate catch events; other
 /// types are carried for later phases.
 /// </summary>
 public sealed class BpmnEventDefinition
@@ -28,9 +28,9 @@ public sealed class BpmnEventDefinition
 }
 
 /// <summary>
-/// The <see cref="BpmnEventDefinition.Properties"/> keys this engine slice reads (spec 117). These establish the
+/// The <see cref="BpmnEventDefinition.Properties"/> keys this engine slice reads. These establish the
 /// property-key convention an event-defined start element carries; a later interchange unit populates them from
-/// <c>messageRef</c>/<c>signalRef</c>/<c>timerEventDefinition</c>. No key existed before this slice.
+/// <c>messageRef</c>/<c>signalRef</c>/<c>timerEventDefinition</c>. No key existed before this release.
 /// </summary>
 public static class BpmnEventDefinitionProperties
 {
@@ -44,14 +44,14 @@ public static class BpmnEventDefinitionProperties
     public const string Cron = "cron";
 
     /// <summary>
-    /// The element id a compensate throw/end event targets (spec 124): compensate only that element's
+    /// The element id a compensate throw/end event targets: compensate only that element's
     /// registrations. Absent → compensate everything registered in this process. Set on a
     /// <see cref="BpmnEventDefinitionTypes.Compensation"/> definition of a throw/end event.
     /// </summary>
     public const string ActivityRef = "activityRef";
 
     /// <summary>
-    /// The escalation code an <see cref="BpmnEventDefinitionTypes.Escalation"/> definition carries (spec 127):
+    /// The escalation code an <see cref="BpmnEventDefinitionTypes.Escalation"/> definition carries:
     /// the matching key. <b>Required</b> and non-empty on an escalation throw/end event (a throw must say what
     /// it escalates); <b>optional</b> on an escalation boundary event — a code-less boundary is the code-less
     /// catch-all that matches any escalation whose specific code no other boundary on the host claims.
@@ -70,7 +70,7 @@ public static class BpmnEventDefinitionTypes
     public const string Compensation = "compensation";
 
     /// <summary>
-    /// A cancel event definition (spec 125): on an end event inside a transaction it triggers the transaction
+    /// A cancel event definition: on an end event inside a transaction it triggers the transaction
     /// cancellation (compensate the scope's registered work, then complete with the <c>Cancelled</c> outcome);
     /// on a boundary event attached to a transaction host it routes the cancellation path in the parent scope.
     /// </summary>

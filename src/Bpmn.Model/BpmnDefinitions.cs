@@ -19,18 +19,18 @@ namespace Bpmn.Model;
 /// <param name="Escalations">Root-level <c>&lt;escalation&gt;</c> declarations.</param>
 /// <param name="Extensions">Foreign XML retained from the <c>&lt;definitions&gt;</c> element itself.</param>
 public sealed record BpmnDefinitions(
-    [property: JsonPropertyName("id")] string? Id = null,
-    [property: JsonPropertyName("targetNamespace")] string? TargetNamespace = null,
-    [property: JsonPropertyName("exporter")] string? Exporter = null,
-    [property: JsonPropertyName("exporterVersion")] string? ExporterVersion = null,
-    IReadOnlyList<BpmnProcessDefinition>? Processes = null,
-    [property: JsonPropertyName("collaboration")] BpmnCollaboration? Collaboration = null,
-    IReadOnlyList<BpmnDiagram>? Diagrams = null,
-    IReadOnlyList<BpmnMessageDeclaration>? Messages = null,
-    IReadOnlyList<BpmnSignalDeclaration>? Signals = null,
-    IReadOnlyList<BpmnErrorDeclaration>? Errors = null,
-    IReadOnlyList<BpmnEscalationDeclaration>? Escalations = null,
-    BpmnExtensions? Extensions = null)
+ [property: JsonPropertyName("id")] string? Id = null,
+ [property: JsonPropertyName("targetNamespace")] string? TargetNamespace = null,
+ [property: JsonPropertyName("exporter")] string? Exporter = null,
+ [property: JsonPropertyName("exporterVersion")] string? ExporterVersion = null,
+ IReadOnlyList<BpmnProcessDefinition>? Processes = null,
+ [property: JsonPropertyName("collaboration")] BpmnCollaboration? Collaboration = null,
+ IReadOnlyList<BpmnDiagram>? Diagrams = null,
+ IReadOnlyList<BpmnMessageDeclaration>? Messages = null,
+ IReadOnlyList<BpmnSignalDeclaration>? Signals = null,
+ IReadOnlyList<BpmnErrorDeclaration>? Errors = null,
+ IReadOnlyList<BpmnEscalationDeclaration>? Escalations = null,
+ BpmnExtensions? Extensions = null)
 {
     /// <summary>Every process in the document. Never null.</summary>
     [JsonPropertyName("processes")]
@@ -62,7 +62,7 @@ public sealed record BpmnDefinitions(
 
     /// <summary>Finds a process by its BPMN id, or returns <c>null</c>.</summary>
     public BpmnProcessDefinition? FindProcess(string processId) =>
-        Processes.FirstOrDefault(p => string.Equals(p.ProcessId, processId, StringComparison.Ordinal));
+    Processes.FirstOrDefault(p => string.Equals(p.ProcessId, processId, StringComparison.Ordinal));
 }
 
 /// <summary>
@@ -78,15 +78,15 @@ public sealed record BpmnDefinitions(
 /// <param name="Variables">Container-scoped variable declarations visible to this process.</param>
 /// <param name="Extensions">Foreign XML retained from the process element.</param>
 public sealed record BpmnProcessDefinition(
-    [property: JsonPropertyName("processId")] string ProcessId,
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("isExecutable")] bool IsExecutable = true,
-    [property: JsonPropertyName("isTransaction")] bool IsTransaction = false,
-    IReadOnlyList<BpmnElement>? Elements = null,
-    IReadOnlyList<BpmnSequenceFlow>? SequenceFlows = null,
-    IReadOnlyList<BpmnLane>? Lanes = null,
-    IReadOnlyList<BpmnVariableDeclaration>? Variables = null,
-    BpmnExtensions? Extensions = null)
+ [property: JsonPropertyName("processId")] string ProcessId,
+ [property: JsonPropertyName("name")] string? Name = null,
+ [property: JsonPropertyName("isExecutable")] bool IsExecutable = true,
+ [property: JsonPropertyName("isTransaction")] bool IsTransaction = false,
+ IReadOnlyList<BpmnElement>? Elements = null,
+ IReadOnlyList<BpmnSequenceFlow>? SequenceFlows = null,
+ IReadOnlyList<BpmnLane>? Lanes = null,
+ IReadOnlyList<BpmnVariableDeclaration>? Variables = null,
+ BpmnExtensions? Extensions = null)
 {
     /// <summary>Flow elements. Never null.</summary>
     [JsonPropertyName("elements")]
@@ -115,9 +115,9 @@ public sealed record BpmnProcessDefinition(
 /// <param name="Pools">Participants, one per pool.</param>
 /// <param name="MessageFlows">Message flows crossing pool boundaries.</param>
 public sealed record BpmnCollaboration(
-    [property: JsonPropertyName("id")] string? Id = null,
-    IReadOnlyList<BpmnPool>? Pools = null,
-    IReadOnlyList<BpmnMessageFlow>? MessageFlows = null)
+ [property: JsonPropertyName("id")] string? Id = null,
+ IReadOnlyList<BpmnPool>? Pools = null,
+ IReadOnlyList<BpmnMessageFlow>? MessageFlows = null)
 {
     /// <summary>Participants. Never null.</summary>
     [JsonPropertyName("pools")]
@@ -136,23 +136,23 @@ public sealed record BpmnCollaboration(
 /// <param name="TypeHint">An optional, host-interpreted type name.</param>
 /// <param name="DefaultValue">An optional default, serialized as JSON.</param>
 public sealed record BpmnVariableDeclaration(
-    [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("typeHint")] string? TypeHint = null,
-    [property: JsonPropertyName("defaultValue")] System.Text.Json.JsonElement? DefaultValue = null);
+ [property: JsonPropertyName("name")] string Name,
+ [property: JsonPropertyName("typeHint")] string? TypeHint = null,
+ [property: JsonPropertyName("defaultValue")] System.Text.Json.JsonElement? DefaultValue = null);
 
 /// <summary>A root-level <c>&lt;message&gt;</c> declaration.</summary>
 /// <param name="Id">The BPMN id, referenced by <c>messageRef</c>.</param>
 /// <param name="Name">The message name, which is what the interpreter matches on.</param>
 public sealed record BpmnMessageDeclaration(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("name")] string? Name = null);
+ [property: JsonPropertyName("id")] string Id,
+ [property: JsonPropertyName("name")] string? Name = null);
 
 /// <summary>A root-level <c>&lt;signal&gt;</c> declaration.</summary>
 /// <param name="Id">The BPMN id, referenced by <c>signalRef</c>.</param>
 /// <param name="Name">The signal name, which is what the interpreter matches on.</param>
 public sealed record BpmnSignalDeclaration(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("name")] string? Name = null);
+ [property: JsonPropertyName("id")] string Id,
+ [property: JsonPropertyName("name")] string? Name = null);
 
 /// <summary>
 /// A root-level <c>&lt;error&gt;</c> declaration. BPMN matches a thrown error against catching events by
@@ -162,9 +162,9 @@ public sealed record BpmnSignalDeclaration(
 /// <param name="Name">A human-readable name.</param>
 /// <param name="ErrorCode">The code BPMN matches on.</param>
 public sealed record BpmnErrorDeclaration(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("errorCode")] string? ErrorCode = null);
+ [property: JsonPropertyName("id")] string Id,
+ [property: JsonPropertyName("name")] string? Name = null,
+ [property: JsonPropertyName("errorCode")] string? ErrorCode = null);
 
 /// <summary>
 /// A root-level <c>&lt;escalation&gt;</c> declaration. Unlike an error, an escalation does not imply the
@@ -174,6 +174,6 @@ public sealed record BpmnErrorDeclaration(
 /// <param name="Name">A human-readable name.</param>
 /// <param name="EscalationCode">The code escalation catchers match on.</param>
 public sealed record BpmnEscalationDeclaration(
-    [property: JsonPropertyName("id")] string Id,
-    [property: JsonPropertyName("name")] string? Name = null,
-    [property: JsonPropertyName("escalationCode")] string? EscalationCode = null);
+ [property: JsonPropertyName("id")] string Id,
+ [property: JsonPropertyName("name")] string? Name = null,
+ [property: JsonPropertyName("escalationCode")] string? EscalationCode = null);

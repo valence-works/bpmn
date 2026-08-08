@@ -34,6 +34,48 @@ matching "bpmn" and 50 NuGet packages found:
 So a .NET team that needs to read a `.bpmn` file, understand it, and reason about what it means has,
 until now, had to write that themselves or take a license they cannot ship.
 
+## How this compares
+
+The projects below are the ones you are most likely to find when searching. Several are good at what
+they do. None of them is this. Figures were checked on 2026-08-09.
+
+| Project | License | Activity | What it actually does |
+| --- | --- | --- | --- |
+| [BPMNEngine](https://github.com/roger-castaldo/BPMNEngine) | **GPL-3.0** | 134★, last push 2024-11 | The only full BPMN engine in .NET. Parses and executes, with an embedded JS engine and runtime compilation. The license rules it out of most commercial products, and it has been quiet for over a year. |
+| [BPMN.Sharp](https://github.com/bzinchenko/bpmnview) | MIT | 101★, last push 2026-05 | XML to object model plus diagram rendering, and the closest thing to a peer. But the repository holds only a WinForms viewer — **the library itself has no public source** — and it depends on `System.Drawing.Common`, which throws on non-Windows. |
+| [Slickflow](https://github.com/besley/Slickflow) | MIT (repo) | 912★, last push 2026-06 | A complete workflow product with its own designer. Uses a *BPMN2-style* format of its own rather than importing BPMN 2.0 XML. Licensing is stated inconsistently between the repo and the project site. |
+| [zeebe-client-csharp](https://github.com/camunda-community-hub/zeebe-client-csharp) | Apache-2.0 | 114★, last push 2026-08 | A well-maintained gRPC client for Zeebe. It ships `.bpmn` files to the broker as opaque bytes and never parses them. |
+| [WorkflowCore](https://github.com/danielgerlag/workflow-core) | MIT | 5.9k★, active | An excellent and widely used .NET workflow engine. It has **no BPMN import** — workflows are defined in fluent C#, JSON, or YAML. |
+| [Juice.Workflow](https://github.com/creatorflow-io/Juice.Workflow) | **none** | 1★ | Includes a BPMN builder, but ships with no license file at all, so it cannot legally be used. |
+| Micro-projects | mixed | 1–3★ each | Several hobby-scale BPMN interpreters exist. They typically cover under a dozen element types and are not maintained. |
+
+Two things are worth drawing out.
+
+**Nobody publishes a BPMN object model on its own.** Every project above either bundles a full engine
+or parses nothing. If all you want is to read a `.bpmn` file, inspect it, and write it back, your only
+options today are to take an engine you do not need or to write a parser yourself. That is the gap
+`Bpmn.Model` and `Bpmn.Interchange` exist to close, which is why they are separate packages with no
+interpreter in their dependency closure.
+
+**"Has an engine" and "understands BPMN" are different claims.** Executing a subset of BPMN is
+straightforward; getting inclusive-gateway joins, non-interrupting boundary events, compensation
+ordering, and event-based gateway races right is not. This library takes no position on how work runs
+— that is the host's job — and spends its complexity entirely on the semantics.
+
+### When you should use something else
+
+Being honest about this is more useful than pretending otherwise.
+
+- **You want a workflow engine that just works in .NET.** Use one of the established engines. They
+  handle persistence, scheduling, and retries. This library deliberately does none of that.
+- **You are running Camunda 8 or Zeebe.** Use the official clients. Your process definitions are
+  deployed to a broker that already interprets them. This library is still useful alongside them if
+  you want to analyze or generate `.bpmn` files before deployment.
+- **You need DMN or CMMN.** Not covered, and not planned.
+- **You need to evaluate FEEL expressions.** Not covered. Sequence-flow conditions are resolved by the
+  host.
+- **GPL is fine for you and you want an engine off the shelf.** BPMNEngine is a real, working engine.
+
 ## What it is
 
 - A BPMN 2.0 XML reader and writer over a typed, immutable object model.
@@ -41,7 +83,7 @@ until now, had to write that themselves or take a license they cannot ship.
   anything else) and BPMN DI layout survive a read-modify-write cycle.
 - An **import analyzer** producing element-scoped `Info` / `Degraded` / `Dropped` diagnostics, where
   analyzing and committing share one code path — so the preview cannot disagree with the import.
-- A **model builder**: processes can be constructed in code, without XML.
+- **Constructible in code**: a process can be built directly from the immutable model types, with no XML anywhere.
 - A **token-semantics interpreter** covering exclusive, parallel, inclusive and event-based gateways;
   start, intermediate and end events; interrupting and non-interrupting boundary events; embedded and
   event subprocesses; multi-instance; compensation; transactions; escalation; cyclic flows.
@@ -76,7 +118,7 @@ dotnet add package Bpmn.Semantics     # interpret a process
 using Bpmn.Interchange;
 
 // Read a .bpmn file. Vendor extensions and DI layout survive the trip.
-var result = BpmnXmlReader.Read(File.ReadAllText("order.bpmn"));
+var result = new BpmnXmlReader().Read(File.ReadAllText("order.bpmn"));
 
 // Every element the reader could not fully use says so, and says where.
 foreach (var issue in result.Analysis.Issues)
@@ -90,7 +132,7 @@ foreach (var binding in result.Bindings)
     Console.WriteLine($"{binding.ElementId} -> {binding.GetType().Name}");
 
 // Nothing ran, nothing was scheduled, nothing was persisted. Write it back out.
-File.WriteAllText("order.out.bpmn", BpmnXmlWriter.Write(result.Definitions));
+File.WriteAllText("order.out.bpmn", new BpmnXmlWriter().Write(result));
 ```
 
 ## Packages
