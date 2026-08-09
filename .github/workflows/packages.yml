@@ -159,10 +159,18 @@ jobs:
 
           for nupkg in "${nupkgs[@]}"; do
             echo "Pushing $nupkg to Feedz..."
-            dotnet nuget push "$nupkg" \
-              --source Feedz \
-              --api-key "$FEEDZ_API_KEY" \
-              --skip-duplicate
+
+            # A 404 here means the key authenticated but the feed does not exist, which is a different
+            # problem from a rejected package and has a different fix. Say which one it is.
+            if ! output=$(dotnet nuget push "$nupkg" --source Feedz --api-key "$FEEDZ_API_KEY" --skip-duplicate 2>&1); then
+              echo "$output"
+              if echo "$output" | grep -q "404"; then
+                echo "::error::The feed at $FEEDZ_SOURCE does not exist. Create it in feedz.io, or point FEEDZ_SOURCE at an existing one."
+              fi
+              exit 1
+            fi
+
+            echo "$output"
           done
 
   deploy-nuget:
