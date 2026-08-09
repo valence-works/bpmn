@@ -51,7 +51,7 @@ The host has no relationship with wall-clock time. Timers are entries in a sched
 and the schedule is advanced by asking, not by waiting.
 
 ```csharp
-host.Clock.Advance(TimeSpan.FromDays(7));
+instance.Clock.Advance(TimeSpan.FromDays(7));
 ```
 
 A seven-day escalation timer fires immediately, in the same call, deterministically. So does a
@@ -82,7 +82,7 @@ instance.CompleteWork(handle, "Approved");
 instance.FaultWork(handle, "Credit limit exceeded");
 
 // Move time.
-host.Clock.Advance(TimeSpan.FromHours(2));
+instance.Clock.Advance(TimeSpan.FromHours(2));
 ```
 
 `handle` is the opaque identifier the host assigned when it started the work, exactly as in a host
@@ -105,7 +105,7 @@ using Bpmn.Model.State;
 foreach (var token in instance.State.Tokens.Where(t => t.Status != BpmnTokenStatus.Consumed))
     Console.WriteLine($"{token.TokenId} at {token.AtElementId} ({token.Status})");
 
-foreach (var work in instance.State.ActiveChildren)
+foreach (var work in instance.State.ActiveWork)
     Console.WriteLine($"waiting on {work.ElementId} (token {work.TokenId})");
 ```
 
