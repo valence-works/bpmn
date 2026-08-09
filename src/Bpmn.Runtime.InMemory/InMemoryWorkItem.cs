@@ -8,7 +8,11 @@ public enum InMemoryWorkKind
     /// <summary>Ordinary work the outside world finishes: a task, a message wait, a decision.</summary>
     Activity,
 
-    /// <summary>A timer the virtual clock will finish when it comes due.</summary>
+    /// <summary>
+    /// A timer the virtual clock will finish when it comes due. A timer element whose duration neither the
+    /// model nor the host options state is an <see cref="Activity"/> instead: there is nothing to schedule, so
+    /// it is something the caller finishes rather than something time finishes.
+    /// </summary>
     Timer,
 
     /// <summary>A nested BPMN process this host runs as a child scope.</summary>

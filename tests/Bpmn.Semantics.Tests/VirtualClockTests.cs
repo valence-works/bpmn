@@ -33,7 +33,7 @@ public sealed class VirtualClockTests
         _host.Clock.Advance(TimeSpan.FromDays(7));
 
         _host.Clock.Now.ShouldBe(TimeSpan.FromDays(7));
-        instance.Transcript.ShouldContain(entry => entry.Trigger is BpmnTranscriptTrigger.TimerFired);
+        instance.Transcript.Any(entry => entry.Trigger is BpmnTranscriptTrigger.TimerFired).ShouldBeTrue();
     }
 
     [Fact]

@@ -326,11 +326,14 @@ public sealed class InMemoryProcessInstance
     {
         var handle = _host.NextHandle();
         var nested = Graph.GetRequiredBoundWork(start.BindingRef).NestedProcess;
-        var hasDuration = _host.TryResolveTimer(Graph, start.BindingRef, out var duration, out var isTimer);
+
+        TimeSpan? dueAt = nested is null && _host.TryResolveTimer(Graph, start.BindingRef, out var duration)
+            ? Clock.Now + duration
+            : null;
 
         var kind = nested is not null
             ? InMemoryWorkKind.NestedProcess
-            : isTimer
+            : dueAt is not null
                 ? InMemoryWorkKind.Timer
                 : InMemoryWorkKind.Activity;
 
@@ -344,7 +347,7 @@ public sealed class InMemoryProcessInstance
             start.IterationScope?.Values ?? new Dictionary<string, BpmnValue>(StringComparer.Ordinal),
             kind,
             IsCatchListener(start),
-            hasDuration && nested is null ? Clock.Now + duration : null,
+            dueAt,
             ScopeInstanceId,
             Clock.Now);
 
@@ -353,8 +356,8 @@ public sealed class InMemoryProcessInstance
 
         if (nested is not null)
             StartNestedScope(work, nested, start);
-        else if (work.DueAt is { } dueAt)
-            Clock.Schedule(handle, work.BindingRef, work.ElementId, dueAt);
+        else if (dueAt is { } scheduledAt)
+            Clock.Schedule(handle, work.BindingRef, work.ElementId, scheduledAt);
     }
 
     /// <summary>

@@ -232,50 +232,42 @@ public sealed class InMemoryBpmnHost
     }
 
     /// <summary>
-    /// Resolves the timer behind a binding. A duration supplied through the options wins; otherwise the
-    /// model's own ISO-8601 duration is used. A timer element with no resolvable duration is still reported as
-    /// a timer, so a caller can see it and complete it by hand rather than wondering why the clock ignores it.
+    /// Resolves the duration behind a binding, if it has one. A duration supplied through the options wins;
+    /// otherwise the model's own ISO-8601 duration is used.
+    /// <para>
+    /// A duration the model states but states wrongly throws, naming the text. A duration the model does not
+    /// state at all is not an error: the work simply becomes something the caller finishes by hand, which is
+    /// the honest reading of "the definition never said how long".
+    /// </para>
     /// </summary>
-    internal bool TryResolveTimer(BpmnGraph graph, string bindingRef, out TimeSpan duration, out bool isTimer)
+    internal bool TryResolveTimer(BpmnGraph graph, string bindingRef, out TimeSpan duration)
     {
         duration = default;
-        isTimer = false;
 
         if (Options.TimerDurations is { } durations && durations.TryGetValue(bindingRef, out var configured))
         {
             duration = configured;
-            isTimer = true;
             return true;
         }
 
         if (Options.TimerDuration?.Invoke(bindingRef) is { } resolved)
         {
             duration = resolved;
-            isTimer = true;
             return true;
         }
 
-        var iso = ResolveModelDuration(graph, bindingRef, out isTimer);
-        if (iso is null)
+        if (ResolveModelDuration(graph, bindingRef) is not { } iso)
             return false;
 
         duration = IsoDuration.Parse(iso);
         return true;
     }
 
-    private static string? ResolveModelDuration(BpmnGraph graph, string bindingRef, out bool isTimer)
+    private static string? ResolveModelDuration(BpmnGraph graph, string bindingRef)
     {
-        isTimer = false;
-
         // The binding is an element's own work: a timer catch event, or a timer boundary event's listener.
         if (graph.FindElementByBindingRef(bindingRef) is { } element)
-        {
-            if (TimerDefinition(element) is not { } definition)
-                return null;
-
-            isTimer = true;
-            return ReadInterval(definition);
-        }
+            return TimerDefinition(element) is { } definition ? ReadInterval(definition) : null;
 
         // The binding is an event subprocess's scope listener. The trigger lives on the body's start event,
         // which travels with the body's own bound work.
@@ -284,8 +276,6 @@ public sealed class InMemoryBpmnHost
 
         if (catcher is null || catcher.TriggerKind != BpmnEventSubprocessTriggerKind.Timer)
             return null;
-
-        isTimer = true;
 
         var body = graph.GetRequiredBoundWork(catcher.BindingRef).NestedProcess;
         var bodyStart = body?.Elements.FirstOrDefault(candidate =>

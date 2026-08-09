@@ -102,53 +102,63 @@ them "Read a .bpmn file", "Build a process in code", "Simulate with a virtual cl
 ```csharp
 using Bpmn.Interchange;
 
-// Analyze and commit share one code path, so a dry run cannot drift from the real one.
-var result = BpmnXml.Read(File.OpenRead("order-intake.bpmn"));
+// Analyze and Read share one code path, so a dry run cannot drift from the real one.
+var result = new BpmnXmlReader().Read(File.ReadAllText("order-intake.bpmn"));
 
-foreach (var diagnostic in result.Diagnostics)
-{
-    Console.WriteLine($"{diagnostic.Severity,-8} {diagnostic.ElementId ?? "-",-24} {diagnostic.Message}");
-}
+foreach (var issue in result.Analysis.Issues)
+    Console.WriteLine($"{issue.Severity,-8} {issue.ElementId ?? "-",-24} {issue.Message}");
 
-BpmnDefinitions definitions = result.Definitions;
-Console.WriteLine($"{definitions.Processes.Count} process(es), {result.Diagnostics.Count} diagnostic(s)");
+var definitions = result.Definitions;
+Console.WriteLine($"{definitions.Processes.Count} process(es), {result.Analysis.Issues.Count} finding(s)");
+
+// Vendor annotations other readers discard are still here.
+foreach (var element in definitions.Processes.SelectMany(p => p.Elements))
+    if (!element.Extensions.IsEmpty)
+        Console.WriteLine($"{element.ElementId}: retained {string.Join(", ", element.Extensions.RetainedNamespaces())}");
 ```
 
 ```csharp
 using Bpmn.Interchange;
 using Bpmn.Model;
 
-var definitions = BpmnBuilder.Definitions("http://valence.works/orders")
+var definitions = new BpmnDefinitionsBuilder()
+    .TargetNamespace("http://valence.works/orders")
     .Process("order-intake", process => process
         .StartEvent("start")
         .ExclusiveGateway("large-order")
-        .UserTask("manual-review", name: "Manual review")
+        .UserTask("manual-review", "Manual review")
         .EndEvent("accepted")
-        .Flow("start", "large-order")
-        .Flow("large-order", "manual-review", condition: "amount > 1000")
-        .Flow("large-order", "accepted", isDefault: true)
-        .Flow("manual-review", "accepted"))
+        .Connect("start", "large-order")
+        .Connect("large-order", "manual-review", condition: "large")
+        .Connect("large-order", "accepted", isDefault: true)
+        .Connect("manual-review", "accepted"))
     .Build();
 
-using var output = File.Create("order-intake.bpmn");
-BpmnXml.Write(definitions, output);
+// Layout is synthesized where the model carries none, and every edge gets at least
+// two waypoints, so the output opens in a BPMN modeler without complaint.
+File.WriteAllText("order-intake.bpmn", new BpmnXmlWriter().Write(definitions));
 ```
 
 ```csharp
+using Bpmn.Interchange;
 using Bpmn.Runtime.InMemory;
 
 // A reference host: virtual clock, single process, nothing durable.
-var host = InMemoryBpmnHost.Start(definitions, processId: "order-intake");
+var definitions = new BpmnXmlReader().Read(File.ReadAllText("order-intake.bpmn")).Definitions;
 
-host.CompleteWork("manual-review");
-host.AdvanceClock(TimeSpan.FromDays(7)); // a seven-day timer resolves in microseconds
+var host = new InMemoryBpmnHost();
+var instance = host.Start(definitions.Processes[0]);
 
-foreach (var token in host.State.Tokens)
-{
-    Console.WriteLine($"{token.TokenId} @ {token.AtElementId} ({token.Status})");
-}
+instance.CompleteWork("node-manual-review");
+instance.Clock.Advance(TimeSpan.FromDays(7)); // a seven-day timer resolves in microseconds
 
-Console.WriteLine(host.State.Terminated ? "completed" : "waiting");
+foreach (var work in instance.PendingWork)
+    Console.WriteLine($"waiting on {work.ElementId}");
+
+Console.WriteLine(instance.IsCompleted ? $"completed: {instance.Outcome}" : "still running");
+
+// Every evaluation is recorded, so you can see exactly what the interpreter decided.
+Console.WriteLine(instance.Transcript);
 ```
 
 ### 6. Who this is for

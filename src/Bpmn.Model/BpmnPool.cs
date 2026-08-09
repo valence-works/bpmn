@@ -11,7 +11,8 @@ namespace Bpmn.Model;
 public sealed class BpmnPool
 {
     [JsonConstructor]
-    public BpmnPool(string poolId, string? name = null, string? processRef = null, bool isExecutable = true)
+    public BpmnPool(string poolId, string? name = null, string? processRef = null, bool isExecutable = true,
+        BpmnExtensions? extensions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(poolId);
 
@@ -19,6 +20,7 @@ public sealed class BpmnPool
         Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
         ProcessRef = string.IsNullOrWhiteSpace(processRef) ? null : processRef.Trim();
         IsExecutable = isExecutable;
+        Extensions = extensions ?? BpmnExtensions.Empty;
     }
 
     [JsonPropertyName("poolId")]
@@ -33,4 +35,8 @@ public sealed class BpmnPool
 
     [JsonPropertyName("isExecutable")]
     public bool IsExecutable { get; }
+
+    /// <summary>Foreign XML retained from this participant. Never null.</summary>
+    [JsonPropertyName("extensions")]
+    public BpmnExtensions Extensions { get; }
 }

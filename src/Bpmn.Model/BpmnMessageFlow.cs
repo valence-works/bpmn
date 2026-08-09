@@ -21,7 +21,8 @@ public sealed class BpmnMessageFlow
     string? sourcePoolId = null,
     string? targetElementId = null,
     string? targetPoolId = null,
-    string? messageName = null)
+    string? messageName = null,
+        BpmnExtensions? extensions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
 
@@ -32,6 +33,7 @@ public sealed class BpmnMessageFlow
         TargetElementId = string.IsNullOrWhiteSpace(targetElementId) ? null : targetElementId.Trim();
         TargetPoolId = string.IsNullOrWhiteSpace(targetPoolId) ? null : targetPoolId.Trim();
         MessageName = string.IsNullOrWhiteSpace(messageName) ? null : messageName.Trim();
+        Extensions = extensions ?? BpmnExtensions.Empty;
     }
 
     [JsonPropertyName("flowId")]
@@ -59,4 +61,8 @@ public sealed class BpmnMessageFlow
     /// <summary>The message name carried on the flow (its <c>messageRef</c>, else the matched endpoints' shared name); <c>null</c> when none is resolvable.</summary>
     [JsonPropertyName("messageName")]
     public string? MessageName { get; }
+
+    /// <summary>Foreign XML retained from this message flow. Never null.</summary>
+    [JsonPropertyName("extensions")]
+    public BpmnExtensions Extensions { get; }
 }

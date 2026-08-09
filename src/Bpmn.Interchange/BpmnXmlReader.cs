@@ -101,8 +101,8 @@ public sealed class BpmnXmlReader
             .Select(entry => new BpmnEscalationDeclaration(entry.Key, entry.Value.Name, entry.Value.Code))
             .ToArray();
         var messageSignalNames = ReadMessageSignalNames(root);
-        var participants = ReadParticipants(root);
-        var messageFlowDeclarations = ReadMessageFlows(root);
+        var participants = ReadParticipants(root, context);
+        var messageFlowDeclarations = ReadMessageFlows(root, context);
         var diagrams = ReadDiagrams(root);
 
         var built = new List<BuiltProcess>(processElements.Length);
@@ -170,7 +170,7 @@ public sealed class BpmnXmlReader
             if (participant.ProcessRef is null)
             {
                 context.Report(BpmnImportIssueSeverity.Info, $"Participant '{participant.Id}'{Named(participant.Name)} declares no processRef; it read as a black-box pool with no process.", participant.Id);
-                pools.Add(new BpmnPool(participant.Id, participant.Name, processRef: null, isExecutable: false));
+                pools.Add(new BpmnPool(participant.Id, participant.Name, processRef: null, isExecutable: false, extensions: participant.Extensions));
                 continue;
             }
 
@@ -180,7 +180,7 @@ public sealed class BpmnXmlReader
                 continue;
             }
 
-            pools.Add(new BpmnPool(participant.Id, participant.Name, participant.ProcessRef, target.IsExecutable));
+            pools.Add(new BpmnPool(participant.Id, participant.Name, participant.ProcessRef, target.IsExecutable, participant.Extensions));
             target.ReferencingParticipants.Add(participant);
         }
 
@@ -196,7 +196,7 @@ public sealed class BpmnXmlReader
             if (entry.LanePoolId is { } poolId && entry.Definition.Lanes.Count > 0)
                 entry.Definition = entry.Definition with
                 {
-                    Lanes = entry.Definition.Lanes.Select(lane => new BpmnLane(lane.LaneId, poolId, lane.Name)).ToArray()
+                    Lanes = entry.Definition.Lanes.Select(lane => new BpmnLane(lane.LaneId, poolId, lane.Name, lane.Extensions)).ToArray()
                 };
         }
 
@@ -233,7 +233,7 @@ public sealed class BpmnXmlReader
                 ? declared.Trim()
                 : null;
             var messageName = declaredName ?? source.MessageName ?? target.MessageName;
-            resolvedFlows.Add(new BpmnMessageFlow(flow.FlowId, flow.Name, source.ElementId, source.PoolId, target.ElementId, target.PoolId, messageName));
+            resolvedFlows.Add(new BpmnMessageFlow(flow.FlowId, flow.Name, source.ElementId, source.PoolId, target.ElementId, target.PoolId, messageName, flow.Extensions));
 
             if (source.Kind == MessageFlowEndpointKind.BlackBox || target.Kind == MessageFlowEndpointKind.BlackBox)
             {
@@ -542,7 +542,8 @@ public sealed class BpmnXmlReader
                     {
                         var laneId = IdOf(lane);
                         if (laneId is null) continue;
-                        lanes.Add(new BpmnLane(laneId, name: NameOf(lane)));
+                        lanes.Add(new BpmnLane(laneId, name: NameOf(lane),
+                            extensions: BpmnExtensionCapture.Capture(lane, context.Fidelity, IsLaneChildConsumed, context.Retention)));
                         foreach (var flowNodeRef in lane.Elements(BpmnXmlNames.Model + "flowNodeRef"))
                             context.LaneByElementId[flowNodeRef.Value.Trim()] = laneId;
                     }
@@ -747,7 +748,7 @@ public sealed class BpmnXmlReader
         return result;
     }
 
-    private static IReadOnlyList<ParticipantDeclaration> ReadParticipants(XElement root)
+    private static IReadOnlyList<ParticipantDeclaration> ReadParticipants(XElement root, ReadContext context)
     {
         var result = new List<ParticipantDeclaration>();
         foreach (var collaboration in root.Elements(BpmnXmlNames.Model + "collaboration"))
@@ -756,13 +757,18 @@ public sealed class BpmnXmlReader
                 if (IdOf(participant) is not { } id)
                     continue;
                 var processRef = ((string?)participant.Attribute("processRef"))?.Trim();
-                result.Add(new ParticipantDeclaration(id, NameOf(participant), string.IsNullOrWhiteSpace(processRef) ? null : processRef));
+                result.Add(new ParticipantDeclaration(
+                    id,
+                    NameOf(participant),
+                    string.IsNullOrWhiteSpace(processRef) ? null : processRef,
+                    // A participant's own children are all unread, so everything on it is retained.
+                    BpmnExtensionCapture.Capture(participant, context.Fidelity, NothingConsumed, context.Retention)));
             }
 
         return result;
     }
 
-    private static IReadOnlyList<MessageFlowDeclaration> ReadMessageFlows(XElement root)
+    private static IReadOnlyList<MessageFlowDeclaration> ReadMessageFlows(XElement root, ReadContext context)
     {
         var result = new List<MessageFlowDeclaration>();
         foreach (var collaboration in root.Elements(BpmnXmlNames.Model + "collaboration"))
@@ -776,7 +782,8 @@ public sealed class BpmnXmlReader
                     NameOf(flow),
                     ((string?)flow.Attribute("sourceRef"))?.Trim() ?? "",
                     ((string?)flow.Attribute("targetRef"))?.Trim() ?? "",
-                    string.IsNullOrWhiteSpace(messageRef) ? null : messageRef));
+                    string.IsNullOrWhiteSpace(messageRef) ? null : messageRef,
+                    BpmnExtensionCapture.Capture(flow, context.Fidelity, NothingConsumed, context.Retention)));
             }
 
         return result;
@@ -1665,6 +1672,13 @@ public sealed class BpmnXmlReader
          && child.Name.LocalName is "process" or "collaboration" or "message" or "signal" or "error" or "escalation")
         || child.Name == BpmnXmlNames.Di + "BPMNDiagram";
 
+    /// <summary>A lane's <c>flowNodeRef</c> children are read into the lane membership; anything else on it is retained.</summary>
+    private static bool IsLaneChildConsumed(XElement child) =>
+        child.Name == BpmnXmlNames.Model + "flowNodeRef";
+
+    /// <summary>For elements whose children this reader does not interpret at all, so everything is retained.</summary>
+    private static bool NothingConsumed(XElement child) => false;
+
     private static bool IsCollaborationChildConsumed(XElement child) =>
         child.Name.Namespace == BpmnXmlNames.Model
         && child.Name.LocalName is "participant" or "messageFlow";
@@ -1674,10 +1688,10 @@ public sealed class BpmnXmlReader
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>A collaboration participant: its id, optional name, and referenced process id (null for a black-box pool).</summary>
-    private readonly record struct ParticipantDeclaration(string Id, string? Name, string? ProcessRef);
+    private readonly record struct ParticipantDeclaration(string Id, string? Name, string? ProcessRef, BpmnExtensions Extensions);
 
     /// <summary>A collaboration message flow as authored: its id, optional name, endpoint refs, and optional messageRef.</summary>
-    private readonly record struct MessageFlowDeclaration(string FlowId, string? Name, string SourceRef, string TargetRef, string? MessageRef);
+    private readonly record struct MessageFlowDeclaration(string FlowId, string? Name, string SourceRef, string TargetRef, string? MessageRef, BpmnExtensions Extensions);
 
     private enum MessageFlowEndpointKind { Unresolvable, Element, BlackBox }
 

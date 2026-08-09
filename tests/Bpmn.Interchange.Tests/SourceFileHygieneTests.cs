@@ -24,7 +24,7 @@ public sealed class SourceFileHygieneTests
     private static readonly HashSet<string> TextExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".cs", ".csproj", ".props", ".targets", ".md", ".json", ".bpmn", ".xml", ".slnx" };
 
-    private readonly string _repositoryRoot = FindRepositoryRoot();
+    private readonly string _repositoryRoot = TestPaths.RepositoryRoot;
 
     [Fact]
     public void No_source_file_contains_a_nul_byte()
@@ -86,15 +86,4 @@ public sealed class SourceFileHygieneTests
     private static bool IsBuildOutput(string file) =>
         file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
         || file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
-
-    private static string FindRepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Bpmn.slnx")))
-            directory = directory.Parent;
-
-        directory.ShouldNotBeNull("Could not locate the repository root (no Bpmn.slnx found above the test output directory).");
-        return directory!.FullName;
-    }
 }

@@ -278,6 +278,54 @@ public sealed class InMemoryHostTests
         child.IsCancelled.ShouldBeTrue("an interrupting escalation boundary tears its host down");
     }
 
+    [Fact]
+    public void The_host_can_raise_an_escalation_from_a_running_unit_of_work()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary("overdue");
+        var host = HostWithNested(("sub", body));
+
+        var instance = host.Start(parent);
+        instance.EscalateWork("sub", "overdue");
+
+        instance.IsCompleted.ShouldBeTrue(instance.Transcript.ToString());
+        VisitedElements(instance).ShouldContain("EndEscalated");
+        instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void An_escalation_no_catcher_wants_is_a_no_op_rather_than_a_failure()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary("overdue");
+        var host = HostWithNested(("sub", body));
+
+        var instance = host.Start(parent);
+        instance.EscalateWork("sub", "something-else");
+
+        instance.IsFaulted.ShouldBeFalse();
+        instance.IsCompleted.ShouldBeFalse();
+        instance.State.Diagnostics.ShouldContain(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.EscalationUnhandled);
+        instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeFalse("nothing matched, so nothing was torn down");
+    }
+
+    // --- Building the graph once -------------------------------------------------------------------------
+
+    [Fact]
+    public void A_prebuilt_graph_can_be_reused_across_instances()
+    {
+        var definition = ProcessFixtures.Linear();
+        var graph = BpmnGraph.Build(definition, _host.DeriveBoundWork(definition), _host.Capabilities);
+
+        var first = _host.Start(graph);
+        var second = _host.Start(graph);
+
+        first.ScopeInstanceId.ShouldNotBe(second.ScopeInstanceId);
+
+        first.CompleteWork("work");
+
+        first.IsCompleted.ShouldBeTrue();
+        second.IsCompleted.ShouldBeFalse("two instances of one graph are independent");
+    }
+
     // --- Capabilities ----------------------------------------------------------------------------------
 
     [Fact]
@@ -347,7 +395,7 @@ public sealed class InMemoryHostTests
         var instance = Start(ProcessFixtures.Linear());
 
         Should.Throw<InvalidOperationException>(() => instance.CompleteWork("nope"))
-            .Message.ShouldContain("work (work)");
+            .Message.ShouldContain("no live work for handle or binding ref 'nope'");
     }
 
     // --- Helpers ---------------------------------------------------------------------------------------

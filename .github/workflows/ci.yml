@@ -54,6 +54,12 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # `dotnet run --project` does NOT rebuild a changed transitive dependency, so running a sample
+      # directly can silently execute against a stale library and report a pass that means nothing.
+      # Build the whole solution first, then run with --no-build so the binaries are known-current.
+      - name: Build solution
+        run: dotnet build Bpmn.slnx --configuration Release
+
       # The samples are documentation that has to keep working. Running them in CI is what stops them
       # rotting into snippets that no longer compile against the current API.
       - name: Run samples in non-interactive mode
@@ -62,7 +68,7 @@ jobs:
           for sample in samples/*/; do
             name=$(basename "$sample")
             echo "::group::$name"
-            dotnet run --project "$sample" --configuration Release -- --non-interactive
+            dotnet run --project "$sample" --configuration Release --no-build -- --non-interactive
             echo "::endgroup::"
           done
 

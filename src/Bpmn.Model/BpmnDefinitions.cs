@@ -114,6 +114,7 @@ public sealed record BpmnProcessDefinition(
 /// <param name="Id">The collaboration's BPMN id.</param>
 /// <param name="Pools">Participants, one per pool.</param>
 /// <param name="MessageFlows">Message flows crossing pool boundaries.</param>
+/// <param name="Extensions">Foreign XML retained from the collaboration element.</param>
 public sealed record BpmnCollaboration(
     [property: JsonPropertyName("id")] string? Id = null,
     IReadOnlyList<BpmnPool>? Pools = null,

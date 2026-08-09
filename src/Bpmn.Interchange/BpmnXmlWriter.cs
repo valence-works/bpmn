@@ -130,6 +130,7 @@ public sealed class BpmnXmlWriter
             var participant = new XElement(BpmnXmlNames.Model + "participant", new XAttribute("id", pool.PoolId));
             if (pool.Name is not null) participant.SetAttributeValue("name", pool.Name);
             if (pool.ProcessRef is not null) participant.SetAttributeValue("processRef", pool.ProcessRef);
+            ApplyExtensions(participant, pool.Extensions);
             element.Add(participant);
         }
 
@@ -147,6 +148,7 @@ public sealed class BpmnXmlWriter
                 new XAttribute("targetRef", targetRef));
             if (flow.Name is not null) messageFlow.SetAttributeValue("name", flow.Name);
             if (flow.MessageName is { } messageName) messageFlow.SetAttributeValue("messageRef", context.MessageDeclarationId(messageName));
+            ApplyExtensions(messageFlow, flow.Extensions);
             element.Add(messageFlow);
         }
 
@@ -178,6 +180,7 @@ public sealed class BpmnXmlWriter
                 if (lane.Name is not null) laneElement.SetAttributeValue("name", lane.Name);
                 foreach (var member in process.Elements.Where(element => StringComparer.Ordinal.Equals(element.LaneId, lane.LaneId)))
                     laneElement.Add(new XElement(BpmnXmlNames.Model + "flowNodeRef", member.ElementId));
+                ApplyExtensions(laneElement, lane.Extensions);
                 laneSet.Add(laneElement);
             }
 
@@ -559,6 +562,18 @@ public sealed class BpmnXmlWriter
     // Diagram interchange
     // ---------------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Writes the diagram interchange.
+    /// <para>
+    /// Shapes and edges are emitted in one canonical order derived from the model - pools, then lanes, then
+    /// flow elements, then the flows between them - rather than in whatever order the source document
+    /// happened to use. Preserving the source order sounds more faithful but is not stable: a synthesized
+    /// shape has to be appended somewhere, reading the result groups it with the other shapes, and the next
+    /// write moves it. Two generations then differ by position alone, which makes the output undiffable and
+    /// hides real edits in reserialization noise. Retained bounds and labels are still used exactly as
+    /// found; only the position in the file is normalized.
+    /// </para>
+    /// </summary>
     private static void AppendDiagrams(XElement root, BpmnDefinitions definitions, WriteContext context)
     {
         var layout = new DiagramLayout(definitions, context);
@@ -569,8 +584,7 @@ public sealed class BpmnXmlWriter
             var plane = new XElement(BpmnXmlNames.Di + "BPMNPlane",
                 new XAttribute("id", $"{SanitizeId(planeRef)}-plane"),
                 new XAttribute("bpmnElement", planeRef));
-            foreach (var shape in layout.AllShapes()) plane.Add(ShapeElement(shape));
-            foreach (var edge in layout.AllEdges()) plane.Add(EdgeElement(edge));
+            AppendPlaneContent(plane, layout.AllShapes(), layout.AllEdges(), layout);
             root.Add(new XElement(BpmnXmlNames.Di + "BPMNDiagram", new XAttribute("id", $"{SanitizeId(planeRef)}-diagram"), plane));
             return;
         }
@@ -588,25 +602,33 @@ public sealed class BpmnXmlWriter
             if (diagram.Plane.BpmnElementRef is { } planeRef)
                 plane.SetAttributeValue("bpmnElement", planeRef);
 
-            foreach (var shape in diagram.Plane.Shapes)
-                plane.Add(ShapeElement(shape));
-            foreach (var edge in diagram.Plane.Edges)
-                plane.Add(EdgeElement(layout.Repair(edge)));
+            var shapes = diagram.Plane.Shapes.ToList();
+            var edges = diagram.Plane.Edges.Select(layout.Repair).ToList();
 
+            // Anything the document never laid out joins the first plane, then sorts into place with the rest.
             if (first)
             {
-                foreach (var shape in layout.AllShapes().Where(shape => !covered.Contains(shape.BpmnElementRef)))
-                    plane.Add(ShapeElement(shape));
-                foreach (var edge in layout.AllEdges().Where(edge => !covered.Contains(edge.BpmnElementRef)))
-                    plane.Add(EdgeElement(edge));
+                shapes.AddRange(layout.AllShapes().Where(shape => !covered.Contains(shape.BpmnElementRef)));
+                edges.AddRange(layout.AllEdges().Where(edge => !covered.Contains(edge.BpmnElementRef)));
                 first = false;
             }
+
+            AppendPlaneContent(plane, shapes, edges, layout);
 
             root.Add(new XElement(BpmnXmlNames.Di + "BPMNDiagram",
                 new XAttribute("id", diagram.Id ?? $"{SanitizeId(definitions.Processes[0].ProcessId)}-diagram"),
                 diagram.Name is null ? null : new XAttribute("name", diagram.Name),
                 plane));
         }
+    }
+
+    /// <summary>Emits every shape, then every edge, each group in canonical order.</summary>
+    private static void AppendPlaneContent(XElement plane, IEnumerable<BpmnShape> shapes, IEnumerable<BpmnEdge> edges, DiagramLayout layout)
+    {
+        foreach (var shape in layout.InCanonicalOrder(shapes, shape => shape.BpmnElementRef))
+            plane.Add(ShapeElement(shape));
+        foreach (var edge in layout.InCanonicalOrder(edges, edge => edge.BpmnElementRef))
+            plane.Add(EdgeElement(edge));
     }
 
     private static XElement ShapeElement(BpmnShape shape)
@@ -875,11 +897,14 @@ public sealed class BpmnXmlWriter
     {
         private readonly Dictionary<string, BpmnBounds> _bounds = new(StringComparer.Ordinal);
         private readonly Dictionary<string, BpmnShape> _retainedShapes = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _canonicalOrder = new(StringComparer.Ordinal);
         private readonly List<BpmnShape> _shapes = [];
         private readonly List<BpmnEdge> _edges = [];
 
         public DiagramLayout(BpmnDefinitions definitions, WriteContext context)
         {
+            BuildCanonicalOrder(definitions, context);
+
             foreach (var shape in definitions.Diagrams.SelectMany(diagram => diagram.Plane.Shapes))
             {
                 _retainedShapes.TryAdd(shape.BpmnElementRef, shape);
@@ -931,6 +956,44 @@ public sealed class BpmnXmlWriter
         public IEnumerable<BpmnShape> AllShapes() => _shapes;
 
         public IEnumerable<BpmnEdge> AllEdges() => _edges;
+
+        /// <summary>
+        /// Orders diagram entries by the position of the thing they draw, so the output does not depend on
+        /// which generation produced the input. Anything the model does not know about sorts last, by id, so
+        /// even unrecognized entries land somewhere stable.
+        /// </summary>
+        public IEnumerable<T> InCanonicalOrder<T>(IEnumerable<T> items, Func<T, string> reference) =>
+            items
+                .OrderBy(item => _canonicalOrder.TryGetValue(reference(item), out var index) ? index : int.MaxValue)
+                .ThenBy(reference, StringComparer.Ordinal);
+
+        /// <summary>
+        /// The order the model itself implies: pools, then the lanes inside them, then flow elements in
+        /// document order with each subprocess body following its parent, then sequence flows, then message
+        /// flows. Containers precede the things they contain, which is also the order a renderer wants.
+        /// </summary>
+        private void BuildCanonicalOrder(BpmnDefinitions definitions, WriteContext context)
+        {
+            var next = 0;
+
+            void Add(string reference)
+            {
+                if (!_canonicalOrder.ContainsKey(reference)) _canonicalOrder[reference] = next++;
+            }
+
+            foreach (var pool in definitions.Collaboration?.Pools ?? [])
+                Add(pool.PoolId);
+            foreach (var lane in definitions.Processes.SelectMany(process => process.Lanes))
+                Add(lane.LaneId);
+
+            var processes = context.AllProcesses(definitions).ToArray();
+            foreach (var element in processes.SelectMany(process => process.Elements))
+                Add(element.ElementId);
+            foreach (var flow in processes.SelectMany(process => process.SequenceFlows))
+                Add(flow.FlowId);
+            foreach (var flow in definitions.Collaboration?.MessageFlows ?? [])
+                Add(flow.FlowId);
+        }
 
         /// <summary>
         /// BPMN DI requires an edge to have at least two waypoints, and modelers reject one that does not, so

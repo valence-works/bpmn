@@ -56,6 +56,17 @@ public sealed class BpmnSimulationTests
     }
 
     [Fact]
+    public void A_strategy_can_name_the_outcome_per_element()
+    {
+        var result = BpmnSimulation.CanComplete(
+            ProcessFixtures.ExclusiveChoice(),
+            strategy: BpmnOutcomeStrategy.ByElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["Decide"] = "Rejected" }));
+
+        result.Completed.ShouldBeTrue(result.ToString());
+        result.Path.ShouldContain("EndRejected");
+    }
+
+    [Fact]
     public void A_strategy_that_declines_stops_the_run_rather_than_guessing()
     {
         var result = BpmnSimulation.CanComplete(
@@ -64,7 +75,7 @@ public sealed class BpmnSimulationTests
 
         result.Completed.ShouldBeFalse();
         result.Stop.ShouldBe(BpmnSimulationStop.Undecided);
-        result.StopDetail.ShouldContain("Decide");
+        result.StopDetail!.ShouldContain("Decide");
     }
 
     [Fact]
@@ -78,7 +89,7 @@ public sealed class BpmnSimulationTests
         var deadlocks = BpmnSimulation.FindDeadlocks(ProcessFixtures.JoinThatCanStarve());
 
         deadlocks.Count.ShouldBe(2, "one for each branch the decision can take");
-        deadlocks.Select(deadlock => deadlock.ChoicePath.Single()).ShouldBe(["Decide=Left", "Decide=Right"], ignoreOrder: true);
+        deadlocks.Select(deadlock => deadlock.ChoicePath[0]).ShouldBe(["Decide=Left", "Decide=Right"], ignoreOrder: true);
         deadlocks.ShouldAllBe(deadlock => deadlock.StuckElementIds.Contains("Join"));
     }
 
@@ -94,7 +105,7 @@ public sealed class BpmnSimulationTests
     public void A_deadlocking_path_can_be_replayed_exactly_from_what_the_search_reported()
     {
         var found = BpmnSimulation.FindDeadlocks(ProcessFixtures.JoinThatCanStarve())
-            .First(deadlock => deadlock.ChoicePath.Single() == "Decide=Right");
+            .First(deadlock => deadlock.ChoicePath[0] == "Decide=Right");
 
         var replay = BpmnSimulation.CanComplete(
             ProcessFixtures.JoinThatCanStarve(),
@@ -134,7 +145,7 @@ public sealed class BpmnSimulationTests
 
         result.Stop.ShouldBe(BpmnSimulationStop.Faulted);
         result.IsDeadlocked.ShouldBeFalse();
-        result.StopDetail.ShouldContain(BpmnInterpreter.CollectionNotInlineFaultCode);
+        result.StopDetail!.ShouldContain(BpmnInterpreter.CollectionNotInlineFaultCode);
     }
 
     /// <summary>A task that loops back to itself forever, so a run can only stop at its own ceiling.</summary>

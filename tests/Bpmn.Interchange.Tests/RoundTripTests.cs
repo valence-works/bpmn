@@ -31,10 +31,23 @@ public sealed class RoundTripTests
             <bpmn:extensionElements>
               <camunda:properties><camunda:property name="team" value="ops" /></camunda:properties>
             </bpmn:extensionElements>
-            <bpmn:participant id="Pool" name="Orders" processRef="P" />
+            <bpmn:participant id="Pool" name="Orders" processRef="P" camunda:owner="fulfilment">
+              <bpmn:extensionElements><camunda:properties><camunda:property name="sla" value="2d" /></camunda:properties></bpmn:extensionElements>
+            </bpmn:participant>
+            <bpmn:participant id="Customer" name="Customer" />
+            <bpmn:messageFlow id="MF" sourceRef="Customer" targetRef="Await" camunda:channel="email">
+              <bpmn:extensionElements><camunda:properties><camunda:property name="retries" value="3" /></camunda:properties></bpmn:extensionElements>
+            </bpmn:messageFlow>
           </bpmn:collaboration>
           <bpmn:process id="P" name="Orders" isExecutable="true">
             <bpmn:documentation>Handles an order.</bpmn:documentation>
+            <bpmn:laneSet id="Lanes">
+              <bpmn:lane id="Lane_Ops" name="Operations" camunda:team="ops">
+                <bpmn:extensionElements><camunda:properties><camunda:property name="shift" value="day" /></camunda:properties></bpmn:extensionElements>
+                <bpmn:flowNodeRef>Start</bpmn:flowNodeRef>
+                <bpmn:flowNodeRef>Review</bpmn:flowNodeRef>
+              </bpmn:lane>
+            </bpmn:laneSet>
             <bpmn:startEvent id="Start" />
             <bpmn:userTask id="Review" name="Review" camunda:assignee="alice">
               <bpmn:extensionElements>
@@ -408,6 +421,53 @@ public sealed class RoundTripTests
         firstXml.ShouldContain("cancelActivity=\"false\"");
         second.Definitions.Processes.Single().Elements
             .Single(element => element.ElementId == "Timeout").CancelActivity.ShouldBeFalse();
+    }
+
+    /// <summary>
+    /// Participants, lanes, and message flows are the last three places vendor content can hang, and a
+    /// <c>camunda:</c> attribute on a participant is a real thing modelers write. "Content-lossless" has to
+    /// mean all of it, so each of the three is checked at both generations.
+    /// </summary>
+    [Fact]
+    public void Vendor_content_on_a_participant_a_lane_and_a_message_flow_survives_a_round_trip()
+    {
+        var (first, firstXml, second, _) = RoundTrip();
+
+        foreach (var generation in new[] { first, second })
+        {
+            var collaboration = generation.Definitions.Collaboration.ShouldNotBeNull();
+
+            var pool = collaboration.Pools.Single(candidate => candidate.PoolId == "Pool");
+            pool.Extensions.ForeignAttributes.ShouldHaveSingleItem().Name.LocalName.ShouldBe("owner");
+            pool.Extensions.ForeignAttributes[0].Value.ShouldBe("fulfilment");
+            pool.Extensions.ExtensionElements.ShouldHaveSingleItem().Name.LocalName.ShouldBe("properties");
+
+            var lane = Process(generation).Lanes.Single(candidate => candidate.LaneId == "Lane_Ops");
+            lane.Extensions.ForeignAttributes.ShouldHaveSingleItem().Value.ShouldBe("ops");
+            lane.Extensions.ExtensionElements.ShouldHaveSingleItem().Name.LocalName.ShouldBe("properties");
+
+            var messageFlow = collaboration.MessageFlows.Single(candidate => candidate.FlowId == "MF");
+            messageFlow.Extensions.ForeignAttributes.ShouldHaveSingleItem().Value.ShouldBe("email");
+            messageFlow.Extensions.ExtensionElements.ShouldHaveSingleItem().Name.LocalName.ShouldBe("properties");
+        }
+
+        // A black-box participant retains nothing here, and must not pick anything up from its neighbour.
+        second.Definitions.Collaboration!.Pools.Single(pool => pool.PoolId == "Customer").Extensions.IsEmpty.ShouldBeTrue();
+        firstXml.ShouldContain("camunda:owner");
+        firstXml.ShouldContain("camunda:team");
+        firstXml.ShouldContain("camunda:channel");
+    }
+
+    [Fact]
+    public void A_lane_keeps_its_members_and_its_pool_after_a_round_trip()
+    {
+        var (_, _, second, _) = RoundTrip();
+        var lane = Process(second).Lanes.Single();
+
+        lane.Name.ShouldBe("Operations");
+        lane.PoolId.ShouldBe("Pool");
+        Process(second).Elements.Where(element => element.LaneId == "Lane_Ops")
+            .Select(element => element.ElementId).ShouldBe(["Start", "Review"]);
     }
 
     [Fact]

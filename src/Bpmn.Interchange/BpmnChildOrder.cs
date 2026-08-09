@@ -48,6 +48,11 @@ internal static class BpmnChildOrder
         ["standardLoopCharacteristics"] = 14,
         ["multiInstanceLoopCharacteristics"] = 14,
 
+        // tParticipant: interfaceRef*, endPointRef*, participantMultiplicity?
+        ["interfaceRef"] = 13,
+        ["endPointRef"] = 14,
+        ["participantMultiplicity"] = 15,
+
         // tSequenceFlow, and root-level declarations under tDefinitions
         ["conditionExpression"] = 16,
         ["itemDefinition"] = 16,
@@ -66,6 +71,11 @@ internal static class BpmnChildOrder
         // Containers
         ["laneSet"] = 17,
         ["collaboration"] = 17,
+
+        // tLane: partitionElement?, flowNodeRef*, childLaneSet?
+        ["partitionElement"] = 16,
+        ["flowNodeRef"] = 18,
+        ["childLaneSet"] = 19,
 
         // Artifacts follow the flow elements they annotate
         ["association"] = 19,

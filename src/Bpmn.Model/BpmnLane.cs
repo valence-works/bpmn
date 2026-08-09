@@ -6,13 +6,15 @@ namespace Bpmn.Model;
 public sealed class BpmnLane
 {
     [JsonConstructor]
-    public BpmnLane(string laneId, string? poolId = null, string? name = null)
+    public BpmnLane(string laneId, string? poolId = null, string? name = null,
+        BpmnExtensions? extensions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(laneId);
 
         LaneId = laneId;
         PoolId = string.IsNullOrWhiteSpace(poolId) ? null : poolId.Trim();
         Name = string.IsNullOrWhiteSpace(name) ? null : name.Trim();
+        Extensions = extensions ?? BpmnExtensions.Empty;
     }
 
     [JsonPropertyName("laneId")]
@@ -23,4 +25,8 @@ public sealed class BpmnLane
 
     [JsonPropertyName("name")]
     public string? Name { get; }
+
+    /// <summary>Foreign XML retained from this lane. Never null.</summary>
+    [JsonPropertyName("extensions")]
+    public BpmnExtensions Extensions { get; }
 }

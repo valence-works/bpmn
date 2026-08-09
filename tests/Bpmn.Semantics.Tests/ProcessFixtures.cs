@@ -162,6 +162,31 @@ public static class ProcessFixtures
         return (parent, body);
     }
 
+    /// <summary>A subprocess with an escalation boundary on the parent, and a body that escalates nothing by itself.</summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) SubProcessWithEscalationBoundary(
+        string code = "overdue",
+        bool interrupting = true)
+    {
+        var body = new BpmnProcessBuilder("body")
+            .StartEvent("BodyStart")
+            .Task("Inner", bindingRef: "inner")
+            .EndEvent("BodyEnd")
+            .ConnectSequence("BodyStart", "Inner", "BodyEnd")
+            .Build();
+
+        var parent = new BpmnProcessBuilder("parent")
+            .StartEvent("Start")
+            .SubProcess("Sub", bindingRef: "sub")
+            .EndEvent("End")
+            .BoundaryEvent("Escalated", "Sub", Escalation(code), interrupting)
+            .EndEvent("EndEscalated")
+            .ConnectSequence("Start", "Sub", "End")
+            .ConnectSequence("Escalated", "EndEscalated")
+            .Build();
+
+        return (parent, body);
+    }
+
     /// <summary>
     /// A subprocess whose body escalates part-way through and then keeps running, with an interrupting
     /// escalation boundary on the parent. Exercises scope signalling and subtree cancellation together.

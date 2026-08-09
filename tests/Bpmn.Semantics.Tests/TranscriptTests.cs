@@ -36,7 +36,7 @@ public sealed class TranscriptTests
         var instance = _host.Start(ProcessFixtures.Linear());
 
         var start = instance.Transcript[0];
-        start.TokenMoves.ShouldContain(move => move.ElementId == "Start" && move.From is null);
+        start.TokenMoves.ShouldContain(move => move.ElementId == "Start" && move.From == null);
         start.TokenMoves.Last().ElementId.ShouldBe("Work");
 
         instance.CompleteWork("work");
