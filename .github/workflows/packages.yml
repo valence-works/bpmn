@@ -86,12 +86,25 @@ jobs:
           set -euo pipefail
           mkdir -p ./artifacts
 
-          projects=(
-            "src/Bpmn.Model/Bpmn.Model.csproj"
-            "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
-            "src/Bpmn.Semantics/Bpmn.Semantics.csproj"
-            "src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj"
-          )
+          # Preview builds publish everything; a tagged release publishes only what is ready to be
+          # stable. Bpmn.Semantics and Bpmn.Runtime.InMemory ship at 0.2.0, once a second host has
+          # validated the interpreter's port - see docs/adr/0002. Publishing them to nuget.org now
+          # would turn every fix to that port into a breaking change against a public surface.
+          if [ "${{ github.event_name }}" = "release" ]; then
+            projects=(
+              "src/Bpmn.Model/Bpmn.Model.csproj"
+              "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
+            )
+            echo "Release: packing the interchange half only."
+          else
+            projects=(
+              "src/Bpmn.Model/Bpmn.Model.csproj"
+              "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
+              "src/Bpmn.Semantics/Bpmn.Semantics.csproj"
+              "src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj"
+            )
+            echo "Preview: packing all four."
+          fi
 
           for proj in "${projects[@]}"; do
             echo "Packing $proj..."
