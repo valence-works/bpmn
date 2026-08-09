@@ -23,22 +23,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # GitHub does not create the .wiki repository until a first page exists. Until someone creates
+      # one through the Wiki tab, the clone 404s - which is a setup step outstanding, not a broken
+      # build, so it reports and stops rather than failing the run.
       - name: Checkout wiki
+        id: wiki
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki-repo
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Report an uninitialized wiki
+        if: steps.wiki.outcome != 'success'
+        run: |
+          echo "::notice::The wiki has not been initialized yet, so there is nothing to publish to."
+          echo "Create any page once via the repository's Wiki tab; this workflow will populate it from docs/ on the next push."
+
       # docs/ is authored as a normal docs tree with nested folders and relative links. The GitHub wiki
       # is a FLAT namespace with no directories, so the sync flattens paths into "Folder-Page" names and
       # rewrites relative links to match. Authoring stays natural; the wiki stays navigable.
       - name: Flatten docs into wiki pages
+        if: steps.wiki.outcome == 'success'
         run: |
           set -euo pipefail
           python3 .github/scripts/sync-wiki.py docs wiki-repo
 
       - name: Commit and push
+        if: steps.wiki.outcome == 'success'
         run: |
           set -euo pipefail
           cd wiki-repo

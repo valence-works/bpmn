@@ -139,8 +139,9 @@ jobs:
           set -euo pipefail
 
           if [ -z "${FEEDZ_API_KEY:-}" ]; then
-            echo "FEEDZ_API_KEY secret is not set."
-            exit 1
+            echo "::notice::FEEDZ_API_KEY is not set; skipping the preview publish."
+            echo "Add the secret to publish previews to $FEEDZ_SOURCE."
+            exit 0
           fi
 
           dotnet nuget add source "$FEEDZ_SOURCE" \
@@ -189,8 +190,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A release publish is deliberate, so a missing key here IS a failure: the tag was cut with
+          # the intent to ship, and silently not shipping would be the worse outcome.
           if [ -z "${NUGET_API_KEY:-}" ]; then
-            echo "NUGET_API_KEY secret is not set."
+            echo "::error::NUGET_API_KEY is not set, so this release cannot be published."
             exit 1
           fi
 
