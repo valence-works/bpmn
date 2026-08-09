@@ -21,21 +21,26 @@ public static class BpmnXmlNames
 
     /// <summary>
     /// The vendor namespace this library owns, used for the few authoring facts BPMN 2.0 has no standard
-    /// representation for: container-scoped variable declarations, multi-instance collection binding, and
-    /// outcome-matched sequence-flow conditions.
+    /// representation for: container-scoped variable declarations, multi-instance collection binding,
+    /// outcome-matched sequence-flow conditions, and fire-and-forget calls.
+    /// <para>
+    /// This is the <i>default</i>. A caller that already publishes a vendor namespace of its own sets
+    /// <see cref="BpmnImportOptions.VendorNamespace"/> and <see cref="BpmnExportOptions.VendorNamespace"/>
+    /// instead, per call.
+    /// </para>
     /// </summary>
     public const string VendorNamespaceName = "https://bpmn.valenceworks.io/schema/bpmn";
 
-    /// <summary>The conventional prefix emitted for <see cref="VendorNamespaceName"/>.</summary>
+    /// <summary>The prefix emitted for <see cref="VendorNamespaceName"/>, unless <see cref="BpmnExportOptions.VendorPrefix"/> says otherwise.</summary>
     public const string VendorPrefix = "vw";
 
-    /// <summary>The vendor namespace as an <see cref="XNamespace"/>.</summary>
+    /// <summary>The default vendor namespace as an <see cref="XNamespace"/>.</summary>
     public static readonly XNamespace Vendor = VendorNamespaceName;
 
     /// <summary>The XML Schema instance namespace, never treated as retained foreign content.</summary>
     public static readonly XNamespace SchemaInstance = "http://www.w3.org/2001/XMLSchema-instance";
 
-    /// <summary>Vendor-namespace attribute names this library interprets itself, so they are not retained as foreign attributes.</summary>
+    /// <summary>Attribute names this library interprets itself inside the configured vendor namespace, so they are not retained as foreign attributes.</summary>
     public static readonly IReadOnlySet<string> VendorAttributeNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "conditionOutcome",
@@ -44,7 +49,7 @@ public static class BpmnXmlNames
         "waitForCompletion"
     };
 
-    /// <summary>Vendor-namespace element names this library interprets itself, so they are not retained as extension elements.</summary>
+    /// <summary>Element names this library interprets itself inside the configured vendor namespace, so they are not retained as extension elements.</summary>
     public static readonly IReadOnlySet<string> VendorElementNames = new HashSet<string>(StringComparer.Ordinal)
     {
         "variable"

@@ -14,10 +14,13 @@ internal static class BpmnExtensionCapture
     /// Captures everything on <paramref name="source"/> that the reader itself does not interpret.
     /// <paramref name="isConsumed"/> answers, for one child element, whether the reader read it; every other
     /// child is retained as a foreign child at its position among the source's element children.
+    /// <paramref name="vendor"/> decides which names count as the library's own: a vendor name the read
+    /// interprets must not also be retained, or the writer emits it twice.
     /// </summary>
     public static BpmnExtensions Capture(
         XElement source,
         BpmnFidelity fidelity,
+        BpmnVendorNames vendor,
         Func<XElement, bool> isConsumed,
         RetentionLog log)
     {
@@ -44,7 +47,7 @@ internal static class BpmnExtensionCapture
             {
                 foreach (var extension in child.Elements())
                 {
-                    if (IsVendorOwned(extension.Name)) continue;
+                    if (vendor.IsInterpreted(extension.Name)) continue;
                     extensionElements.Add(ToExtensionElement(extension));
                     Tally(extension, namespaces, retainedNodes);
                 }
@@ -63,7 +66,7 @@ internal static class BpmnExtensionCapture
             if (attribute.IsNamespaceDeclaration) continue;
             var ns = attribute.Name.Namespace;
             if (ns == XNamespace.None || BpmnXmlNames.IsOwnedNamespace(ns) || ns == BpmnXmlNames.SchemaInstance) continue;
-            if (IsVendorOwned(attribute.Name)) continue;
+            if (vendor.IsInterpreted(attribute.Name)) continue;
 
             foreignAttributes.Add(new BpmnForeignAttribute(ToQName(attribute.Name), attribute.Value));
             namespaces.Add(ns.NamespaceName);
@@ -103,10 +106,6 @@ internal static class BpmnExtensionCapture
 
     private static BpmnQName ToQName(XName name) =>
         new(name.Namespace == XNamespace.None ? null : name.NamespaceName, name.LocalName);
-
-    private static bool IsVendorOwned(XName name) =>
-        name.Namespace == BpmnXmlNames.Vendor
-        && (BpmnXmlNames.VendorAttributeNames.Contains(name.LocalName) || BpmnXmlNames.VendorElementNames.Contains(name.LocalName));
 
     private static BpmnExtensionElement ToExtensionElement(XElement element)
     {

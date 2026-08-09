@@ -113,10 +113,11 @@ findings are identical.
 var stripped = reader.Read(xml, new BpmnImportOptions { Fidelity = BpmnFidelity.Semantic });
 ```
 
-`BpmnImportOptions` carries two other knobs. `ProcessId` names the process you care about — every
+`BpmnImportOptions` carries three other knobs. `ProcessId` names the process you care about — every
 process in the document is still read, but naming one the document does not declare fails fast
 instead of silently reading something else. `BindingRefPrefix` sets the prefix for generated binding
-refs, which default to `node-{elementId}`.
+refs, which default to `node-{elementId}`. `VendorNamespace` and `VendorPrefix` are covered in
+[the vendor namespace](#the-vendor-namespace) below.
 
 Use `Semantic` when you are producing a clean document from a messy one and want the removals
 enumerated. Use the default for everything else — in particular, for anything that will write the
@@ -183,6 +184,80 @@ occupied among its siblings. That index is not bookkeeping for its own sake. BPM
 `xsd:sequence`, so re-emitting a retained child in an arbitrary position produces schema-invalid XML
 that modeling tools reject. The writer restores each retained child at its recorded index within the
 canonical child order for its element type.
+
+## The vendor namespace
+
+BPMN 2.0 has no standard representation for a handful of authoring facts, so this library writes them
+in a vendor namespace of its own — `https://bpmn.valenceworks.io/schema/bpmn`, conventionally
+prefixed `vw`. Five names live there:
+
+| Name | Where it hangs | What it says |
+| --- | --- | --- |
+| `<variable>` | a container's `extensionElements` | a container-scoped variable declaration |
+| `conditionOutcome` | `sequenceFlow` | the outcome name this branch is taken on |
+| `collection` | `multiInstanceLoopCharacteristics` | the declared variable to loop over |
+| `itemVariable` | `multiInstanceLoopCharacteristics` | the per-iteration item key |
+| `waitForCompletion` | `callActivity` | `"false"` for a fire-and-forget call |
+
+The namespace and the prefix are both per-call options, on both sides:
+
+```csharp
+var vendor = "https://example.test/schema/process";
+
+var result = reader.Read(xml, new BpmnImportOptions
+{
+    VendorNamespace = vendor,
+    VendorPrefix = "acme"
+});
+
+var written = writer.Write(result, new BpmnExportOptions
+{
+    VendorNamespace = vendor,
+    VendorPrefix = "acme"
+});
+```
+
+They default to the values above, so leaving them alone changes nothing. Set them when you already
+publish a vendor namespace of your own and would rather your documents carry it than carry two. The
+constants remain on `BpmnXmlNames` (`VendorNamespaceName`, `VendorPrefix`) as the documented default.
+
+An empty namespace or an unusable prefix is rejected with a `BpmnInterchangeException` naming the
+option, rather than producing a document nothing can parse.
+
+### Reading and writing do not have to agree
+
+They usually should. When they do not, the writer's namespace wins, which makes a read under one
+namespace and a write under another a one-pass migration:
+
+```csharp
+var model = reader.Read(xml);                                        // the default namespace
+var moved = writer.Write(model, new BpmnExportOptions { VendorNamespace = vendor, VendorPrefix = "acme" });
+```
+
+Every vendor name in `moved` is in the new namespace, and none is left in the old one.
+
+The other direction — reading a document written against a *different* vendor namespace — is where
+the interpreted-versus-foreign line matters. A vendor name is interpreted only in the namespace the
+read was configured for. In any other namespace it is somebody else's extension content, so it is
+retained rather than read into the model:
+
+```csharp
+// A document authored with the default namespace, read by a consumer configured for its own.
+var read = reader.Read(defaultNamespacedXml, new BpmnImportOptions { VendorNamespace = vendor });
+
+read.Definitions.Processes[0].Variables;                    // empty — not this read's to interpret
+read.Definitions.Processes[0].Extensions.ExtensionElements; // the <variable> declarations, verbatim
+```
+
+Nothing is lost and nothing is claimed twice: write that model back and the annotations return in the
+namespace they were authored in, exactly once. That is deliberately the same rule the library applies
+to any other vendor's annotations — it carries them, it does not reinterpret them.
+
+There is one boundary. `collection` and `itemVariable` hang on a `multiInstanceLoopCharacteristics`
+element the reader always consumes, so there is nowhere to retain them from. A collection
+multi-instance authored in another vendor namespace therefore reads without loop characteristics, and
+says so as a `Degraded` finding naming both namespaces. Read such a document with the namespace it was
+written in, and write it with yours.
 
 ## DI layout
 
@@ -270,7 +345,8 @@ var edited = writer.Write(definitions, bindings, elementExtensions, new BpmnExpo
 Prefer the first overload whenever you have a `BpmnImportResult`. The second takes the pieces
 separately: `bindings` supplies the nested process behind each subprocess element — without it,
 subprocesses are written empty — and `elementExtensions` supplies the per-element retained content.
-`BpmnExportOptions` can also override the target namespace and omit the XML declaration.
+`BpmnExportOptions` can also override the target namespace, set the
+[vendor namespace](#the-vendor-namespace), and omit the XML declaration.
 
 Layout in the output is always complete. Every element, pool and lane gets a `BPMNShape`, and every
 sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints BPMN DI demands,

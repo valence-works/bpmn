@@ -136,7 +136,7 @@ public sealed class BpmnXmlReader
             signals,
             errors,
             escalations,
-            BpmnExtensionCapture.Capture(root, context.Fidelity, IsDefinitionsChildConsumed, context.Retention));
+            context.Capture(root, IsDefinitionsChildConsumed));
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -255,7 +255,7 @@ public sealed class BpmnXmlReader
 
         var collaborationExtensions = collaborationElement is null
             ? BpmnExtensions.Empty
-            : BpmnExtensionCapture.Capture(collaborationElement, context.Fidelity, IsCollaborationChildConsumed, context.Retention);
+            : context.Capture(collaborationElement, IsCollaborationChildConsumed);
 
         return new BpmnCollaboration(collaborationElement is null ? null : IdOf(collaborationElement), pools, resolvedFlows, collaborationExtensions);
     }
@@ -292,7 +292,7 @@ public sealed class BpmnXmlReader
 
         // The container's declared variables gate collection-mode multi-instance loops, so they are read
         // before the element loop that resolves those loops.
-        var declaredVariables = ReadDeclaredVariables(container);
+        var declaredVariables = ReadDeclaredVariables(container, context.Vendor);
         var declaredVariableNames = declaredVariables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         // Per-scope event-subprocess trackers: escalation codes must be distinct with at most one code-less
@@ -308,7 +308,7 @@ public sealed class BpmnXmlReader
             context.CountElement(localName);
 
             if (id is not null && IsRetainableFlowNode(localName)
-                && BpmnExtensionCapture.Capture(child, context.Fidelity, IsFlowNodeChildConsumed, context.Retention) is { IsEmpty: false } captured)
+                && context.Capture(child, IsFlowNodeChildConsumed) is { IsEmpty: false } captured)
                 retainedByElementId[id] = captured;
 
             switch (localName)
@@ -527,13 +527,13 @@ public sealed class BpmnXmlReader
                         break;
                     }
 
-                    var conditionOutcome = (string?)child.Attribute(BpmnXmlNames.Vendor + "conditionOutcome");
+                    var conditionOutcome = (string?)child.Attribute(context.Vendor.ConditionOutcome);
                     var conditionExpression = child.Element(BpmnXmlNames.Model + "conditionExpression");
                     if (conditionOutcome is null && conditionExpression is not null)
                         context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Value.Trim()}'); expression conditions are not evaluated by this model, so the flow read as unconditional.", id);
 
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
-                        extensions: BpmnExtensionCapture.Capture(child, context.Fidelity, IsFlowNodeChildConsumed, context.Retention)));
+                        extensions: context.Capture(child, IsFlowNodeChildConsumed)));
                     break;
                 }
                 case "laneSet":
@@ -543,7 +543,7 @@ public sealed class BpmnXmlReader
                         var laneId = IdOf(lane);
                         if (laneId is null) continue;
                         lanes.Add(new BpmnLane(laneId, name: NameOf(lane),
-                            extensions: BpmnExtensionCapture.Capture(lane, context.Fidelity, IsLaneChildConsumed, context.Retention)));
+                            extensions: context.Capture(lane, IsLaneChildConsumed)));
                         foreach (var flowNodeRef in lane.Elements(BpmnXmlNames.Model + "flowNodeRef"))
                             context.LaneByElementId[flowNodeRef.Value.Trim()] = laneId;
                     }
@@ -666,7 +666,7 @@ public sealed class BpmnXmlReader
             return connected;
         }).ToArray();
 
-        var extensions = BpmnExtensionCapture.Capture(container, context.Fidelity, IsContainerChildConsumed, context.Retention);
+        var extensions = context.Capture(container, IsContainerChildConsumed);
         context.CurrentProcessId = previousProcessId;
 
         return new BpmnProcessDefinition(
@@ -762,7 +762,7 @@ public sealed class BpmnXmlReader
                     NameOf(participant),
                     string.IsNullOrWhiteSpace(processRef) ? null : processRef,
                     // A participant's own children are all unread, so everything on it is retained.
-                    BpmnExtensionCapture.Capture(participant, context.Fidelity, NothingConsumed, context.Retention)));
+                    context.Capture(participant, NothingConsumed)));
             }
 
         return result;
@@ -783,7 +783,7 @@ public sealed class BpmnXmlReader
                     ((string?)flow.Attribute("sourceRef"))?.Trim() ?? "",
                     ((string?)flow.Attribute("targetRef"))?.Trim() ?? "",
                     string.IsNullOrWhiteSpace(messageRef) ? null : messageRef,
-                    BpmnExtensionCapture.Capture(flow, context.Fidelity, NothingConsumed, context.Retention)));
+                    context.Capture(flow, NothingConsumed)));
             }
 
         return result;
@@ -791,11 +791,12 @@ public sealed class BpmnXmlReader
 
     /// <summary>
     /// Reads a container's declared variables from its
-    /// <c>&lt;extensionElements&gt;&lt;vw:variable name="..."/&gt;</c> declarations. BPMN has no standard
-    /// container-scoped variable declaration, so this is the vendor representation; the name is what gates a
-    /// collection-mode multi-instance loop and what survives the round-trip.
+    /// <c>&lt;extensionElements&gt;&lt;vw:variable name="..."/&gt;</c> declarations, in whichever vendor
+    /// namespace this read was configured with. BPMN has no standard container-scoped variable declaration,
+    /// so this is the vendor representation; the name is what gates a collection-mode multi-instance loop and
+    /// what survives the round-trip.
     /// </summary>
-    private static IReadOnlyList<BpmnVariableDeclaration> ReadDeclaredVariables(XElement container)
+    private static IReadOnlyList<BpmnVariableDeclaration> ReadDeclaredVariables(XElement container, BpmnVendorNames vendor)
     {
         var extensions = container.Element(BpmnXmlNames.Model + "extensionElements");
         if (extensions is null)
@@ -803,7 +804,7 @@ public sealed class BpmnXmlReader
 
         var variables = new List<BpmnVariableDeclaration>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var declaration in extensions.Elements(BpmnXmlNames.Vendor + "variable"))
+        foreach (var declaration in extensions.Elements(vendor.Variable))
         {
             if (((string?)declaration.Attribute("name"))?.Trim() is not { Length: > 0 } name || !seen.Add(name))
                 continue;
@@ -1458,8 +1459,8 @@ public sealed class BpmnXmlReader
     /// <summary>
     /// Reads a <c>&lt;callActivity&gt;</c>. The element always binds a call: BPMN's <c>calledElement</c> names
     /// the process when the document supplies one, and the host resolves it. A call activity waits for the
-    /// called process unless the vendor attribute <c>vw:waitForCompletion="false"</c> says otherwise, which is
-    /// the only way to express a fire-and-forget call.
+    /// called process unless <c>waitForCompletion="false"</c>, in the configured vendor namespace, says
+    /// otherwise, which is the only way to express a fire-and-forget call.
     /// </summary>
     private static void ReadCallActivity(
         XElement element,
@@ -1470,7 +1471,7 @@ public sealed class BpmnXmlReader
         ReadContext context)
     {
         var calledElement = ((string?)element.Attribute("calledElement"))?.Trim();
-        var waitForCompletion = !string.Equals((string?)element.Attribute(BpmnXmlNames.Vendor + "waitForCompletion"), "false", StringComparison.OrdinalIgnoreCase);
+        var waitForCompletion = !string.Equals((string?)element.Attribute(context.Vendor.WaitForCompletion), "false", StringComparison.OrdinalIgnoreCase);
 
         var properties = new Dictionary<string, string>(StringComparer.Ordinal);
         if (!string.IsNullOrWhiteSpace(calledElement))
@@ -1488,11 +1489,12 @@ public sealed class BpmnXmlReader
 
     /// <summary>
     /// Resolves an activity's <c>&lt;multiInstanceLoopCharacteristics&gt;</c>: <c>isSequential</c> plus either
-    /// an integer <c>&lt;loopCardinality&gt;</c> or the vendor <c>vw:collection</c> and
-    /// <c>vw:itemVariable</c> attributes, which is how a collection is named because BPMN's own data-input
+    /// an integer <c>&lt;loopCardinality&gt;</c> or the <c>collection</c> and <c>itemVariable</c> attributes
+    /// in the configured vendor namespace, which is how a collection is named because BPMN's own data-input
     /// form has no neutral representation here. A standard (while/until) loop, a non-integer cardinality, an
-    /// undeclared collection variable, a reserved item variable, or loop characteristics on something that is
-    /// not an activity all degrade: the element reads without loop characteristics.
+    /// undeclared collection variable, a reserved item variable, a collection authored in some other vendor
+    /// namespace, or loop characteristics on something that is not an activity all degrade: the element reads
+    /// without loop characteristics.
     /// </summary>
     private static BpmnLoopCharacteristics? ResolveLoopCharacteristics(XElement element, string id, bool isActivity, IReadOnlySet<string> declaredVariableNames, ReadContext context)
     {
@@ -1511,7 +1513,7 @@ public sealed class BpmnXmlReader
 
         var isSequential = (bool?)loop.Attribute("isSequential") ?? false;
 
-        if (((string?)loop.Attribute(BpmnXmlNames.Vendor + "collection"))?.Trim() is { Length: > 0 } collection)
+        if (((string?)loop.Attribute(context.Vendor.Collection))?.Trim() is { Length: > 0 } collection)
         {
             if (!declaredVariableNames.Contains(collection))
             {
@@ -1519,7 +1521,7 @@ public sealed class BpmnXmlReader
                 return null;
             }
 
-            var itemVariable = ((string?)loop.Attribute(BpmnXmlNames.Vendor + "itemVariable"))?.Trim() is { Length: > 0 } authoredItem
+            var itemVariable = ((string?)loop.Attribute(context.Vendor.ItemVariable))?.Trim() is { Length: > 0 } authoredItem
                 ? authoredItem
                 : BpmnLoopCharacteristics.DefaultItemVariable;
             if (StringComparer.Ordinal.Equals(itemVariable, BpmnLoopCharacteristics.LoopIndexVariable))
@@ -1529,6 +1531,17 @@ public sealed class BpmnXmlReader
             }
 
             return new BpmnLoopCharacteristics(isSequential: isSequential, collectionVariable: collection, itemVariable: itemVariable);
+        }
+
+        // A collection multi-instance authored against some other vendor namespace is not this read's to
+        // interpret. Saying which namespace it was authored in is more use than the cardinality complaint
+        // below, which would be true but would not explain why.
+        if (loop.Attributes().FirstOrDefault(attribute =>
+                StringComparer.Ordinal.Equals(attribute.Name.LocalName, "collection")
+                && attribute.Name.Namespace != XNamespace.None) is { } foreignCollection)
+        {
+            context.Report(BpmnImportIssueSeverity.Degraded, $"Element '{id}' declares a collection multi-instance in vendor namespace '{foreignCollection.Name.NamespaceName}', but this read interprets '{context.Vendor.NamespaceName}'; it read without loop characteristics.", id);
+            return null;
         }
 
         var cardinalityText = loop.Element(BpmnXmlNames.Model + "loopCardinality")?.Value.Trim();
@@ -1719,6 +1732,13 @@ public sealed class BpmnXmlReader
         private readonly Dictionary<string, int> _elementCounts = new(StringComparer.Ordinal);
 
         public BpmnFidelity Fidelity { get; } = options?.Fidelity ?? BpmnFidelity.Lossless;
+
+        /// <summary>
+        /// The vendor namespace this read interprets. A vendor name in any other namespace is foreign
+        /// content, retained verbatim rather than read into the model.
+        /// </summary>
+        public BpmnVendorNames Vendor { get; } = BpmnVendorNames.For(options);
+
         public List<string> ProcessIds { get; } = [];
         public List<BpmnImportIssue> Issues { get; } = [];
         public List<BpmnWorkBinding> Bindings { get; } = [];
@@ -1727,6 +1747,10 @@ public sealed class BpmnXmlReader
         public string? CurrentProcessId { get; set; }
 
         public string BindingRefFor(string elementId) => $"{_bindingRefPrefix}-{elementId}";
+
+        /// <summary>Captures one element's retained content, against this read's fidelity and vendor namespace.</summary>
+        public BpmnExtensions Capture(XElement source, Func<XElement, bool> isConsumed) =>
+            BpmnExtensionCapture.Capture(source, Fidelity, Vendor, isConsumed, Retention);
 
         public string Bind(BpmnWorkBinding binding)
         {

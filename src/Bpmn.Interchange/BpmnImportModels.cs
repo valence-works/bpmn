@@ -58,6 +58,26 @@ public sealed record BpmnImportOptions
     /// read-modify-write cycle.
     /// </summary>
     public BpmnFidelity Fidelity { get; init; } = BpmnFidelity.Lossless;
+
+    /// <summary>
+    /// The XML namespace whose attributes and elements this read interprets as the library's own, rather
+    /// than retaining them as foreign content. Defaults to
+    /// <see cref="BpmnXmlNames.VendorNamespaceName"/>; a host that already ships a vendor namespace of its
+    /// own names it here.
+    /// <para>
+    /// This is the namespace of <c>conditionOutcome</c>, <c>collection</c>, <c>itemVariable</c>,
+    /// <c>waitForCompletion</c>, and <c>&lt;variable&gt;</c>. Those names in any <i>other</i> namespace are
+    /// foreign: they are retained verbatim and are not read into the model.
+    /// </para>
+    /// </summary>
+    public string VendorNamespace { get; init; } = BpmnXmlNames.VendorNamespaceName;
+
+    /// <summary>
+    /// The prefix the vendor namespace is reported under in retention findings. Defaults to
+    /// <see cref="BpmnXmlNames.VendorPrefix"/>. A read resolves names by namespace, never by prefix, so this
+    /// changes wording rather than meaning.
+    /// </summary>
+    public string VendorPrefix { get; init; } = BpmnXmlNames.VendorPrefix;
 }
 
 /// <summary>
@@ -74,8 +94,27 @@ public sealed record BpmnImportResult(
 /// <summary>Options for a write.</summary>
 public sealed record BpmnExportOptions
 {
-    /// <summary>The <c>targetNamespace</c> to emit; defaults to the document's own, else the vendor namespace.</summary>
+    /// <summary>The <c>targetNamespace</c> to emit; defaults to the document's own, else <see cref="VendorNamespace"/>.</summary>
     public string? TargetNamespace { get; init; }
+
+    /// <summary>
+    /// The XML namespace to write the library's own non-standard attributes and elements in. Defaults to
+    /// <see cref="BpmnXmlNames.VendorNamespaceName"/>; a host that already ships a vendor namespace of its
+    /// own names it here.
+    /// <para>
+    /// The writer always emits <c>conditionOutcome</c>, <c>collection</c>, <c>itemVariable</c>,
+    /// <c>waitForCompletion</c>, and <c>&lt;variable&gt;</c> in this namespace, whichever namespace the model
+    /// was read from. Reading with one and writing with another is therefore a migration: the document comes
+    /// out in the writer's namespace.
+    /// </para>
+    /// </summary>
+    public string VendorNamespace { get; init; } = BpmnXmlNames.VendorNamespaceName;
+
+    /// <summary>
+    /// The prefix <see cref="VendorNamespace"/> is declared under on the root element. Defaults to
+    /// <see cref="BpmnXmlNames.VendorPrefix"/>.
+    /// </summary>
+    public string VendorPrefix { get; init; } = BpmnXmlNames.VendorPrefix;
 
     /// <summary>The <c>exporter</c> attribute to emit; defaults to the document's own.</summary>
     public string? Exporter { get; init; }

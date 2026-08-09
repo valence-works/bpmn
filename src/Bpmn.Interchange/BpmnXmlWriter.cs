@@ -47,16 +47,17 @@ public sealed class BpmnXmlWriter
         if (definitions.Processes.Count == 0)
             throw new BpmnInterchangeException("The definitions carry no <process> to write.");
 
-        var context = new WriteContext(definitions, bindings);
+        var context = new WriteContext(definitions, bindings, BpmnVendorNames.For(options));
+        var vendor = context.Vendor;
 
         var root = new XElement(BpmnXmlNames.Model + "definitions",
             new XAttribute(XNamespace.Xmlns + "bpmndi", BpmnXmlNames.Di.NamespaceName),
             new XAttribute(XNamespace.Xmlns + "dc", BpmnXmlNames.Dc.NamespaceName),
             new XAttribute(XNamespace.Xmlns + "di", BpmnXmlNames.Dd.NamespaceName),
-            new XAttribute(XNamespace.Xmlns + BpmnXmlNames.VendorPrefix, BpmnXmlNames.VendorNamespaceName));
+            new XAttribute(XNamespace.Xmlns + vendor.Prefix, vendor.NamespaceName));
 
         root.SetAttributeValue("id", definitions.Id ?? $"{SanitizeId(definitions.Processes[0].ProcessId)}-definitions");
-        root.SetAttributeValue("targetNamespace", options?.TargetNamespace ?? definitions.TargetNamespace ?? BpmnXmlNames.VendorNamespaceName);
+        root.SetAttributeValue("targetNamespace", options?.TargetNamespace ?? definitions.TargetNamespace ?? vendor.NamespaceName);
         var exporter = options?.Exporter ?? definitions.Exporter;
         if (!string.IsNullOrWhiteSpace(exporter)) root.SetAttributeValue("exporter", exporter);
         var exporterVersion = options?.ExporterVersion ?? definitions.ExporterVersion;
@@ -72,8 +73,8 @@ public sealed class BpmnXmlWriter
         // order moves them ahead of the collaboration and processes in the output.
         AppendRootDeclarations(root, definitions, context);
         AppendDiagrams(root, definitions, context);
-        ApplyExtensions(root, definitions.Extensions);
-        DeclareForeignNamespaces(root);
+        ApplyExtensions(root, definitions.Extensions, vendor);
+        DeclareForeignNamespaces(root, vendor);
 
         var document = new XDocument(root);
         if (!(options?.OmitXmlDeclaration ?? false))
@@ -130,7 +131,7 @@ public sealed class BpmnXmlWriter
             var participant = new XElement(BpmnXmlNames.Model + "participant", new XAttribute("id", pool.PoolId));
             if (pool.Name is not null) participant.SetAttributeValue("name", pool.Name);
             if (pool.ProcessRef is not null) participant.SetAttributeValue("processRef", pool.ProcessRef);
-            ApplyExtensions(participant, pool.Extensions);
+            ApplyExtensions(participant, pool.Extensions, context.Vendor);
             element.Add(participant);
         }
 
@@ -148,11 +149,11 @@ public sealed class BpmnXmlWriter
                 new XAttribute("targetRef", targetRef));
             if (flow.Name is not null) messageFlow.SetAttributeValue("name", flow.Name);
             if (flow.MessageName is { } messageName) messageFlow.SetAttributeValue("messageRef", context.MessageDeclarationId(messageName));
-            ApplyExtensions(messageFlow, flow.Extensions);
+            ApplyExtensions(messageFlow, flow.Extensions, context.Vendor);
             element.Add(messageFlow);
         }
 
-        ApplyExtensions(element, collaboration.Extensions);
+        ApplyExtensions(element, collaboration.Extensions, context.Vendor);
         root.Add(element);
     }
 
@@ -180,7 +181,7 @@ public sealed class BpmnXmlWriter
                 if (lane.Name is not null) laneElement.SetAttributeValue("name", lane.Name);
                 foreach (var member in process.Elements.Where(element => StringComparer.Ordinal.Equals(element.LaneId, lane.LaneId)))
                     laneElement.Add(new XElement(BpmnXmlNames.Model + "flowNodeRef", member.ElementId));
-                ApplyExtensions(laneElement, lane.Extensions);
+                ApplyExtensions(laneElement, lane.Extensions, context.Vendor);
                 laneSet.Add(laneElement);
             }
 
@@ -216,11 +217,11 @@ public sealed class BpmnXmlWriter
                 InsertByRank(xmlElement, new XElement(BpmnXmlNames.Model + "incoming", flowId));
             foreach (var flowId in outgoing[element.ElementId])
                 InsertByRank(xmlElement, new XElement(BpmnXmlNames.Model + "outgoing", flowId));
-            AppendLoopCharacteristics(xmlElement, element);
+            AppendLoopCharacteristics(xmlElement, element, context.Vendor);
 
             // A subprocess already had the nested process's retained content applied while its body was written.
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                ApplyExtensions(xmlElement, element.Extensions);
+                ApplyExtensions(xmlElement, element.Extensions, context.Vendor);
 
             container.Add(xmlElement);
         }
@@ -236,11 +237,11 @@ public sealed class BpmnXmlWriter
             {
                 // BPMN has no outcome-matched condition, so the match rides a vendor attribute and the flow
                 // also carries a readable conditionExpression other modelers can display.
-                flowElement.SetAttributeValue(BpmnXmlNames.Vendor + "conditionOutcome", flow.ConditionOutcome);
+                flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
                 flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
             }
 
-            ApplyExtensions(flowElement, flow.Extensions);
+            ApplyExtensions(flowElement, flow.Extensions, context.Vendor);
             container.Add(flowElement);
         }
 
@@ -255,20 +256,20 @@ public sealed class BpmnXmlWriter
         var variableDeclarations = process.Variables
             .Select(variable =>
             {
-                var declaration = new XElement(BpmnXmlNames.Vendor + "variable", new XAttribute("name", variable.Name));
+                var declaration = new XElement(context.Vendor.Variable, new XAttribute("name", variable.Name));
                 if (variable.TypeHint is not null) declaration.SetAttributeValue("typeHint", variable.TypeHint);
                 return declaration;
             })
             .ToArray();
 
-        ApplyExtensions(container, process.Extensions, variableDeclarations);
+        ApplyExtensions(container, process.Extensions, context.Vendor, variableDeclarations);
     }
 
     /// <summary>
     /// Emits a <c>&lt;multiInstanceLoopCharacteristics&gt;</c> for an activity that carries them: either a
     /// literal <c>&lt;loopCardinality&gt;</c>, or the vendor collection and item-variable attributes.
     /// </summary>
-    private static void AppendLoopCharacteristics(XElement host, BpmnElement element)
+    private static void AppendLoopCharacteristics(XElement host, BpmnElement element, BpmnVendorNames vendor)
     {
         if (element.LoopCharacteristics is not { } loop)
             return;
@@ -280,8 +281,8 @@ public sealed class BpmnXmlWriter
             multiInstance.Add(new XElement(BpmnXmlNames.Model + "loopCardinality", cardinality.ToString(CultureInfo.InvariantCulture)));
         else if (loop.CollectionVariable is { } collection)
         {
-            multiInstance.SetAttributeValue(BpmnXmlNames.Vendor + "collection", collection);
-            multiInstance.SetAttributeValue(BpmnXmlNames.Vendor + "itemVariable", loop.ItemVariable);
+            multiInstance.SetAttributeValue(vendor.Collection, collection);
+            multiInstance.SetAttributeValue(vendor.ItemVariable, loop.ItemVariable);
         }
 
         host.Add(multiInstance);
@@ -475,7 +476,7 @@ public sealed class BpmnXmlWriter
         if (!string.IsNullOrWhiteSpace(calledElement))
             callActivity.SetAttributeValue("calledElement", calledElement);
         if (binding is { WaitForCompletion: false })
-            callActivity.SetAttributeValue(BpmnXmlNames.Vendor + "waitForCompletion", "false");
+            callActivity.SetAttributeValue(context.Vendor.WaitForCompletion, "false");
 
         return callActivity;
     }
@@ -512,8 +513,14 @@ public sealed class BpmnXmlWriter
     /// Puts an element's children into the order BPMN's schema requires, folds in the retained documentation
     /// and extension elements, restores each retained foreign child at the position it held, and re-applies
     /// the retained foreign attributes.
+    /// <para>
+    /// Retained content never overwrites and never duplicates what the model already produced, and is
+    /// otherwise always written. The two can collide only across a change of vendor namespace, where a
+    /// document read under one namespace retains the other one's names as foreign; the model is the source of
+    /// truth for a name this write interprets, and retention is the source of truth for everything else.
+    /// </para>
     /// </summary>
-    private static void ApplyExtensions(XElement target, BpmnExtensions? extensions, IReadOnlyList<XElement>? vendorExtensionElements = null)
+    private static void ApplyExtensions(XElement target, BpmnExtensions? extensions, BpmnVendorNames vendor, IReadOnlyList<XElement>? vendorExtensionElements = null)
     {
         extensions ??= BpmnExtensions.Empty;
         var hasVendorContent = vendorExtensionElements is { Count: > 0 };
@@ -535,7 +542,14 @@ public sealed class BpmnXmlWriter
 
         var extensionChildren = new List<XElement>();
         if (hasVendorContent) extensionChildren.AddRange(vendorExtensionElements!);
-        extensionChildren.AddRange(extensions.ExtensionElements.Select(BpmnExtensionCapture.ToXml));
+        var written = extensionChildren.Select(Identity).ToHashSet();
+        foreach (var retained in extensions.ExtensionElements.Select(BpmnExtensionCapture.ToXml))
+        {
+            // Only a name this write interprets can already be there: the model wrote it just above.
+            if (vendor.IsInterpreted(retained.Name) && !written.Add(Identity(retained))) continue;
+            extensionChildren.Add(retained);
+        }
+
         if (extensionChildren.Count > 0)
             children.Add(new XElement(BpmnXmlNames.Model + "extensionElements", extensionChildren));
 
@@ -555,8 +569,19 @@ public sealed class BpmnXmlWriter
             target.Add(element);
 
         foreach (var attribute in extensions.ForeignAttributes)
-            target.SetAttributeValue(BpmnExtensionCapture.ToXName(attribute.Name), attribute.Value);
+        {
+            var name = BpmnExtensionCapture.ToXName(attribute.Name);
+            if (target.Attribute(name) is not null) continue;
+            target.SetAttributeValue(name, attribute.Value);
+        }
     }
+
+    /// <summary>
+    /// What makes two extension elements the same declaration: the qualified name plus the <c>name</c> the
+    /// library's own vendor elements are keyed by. Enough to tell a retained <c>variable</c> that duplicates
+    /// one the model wrote from a retained <c>variable</c> that declares a different one.
+    /// </summary>
+    private static (XName Name, string? Key) Identity(XElement element) => (element.Name, (string?)element.Attribute("name"));
 
     // ---------------------------------------------------------------------------------------------------
     // Diagram interchange
@@ -689,14 +714,14 @@ public sealed class BpmnXmlWriter
     /// namespace's own host name, so <c>camunda:formData</c> stays readable rather than becoming
     /// <c>p7:formData</c>. Prefixes are cosmetic: the original ones are not part of the model.
     /// </summary>
-    private static void DeclareForeignNamespaces(XElement root)
+    private static void DeclareForeignNamespaces(XElement root, BpmnVendorNames vendor)
     {
         var namespaces = new SortedSet<string>(StringComparer.Ordinal);
 
         void Consider(XName name)
         {
             var ns = name.Namespace;
-            if (ns == XNamespace.None || ns == BpmnXmlNames.Vendor || BpmnXmlNames.IsOwnedNamespace(ns)) return;
+            if (ns == XNamespace.None || ns == vendor.Namespace || BpmnXmlNames.IsOwnedNamespace(ns)) return;
             namespaces.Add(ns.NamespaceName);
         }
 
@@ -707,7 +732,7 @@ public sealed class BpmnXmlWriter
                 Consider(attribute.Name);
         }
 
-        var taken = new HashSet<string>(StringComparer.Ordinal) { "bpmndi", "dc", "di", BpmnXmlNames.VendorPrefix, "xml", "xmlns" };
+        var taken = new HashSet<string>(StringComparer.Ordinal) { "bpmndi", "dc", "di", vendor.Prefix, "xml", "xmlns" };
         var fallback = 1;
         foreach (var ns in namespaces)
         {
@@ -758,8 +783,10 @@ public sealed class BpmnXmlWriter
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
         private readonly List<SynthesizedDeclaration> _synthesized = [];
 
-        public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings)
+        public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, BpmnVendorNames vendor)
         {
+            Vendor = vendor;
+
             foreach (var binding in bindings ?? [])
             {
                 _bindingsByRef[binding.BindingRef] = binding;
@@ -806,6 +833,9 @@ public sealed class BpmnXmlWriter
                 if (!string.IsNullOrWhiteSpace(flow.MessageName))
                     EnsureMessage(flow.MessageName!.Trim());
         }
+
+        /// <summary>The vendor namespace this write emits the library's own non-standard names in.</summary>
+        public BpmnVendorNames Vendor { get; }
 
         public IReadOnlyList<SynthesizedDeclaration> SynthesizedDeclarations => _synthesized;
 
