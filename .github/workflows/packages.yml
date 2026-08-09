@@ -193,6 +193,9 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'published' && needs.build.result == 'success'
     permissions:
       contents: read
+      # Lets the job request an OIDC token from GitHub, which nuget.org exchanges for a short-lived
+      # API key. Without this the login step fails with no token available.
+      id-token: write
     steps:
       - name: Download packages
         uses: actions/download-artifact@v4
@@ -205,16 +208,30 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # Trusted publishing: no long-lived key is stored anywhere. The workflow proves its identity to
+      # nuget.org with a signed OIDC token, and gets back a key valid for one hour.
+      #
+      # The matching policy on nuget.org is bound to the repository owner, the repository, and THIS
+      # WORKFLOW'S FILE NAME - packages.yml. Renaming this file silently breaks publishing, so if that
+      # ever happens the policy has to be updated to match.
+      #
+      # Requested immediately before the push, deliberately: the key expires in an hour.
+      - name: Exchange the OIDC token for a short-lived NuGet key
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_ORG_USERNAME }}
+
       - name: Push packages to NuGet.org
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
           set -euo pipefail
 
-          # A release publish is deliberate, so a missing key here IS a failure: the tag was cut with
-          # the intent to ship, and silently not shipping would be the worse outcome.
+          # A release publish is deliberate, so failing to obtain a key IS a failure: the tag was cut
+          # with the intent to ship, and silently not shipping would be the worse outcome.
           if [ -z "${NUGET_API_KEY:-}" ]; then
-            echo "::error::NUGET_API_KEY is not set, so this release cannot be published."
+            echo "::error::No short-lived key was issued. Check that a trusted publishing policy on nuget.org names this repository and the workflow file packages.yml, and that NUGET_ORG_USERNAME holds the nuget.org profile name (not an email address)."
             exit 1
           fi
 
