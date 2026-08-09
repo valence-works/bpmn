@@ -229,8 +229,17 @@ jobs:
 
           for nupkg in "${nupkgs[@]}"; do
             echo "Pushing $nupkg to NuGet.org..."
-            dotnet nuget push "$nupkg" \
-              --source "$NUGET_SOURCE" \
-              --api-key "$NUGET_API_KEY" \
-              --skip-duplicate
+
+            # A 403 on a package ID that does not exist yet almost always means the API key's glob
+            # pattern does not cover it, not that the key is wrong. Those have different fixes, so
+            # say which one this is rather than leaving a bare status code.
+            if ! output=$(dotnet nuget push "$nupkg" --source "$NUGET_SOURCE" --api-key "$NUGET_API_KEY" --skip-duplicate 2>&1); then
+              echo "$output"
+              if echo "$output" | grep -q "403"; then
+                echo "::error::NuGet rejected the key for $(basename "$nupkg"). For a package ID that has never been published, the key needs the 'Push new packages and package versions' scope AND a glob pattern matching Bpmn.* . Check the key at https://www.nuget.org/account/apikeys ."
+              fi
+              exit 1
+            fi
+
+            echo "$output"
           done
