@@ -34,6 +34,8 @@ matching "bpmn" and 50 NuGet packages found:
 So a .NET team that needs to read a `.bpmn` file, understand it, and reason about what it means has,
 until now, had to write that themselves or take a license they cannot ship.
 
+<!-- host-agnostic-allow: this section compares against alternative projects and must name them -->
+
 ## How this compares
 
 The projects below are the ones you are most likely to find when searching. Several are good at what
@@ -66,8 +68,8 @@ ordering, and event-based gateway races right is not. This library takes no posi
 
 Being honest about this is more useful than pretending otherwise.
 
-- **You want a workflow engine that just works in .NET.** Use one of the established engines. They
-  handle persistence, scheduling, and retries. This library deliberately does none of that.
+- **You want a workflow engine that just works in .NET.** Use WorkflowCore, or Elsa. They handle
+  persistence, scheduling, and retries. This library deliberately does none of that.
 - **You are running Camunda 8 or Zeebe.** Use the official clients. Your process definitions are
   deployed to a broker that already interprets them. This library is still useful alongside them if
   you want to analyze or generate `.bpmn` files before deployment.
@@ -75,6 +77,8 @@ Being honest about this is more useful than pretending otherwise.
 - **You need to evaluate FEEL expressions.** Not covered. Sequence-flow conditions are resolved by the
   host.
 - **GPL is fine for you and you want an engine off the shelf.** BPMNEngine is a real, working engine.
+
+<!-- host-agnostic-allow-end -->
 
 ## What it is
 

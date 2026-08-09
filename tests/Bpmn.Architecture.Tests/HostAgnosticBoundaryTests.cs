@@ -102,48 +102,64 @@ public sealed class HostAgnosticBoundaryTests
     /// The prose counterpart to the assembly checks. A reference graph cannot catch a host's name in a
     /// doc comment, an identifier, or a string literal - and those are exactly how a neutral library
     /// starts drifting back towards the codebase it came from.
+    /// <para>
+    /// One exception is legitimate: prose that compares this library against alternatives has to name
+    /// them, or the comparison is useless. That exception is <b>scoped, not granted per file</b> -
+    /// wrap the region in <c>host-agnostic-allow</c> / <c>host-agnostic-allow-end</c> markers and the
+    /// rest of the same file stays checked.
+    /// </para>
     /// </summary>
     [Fact]
     public void Source_names_no_specific_host()
     {
         var repositoryRoot = FindRepositoryRoot();
 
-        // Host names this library was extracted from or must not assume. Additions are welcome; the
-        // assembly-level allowlist above is the general guard, and this is the prose backstop.
         var forbidden = new Regex("elsa", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        var allowStart = new Regex("host-agnostic-allow:", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        var allowEnd = new Regex("host-agnostic-allow-end", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         var searchRoots = new[] { "src", "tests", "samples", "docs" }
             .Select(folder => Path.Combine(repositoryRoot, folder))
-            .Where(Directory.Exists);
+            .Where(Directory.Exists)
+            .SelectMany(root => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            .Concat(new[] { "README.md", "CONTRIBUTING.md" }
+                .Select(name => Path.Combine(repositoryRoot, name))
+                .Where(File.Exists));
 
         var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cs", ".csproj", ".md", ".json", ".bpmn" };
 
         var hits = new List<string>();
 
-        foreach (var root in searchRoots)
+        foreach (var file in searchRoots)
         {
-            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            if (!extensions.Contains(Path.GetExtension(file))) continue;
+            if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
+
+            // This file necessarily contains the token it searches for. A lint rule excluding itself
+            // is normal; the alternative is obfuscating the pattern, which hides what is enforced.
+            if (Path.GetFileName(file) == "HostAgnosticBoundaryTests.cs") continue;
+
+            var allowed = false;
+            var lineNumber = 0;
+
+            foreach (var line in File.ReadLines(file))
             {
-                if (!extensions.Contains(Path.GetExtension(file))) continue;
-                if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
-                if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)) continue;
+                lineNumber++;
 
-                // This file necessarily contains the token it searches for. A lint rule excluding itself
-                // is normal; the alternative is obfuscating the pattern, which hides what is enforced.
-                if (Path.GetFileName(file) == "HostAgnosticBoundaryTests.cs") continue;
-
-                var lineNumber = 0;
-                foreach (var line in File.ReadLines(file))
-                {
-                    lineNumber++;
-                    if (forbidden.IsMatch(line))
-                        hits.Add($"{Path.GetRelativePath(repositoryRoot, file)}:{lineNumber}");
-                }
+                if (allowStart.IsMatch(line)) { allowed = true; continue; }
+                if (allowEnd.IsMatch(line)) { allowed = false; continue; }
+                if (!allowed && forbidden.IsMatch(line))
+                    hits.Add($"{Path.GetRelativePath(repositoryRoot, file)}:{lineNumber}");
             }
+
+            if (allowed)
+                hits.Add($"{Path.GetRelativePath(repositoryRoot, file)}: unclosed host-agnostic-allow region");
         }
 
         hits.ShouldBeEmpty(
-            "This library must name no specific host. Offending lines: " + string.Join(", ", hits.Take(20)));
+            "This library must name no specific host outside a scoped host-agnostic-allow region. " +
+            "Offending lines: " + string.Join(", ", hits.Take(20)));
     }
 
     private static bool IsPlatform(string name) =>

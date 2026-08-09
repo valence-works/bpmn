@@ -80,21 +80,10 @@ jobs:
         uses: actions/checkout@v4
 
       # This library must not name, depend on, or assume any particular host. The architecture test
-      # enforces the assembly graph; this grep enforces the prose, identifiers and literals. Both are
+      # enforces the assembly graph; this enforces the prose, identifiers and literals. Both are
       # needed: an assembly reference test cannot catch a doc comment.
+      #
+      # Deliberate exceptions (comparing against alternative projects) are scoped with
+      # <!-- host-agnostic-allow: reason --> regions rather than exempting whole files.
       - name: No host-specific references
-        run: |
-          set -euo pipefail
-
-          if matches=$(grep -rniE 'elsa' \
-                --include='*.cs' --include='*.csproj' --include='*.props' --include='*.md' \
-                --include='*.yml' --include='*.json' --include='*.bpmn' --include='*.slnx' \
-                --exclude-dir=bin --exclude-dir=obj --exclude-dir=.git \
-                --exclude='ci.yml' --exclude='HostAgnosticBoundaryTests.cs' \
-                . 2>/dev/null); then
-            echo "This repository must contain no host-specific references."
-            echo "$matches"
-            exit 1
-          fi
-
-          echo "No host-specific references found."
+        run: python3 .github/scripts/check-host-agnostic.py .
