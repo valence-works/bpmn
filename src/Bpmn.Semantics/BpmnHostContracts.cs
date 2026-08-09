@@ -19,8 +19,19 @@ namespace Bpmn.Semantics;
 /// </param>
 /// <param name="LiveWork">The units of work this scope started that are still running.</param>
 /// <param name="InvocationCorrelation">
-/// The <see cref="BpmnHostCommand.StartWork.Correlation"/> the host carried into this invocation, echoed back
-/// verbatim. Empty for a process the host started directly.
+/// The <see cref="BpmnHostCommand.StartWork.Correlation"/> of the work that started THIS scope, when this
+/// scope is a nested process. Empty for a process the host started directly.
+/// <para>
+/// It belongs to the scope and is fixed for the scope's lifetime. It is not a per-callback channel:
+/// there is deliberately nowhere to hand a completing unit of work's correlation back, and writing one
+/// here corrupts the event-subprocess start-element hint, which is read from this same dictionary.
+/// </para>
+/// <para>
+/// Because correlation does not round-trip, the interpreter re-finds a parked token from
+/// (binding ref, iteration id) alone. That imposes a rule on every host: <b>at most one live unit of
+/// work per (binding ref, iteration id) within a scope</b>. Multi-instance instances share a binding ref
+/// and are told apart by their iteration id, which is what it is for.
+/// </para>
 /// </param>
 /// <param name="Variables">The process's declared variables, as the host sees them.</param>
 /// <param name="Capabilities">What this host can do. Must match what the graph was built with.</param>
@@ -248,7 +259,14 @@ public sealed record BpmnStartRequest(
     BpmnHostSnapshot Host,
     BpmnStartSignal? StartSignal = null);
 
-/// <summary>Reports that a started unit of work completed.</summary>
+/// <summary>
+/// Reports that a started unit of work completed.
+/// <para>
+/// The completing work must ALREADY be removed from <see cref="BpmnHostSnapshot.LiveWork"/>. Completion
+/// is terminal; leaving it present lets a re-armed non-interrupting listener key onto the same
+/// (binding ref, iteration id) slot, and a teardown can then target the work that just finished.
+/// </para>
+/// </summary>
 /// <param name="Graph">The built process graph.</param>
 /// <param name="PriorState">The state returned by the previous evaluation.</param>
 /// <param name="Host">The host snapshot for this evaluation.</param>
@@ -265,7 +283,13 @@ public sealed record BpmnWorkCompletedRequest(
     IReadOnlyCollection<string> OutcomeNames,
     string? CompletedIterationId = null);
 
-/// <summary>Reports that a started unit of work failed terminally.</summary>
+/// <summary>
+/// Reports that a started unit of work failed terminally.
+/// <para>
+/// As with a completion, the failed work must ALREADY be removed from
+/// <see cref="BpmnHostSnapshot.LiveWork"/>.
+/// </para>
+/// </summary>
 /// <param name="Graph">The built process graph.</param>
 /// <param name="PriorState">The state returned by the previous evaluation.</param>
 /// <param name="Host">The host snapshot for this evaluation.</param>
@@ -283,6 +307,15 @@ public sealed record BpmnWorkFaultedRequest(
 /// <summary>
 /// Reports a signal raised by a nested process this scope invoked — the receiving half of
 /// <see cref="BpmnHostCommand.SignalEnclosingScope"/>.
+/// <para>
+/// Unlike a completion or a fault, the signalling work must STILL BE PRESENT in
+/// <see cref="BpmnHostSnapshot.LiveWork"/>. A signal is not terminal: an escalating activity keeps
+/// running, and removing it makes the interpreter believe it has already gone.
+/// </para>
+/// <para>
+/// A nested scope can terminalize synchronously while the parent is still applying commands. Queue the
+/// parent callback and drain it after the current command list is fully applied; do not recurse.
+/// </para>
 /// </summary>
 /// <param name="Graph">The built process graph.</param>
 /// <param name="PriorState">The state returned by the previous evaluation.</param>

@@ -171,7 +171,7 @@ BpmnHostCommand.StartWork(
     string ElementId,                                 // for your reporting
     string TokenId,                                   // the token parked while it runs
     string SchedulingCause,                           // why, for your reporting
-    IReadOnlyDictionary<string, string> Correlation,  // carry this with the work; hand it back
+    IReadOnlyDictionary<string, string> Correlation,  // pass to a nested process as its InvocationCorrelation
     BpmnIterationScope? IterationScope = null,        // multi-instance instance frame
     string? StartElementHint = null);                 // event subprocess body start event
 
@@ -180,9 +180,24 @@ BpmnHostCommand.CancelWorkSubtree(string Handle, string ElementId, string Reason
 BpmnHostCommand.SignalEnclosingScope(string Code, JsonElement? Payload);
 ```
 
-`Correlation` is opaque interpreter state. Carry it with the work, hand it back on the resulting
-callback, and — when the work is a nested BPMN process — supply it as that process's
-`InvocationCorrelation`.
+`Correlation` is opaque interpreter state with exactly one use: when the work you are starting is a
+**nested BPMN process**, supply it as that process's `BpmnHostSnapshot.InvocationCorrelation`. That is
+how the interpreter recognizes the nested scope on the way back in.
+
+There is deliberately nowhere to hand it back on a completion, fault, or signal callback, so do not
+try. Which is worth stating plainly, because it implies a rule that is otherwise invisible:
+
+> **At most one live unit of work per `(BindingRef, IterationId)` within a scope.**
+
+The interpreter re-finds the parked token from that pair alone. Two concurrent units of work sharing
+one binding ref and iteration id are indistinguishable to it, and completing either will resume the
+other's token. Multi-instance is exactly why `IterationId` exists: instances share a binding ref and
+are told apart by it.
+
+One corollary, because it is an easy and damaging mistake: **do not put a completing unit of work's
+correlation into `InvocationCorrelation` to "help".** That dictionary is the scope's, fixed for the
+scope's lifetime, and the event-subprocess start-element hint is read from it. Overwriting it
+corrupts event subprocess activation in a way no test of yours will obviously catch.
 
 `IterationScope` carries the per-instance values to seed: always the zero-based `loopIndex`, plus the
 current item in collection mode. Report the completion back under the same `IterationId`.
@@ -445,12 +460,47 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
 - [ ] Report a callback with the same binding ref and handle the work was started under.
-- [ ] Carry `StartWork.Correlation` with the work, and pass it into a nested process as its
-      `InvocationCorrelation`.
+- [ ] Keep at most one live unit of work per `(BindingRef, IterationId)` in a scope.
+- [ ] Pass `StartWork.Correlation` into a nested process as its `InvocationCorrelation`, and never
+      write anything else into that dictionary.
+- [ ] Remove finished work from `LiveWork` **before** calling `OnWorkCompleted` or `OnWorkFaulted`,
+      and leave signalling work **in** it when calling `OnWorkSignalled`. See below — this one is
+      load-bearing.
+- [ ] Queue a parent callback rather than recursing when a nested scope finishes synchronously.
 - [ ] Pass outcome names on completion when a conditional sequence flow depends on them.
 - [ ] Make `CancelWorkSubtree` recursive. It is not "cancel this one thing".
 - [ ] Route `SignalEnclosingScope` to the immediate parent scope, not to the root.
 - [ ] Decide your failure policy from `BpmnErrorDisposition`, not from every fault.
+
+## Two traps that are easy to hit and hard to diagnose
+
+Both of these were found by writing a second host against this port. Neither is obvious from the API,
+so they are spelled out here rather than left to be rediscovered.
+
+### `LiveWork` is pruned differently depending on which callback you are making
+
+`BpmnHostSnapshot.LiveWork` is the interpreter's view of what is still running, and what belongs in it
+depends on the callback:
+
+| Callback | The work being reported |
+| --- | --- |
+| `OnWorkCompleted` | must **already be removed** |
+| `OnWorkFaulted` | must **already be removed** |
+| `OnWorkSignalled` | must **still be present** |
+
+Completion and fault are terminal, so leaving the work in place lets a re-armed non-interrupting
+listener key onto the same `(binding ref, iteration id)` slot — and a teardown can then target the work
+that just finished. A signal is not terminal: an escalating activity keeps running, and removing it
+makes the interpreter believe it has already gone.
+
+### A nested scope can finish while you are still applying commands
+
+A nested process whose body runs start-to-end with no waiting will terminalize **during** the parent's
+command loop. Call the parent's `OnWorkCompleted` directly from inside command application and you
+re-enter the interpreter with a half-applied `LiveWork` set and an evaluation already in flight.
+
+Queue the parent callback and drain the queue after the current command list is fully applied. The
+reference host uses a single FIFO for exactly this.
 
 ## Related
 

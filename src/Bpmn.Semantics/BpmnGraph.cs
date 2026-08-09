@@ -23,12 +23,14 @@ public sealed class BpmnGraph
     private readonly IReadOnlyList<BpmnEventSubprocessCatcher> _eventSubprocesses;
 
     private BpmnGraph(
+        BpmnProcessDefinition definition,
         IReadOnlyCollection<BpmnElement> elements,
         IReadOnlyCollection<BpmnSequenceFlow> sequenceFlows,
         IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef,
         bool isTransaction,
         IReadOnlyList<BpmnEventSubprocessCatcher> eventSubprocesses)
     {
+        Definition = definition;
         Elements = elements;
         SequenceFlows = sequenceFlows;
         IsTransaction = isTransaction;
@@ -51,6 +53,19 @@ public sealed class BpmnGraph
     }
 
     /// <summary>Every flow element in the process.</summary>
+    /// <summary>
+    /// The definition this graph was built from.
+    /// <para>
+    /// A graph depends only on the definition, the bound work and the host capabilities, so hosts are
+    /// encouraged to build one per definition and reuse it across instances. Keeping the source here means
+    /// doing that does not cost the process identity a host needs for reporting.
+    /// </para>
+    /// </summary>
+    public BpmnProcessDefinition Definition { get; }
+
+    /// <summary>The BPMN id of the process this graph represents.</summary>
+    public string ProcessId => Definition.ProcessId;
+
     public IReadOnlyCollection<BpmnElement> Elements { get; }
 
     /// <summary>Every sequence flow in the process.</summary>
@@ -101,7 +116,7 @@ public sealed class BpmnGraph
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
 
-        return new BpmnGraph(elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
+        return new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
     }
 
     /// <summary>The element with this id, or throws when the process has none.</summary>
@@ -1047,4 +1062,46 @@ public sealed record BpmnEventSubprocessCatcher(
 /// subprocess body, whose start-event trigger the graph validator reads; <c>null</c> for every other kind of
 /// work, including subprocesses whose body the host resolves on its own.
 /// </param>
-public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null);
+public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null)
+{
+    /// <summary>
+    /// The bound-work set <paramref name="definition"/> declares, ready to hand to
+    /// <see cref="BpmnGraph.Build"/>.
+    /// <para>
+    /// <see cref="BpmnGraph.Build"/> demands one entry per declared binding, no more and no less. That is
+    /// the right contract for a host wiring real implementations to bindings, and pure ceremony for a host
+    /// whose implementations are "wait until someone tells me". Without this, every host writes the same
+    /// walk over elements collecting <see cref="BpmnElement.BindingRef"/> and
+    /// <see cref="BpmnElement.ListenerBindingRef"/>, and gets the nested-process re-attachment subtly wrong.
+    /// </para>
+    /// </summary>
+    /// <param name="definition">The process whose bindings to collect.</param>
+    /// <param name="nestedProcess">
+    /// Resolves the nested definition behind a binding that runs one. Required for an event subprocess body,
+    /// whose start-event trigger the graph validator reads out of it; return <c>null</c> for anything else.
+    /// </param>
+    public static IReadOnlyCollection<BpmnBoundWork> Derive(
+        BpmnProcessDefinition definition,
+        Func<string, BpmnProcessDefinition?>? nestedProcess = null)
+    {
+        if (definition is null) throw new ArgumentNullException(nameof(definition));
+
+        var bindings = new List<BpmnBoundWork>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var element in definition.Elements)
+        {
+            // Only the primary binding can run a nested process; a scope listener is always a plain wait.
+            Add(element.BindingRef, canNest: true);
+            Add(element.ListenerBindingRef, canNest: false);
+        }
+
+        return bindings;
+
+        void Add(string? bindingRef, bool canNest)
+        {
+            if (bindingRef is null || !seen.Add(bindingRef)) return;
+            bindings.Add(new BpmnBoundWork(bindingRef, canNest ? nestedProcess?.Invoke(bindingRef) : null));
+        }
+    }
+}
