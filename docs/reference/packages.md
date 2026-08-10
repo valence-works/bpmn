@@ -87,7 +87,7 @@ can paste into a bug report.
 ### The serialization is owned and versioned
 
 `Bpmn.Model` owns the JSON serialization of the model rather than leaving it to each host, and
-publishes a JSON Schema for it as a build artifact. Hosts **wrap** rather than replace it: a host that
+publishes a JSON Schema for it. Hosts **wrap** rather than replace it: a host that
 needs to attach its own data puts the library-owned document inside its own envelope.
 
 ```json
@@ -100,6 +100,19 @@ needs to attach its own data puts the library-owned document inside its own enve
 The nested document is identical across hosts, and non-.NET consumers generate their types from the
 published schema instead of hand-mirroring the model. Treat the format as a public contract — see
 [ADR 0005](../adr/0005-the-library-owns-a-versioned-payload-format.md).
+
+The schema ships inside the `Bpmn.Model` package at `schema/bpmn-payload.schema.json`, and lives in the
+repository at `src/Bpmn.Model/schema/`. `BpmnPayloadFormat.Version` is the format version, which is
+**not** the package version: pin to the former.
+
+Two things a consumer generating types should know, because both are easy to get wrong by hand and both
+are described accurately in the schema:
+
+- **Enums are integers.** The model declares no `JsonStringEnumConverter`, so every enum crosses the
+  wire as a number. The schema publishes the names alongside as `x-enumNames`.
+- **Property naming is not uniform yet.** The definition side is camelCase; everything under
+  `Bpmn.Model.State` is PascalCase. Generate from the schema rather than assuming a convention. This is
+  a known defect, recorded in ADR 0005, and is why the format version is still below 1.0.
 
 ## `Bpmn.Interchange`
 

@@ -13,5 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Bpmn.Model/Bpmn.Model.csproj" />
+    <!-- Build-time only, and test-only here: lets the schema-drift guard regenerate and compare in-process. -->
+    <ProjectReference Include="../../tools/Bpmn.Schema.Generator/Bpmn.Schema.Generator.csproj" />
   </ItemGroup>
 </Project>

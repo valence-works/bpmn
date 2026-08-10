@@ -1,6 +1,6 @@
 # ADR 0005: The library owns a versioned payload format
 
-**Status**: Accepted
+**Status**: Accepted (implemented)
 **Date**: 2026-08-09
 
 ## Context
@@ -38,6 +38,36 @@ The nested document is identical across hosts. The envelope is each host's own b
 
 Non-.NET consumers generate their types from the published schema rather than mirroring the model by
 hand.
+
+## Implementation
+
+Shipped, after this ADR spent a while describing something that did not exist.
+
+- `BpmnPayloadFormat.Version` is the format version, separate from the package version. A consumer pins
+  to it; the package version moves for unrelated reasons.
+- `src/Bpmn.Model/schema/bpmn-payload.schema.json` is generated from the model and checked in, so a
+  format change shows up as a schema diff in review. It is packed into `Bpmn.Model` under `schema/`,
+  which is what makes "published as a build artifact" literally true.
+- `tools/Bpmn.Schema.Generator` produces it by reflecting over the model. It describes what
+  `System.Text.Json` actually writes, not what the C# types look like.
+- `PayloadSchemaTests` regenerates and compares on every test run, and cross-checks the schema against
+  real serializer output, so the artifact cannot rot.
+
+### What publishing it exposed
+
+Generating the schema immediately found a defect the prose had been hiding: **the format uses two
+naming conventions.** The definition side names properties in camelCase through explicit
+`[JsonPropertyName]` attributes. The whole of `Bpmn.Model.State` carries no such attributes, so it
+serializes under CLR names, PascalCase. `BpmnProcessDefinition.Extensions` is a one-off outlier on the
+definition side, inconsistent with its own sibling in the same file. Fifty-three properties in total.
+
+That is precisely the class of thing this ADR predicted a hand-written mirror would get wrong, and it
+was in the format itself the whole time.
+
+The schema describes reality rather than the intent, because a schema that flatters the model is worse
+than none. The format version is therefore **0.1.0** rather than 1.0.0: calling it 1.0.0 would freeze
+the inconsistency into a contract on the day it was found. Normalizing the names is cheap now, while
+the library is pre-1.0 with a single consumer, and expensive later.
 
 ## Consequences
 

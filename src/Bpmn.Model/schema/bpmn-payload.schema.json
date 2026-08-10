@@ -1,0 +1,1409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valence.works/schemas/bpmn/payload/0.1.0.json",
+  "title": "BPMN payload format",
+  "description": "Version 0.1.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADR 0005.",
+  "x-payloadFormatVersion": "0.1.0",
+  "$ref": "#/$defs/bpmnDefinitions",
+  "$defs": {
+    "bpmnActiveWork": {
+      "type": "object",
+      "title": "BpmnActiveWork",
+      "properties": {
+        "NodeId": {
+          "type": "string"
+        },
+        "ElementId": {
+          "type": "string"
+        },
+        "TokenId": {
+          "type": "string"
+        },
+        "SchedulingCause": {
+          "type": "string"
+        },
+        "IterationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "NodeId",
+        "ElementId",
+        "TokenId",
+        "SchedulingCause"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnBounds": {
+      "type": "object",
+      "title": "BpmnBounds",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnCollaboration": {
+      "type": "object",
+      "title": "BpmnCollaboration",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnPool"
+          }
+        },
+        "messageFlows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnMessageFlow"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "pools",
+        "messageFlows",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnCompensable": {
+      "type": "object",
+      "title": "BpmnCompensable",
+      "properties": {
+        "CompensableId": {
+          "type": "string"
+        },
+        "HostElementId": {
+          "type": "string"
+        },
+        "HandlerElementId": {
+          "type": "string"
+        },
+        "Status": {
+          "$ref": "#/$defs/bpmnCompensableStatus"
+        }
+      },
+      "required": [
+        "CompensableId",
+        "HostElementId",
+        "HandlerElementId",
+        "Status"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnCompensableStatus": {
+      "type": "integer",
+      "title": "BpmnCompensableStatus",
+      "description": "Serialized as an integer: the model declares no JsonStringEnumConverter.",
+      "enum": [
+        0,
+        1,
+        2
+      ],
+      "x-enumNames": [
+        "Registered",
+        "Claimed",
+        "Compensated"
+      ]
+    },
+    "bpmnCompensationRun": {
+      "type": "object",
+      "title": "BpmnCompensationRun",
+      "properties": {
+        "RunId": {
+          "type": "string"
+        },
+        "ThrowTokenId": {
+          "type": "string"
+        },
+        "PendingCompensableIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "RunId",
+        "ThrowTokenId",
+        "PendingCompensableIds"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnDefinitions": {
+      "type": "object",
+      "title": "BpmnDefinitions",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetNamespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exporter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exporterVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "collaboration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnCollaboration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "processes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnProcessDefinition"
+          }
+        },
+        "diagrams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnDiagram"
+          }
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnMessageDeclaration"
+          }
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnSignalDeclaration"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnErrorDeclaration"
+          }
+        },
+        "escalations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnEscalationDeclaration"
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "processes",
+        "diagrams",
+        "messages",
+        "signals",
+        "errors",
+        "escalations",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnDiagnosticEvent": {
+      "type": "object",
+      "title": "BpmnDiagnosticEvent",
+      "properties": {
+        "DiagnosticId": {
+          "type": "string"
+        },
+        "Kind": {
+          "$ref": "#/$defs/bpmnDiagnosticKind"
+        },
+        "Message": {
+          "type": "string"
+        },
+        "ElementId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "FlowId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "TokenId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "Details": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "DiagnosticId",
+        "Kind",
+        "Message",
+        "Details"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnDiagnosticKind": {
+      "type": "integer",
+      "title": "BpmnDiagnosticKind",
+      "description": "Serialized as an integer: the model declares no JsonStringEnumConverter.",
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
+      "x-enumNames": [
+        "TokenEmitted",
+        "Scheduled",
+        "Waiting",
+        "Joined",
+        "Consumed",
+        "Canceled",
+        "Terminated",
+        "BehaviorFailure",
+        "Completed",
+        "Faulted",
+        "CompensationRegistered",
+        "CompensationTriggered",
+        "Compensated",
+        "TransactionCancelled",
+        "EscalationRaised",
+        "EscalationCaught",
+        "EscalationUnhandled",
+        "EscalationLate",
+        "EventSubprocessActivated",
+        "EventSubprocessCompleted",
+        "CallActivityFailureRouted",
+        "ScopeListenerArmed",
+        "ScopeListenerFired",
+        "ScopeListenerRetired"
+      ]
+    },
+    "bpmnDiagram": {
+      "type": "object",
+      "title": "BpmnDiagram",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plane": {
+          "$ref": "#/$defs/bpmnPlane"
+        }
+      },
+      "required": [
+        "plane"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnDocumentation": {
+      "type": "object",
+      "title": "BpmnDocumentation",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "textFormat": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnEdge": {
+      "type": "object",
+      "title": "BpmnEdge",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bpmnElementRef": {
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waypoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnPoint"
+          }
+        }
+      },
+      "required": [
+        "bpmnElementRef",
+        "waypoints"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnElement": {
+      "type": "object",
+      "title": "BpmnElement",
+      "properties": {
+        "elementId": {
+          "type": "string"
+        },
+        "elementType": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bindingRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "laneId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defaultFlowId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "eventDefinitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnEventDefinition"
+          }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "attachedToRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cancelActivity": {
+          "type": "boolean"
+        },
+        "loopCharacteristics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnLoopCharacteristics"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "isForCompensation": {
+          "type": "boolean"
+        },
+        "compensationHandlerElementId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isTransaction": {
+          "type": "boolean"
+        },
+        "triggeredByEvent": {
+          "type": "boolean"
+        },
+        "listenerBindingRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "elementId",
+        "elementType",
+        "eventDefinitions",
+        "properties",
+        "cancelActivity",
+        "isForCompensation",
+        "isTransaction",
+        "triggeredByEvent",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnErrorDeclaration": {
+      "type": "object",
+      "title": "BpmnErrorDeclaration",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "errorCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnEscalationDeclaration": {
+      "type": "object",
+      "title": "BpmnEscalationDeclaration",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "escalationCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnEventDefinition": {
+      "type": "object",
+      "title": "BpmnEventDefinition",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "properties"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnEventRace": {
+      "type": "object",
+      "title": "BpmnEventRace",
+      "properties": {
+        "RaceId": {
+          "type": "string"
+        },
+        "GatewayElementId": {
+          "type": "string"
+        },
+        "MemberTokenIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Resolved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "RaceId",
+        "GatewayElementId",
+        "MemberTokenIds",
+        "Resolved"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnExecutionState": {
+      "type": "object",
+      "title": "BpmnExecutionState",
+      "properties": {
+        "Tokens": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnToken"
+          }
+        },
+        "ActiveWork": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnActiveWork"
+          }
+        },
+        "Diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnDiagnosticEvent"
+          }
+        },
+        "Sequence": {
+          "type": "integer"
+        },
+        "Races": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnEventRace"
+          }
+        },
+        "Loops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnLoopState"
+          }
+        },
+        "Compensables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnCompensable"
+          }
+        },
+        "CompensationRuns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnCompensationRun"
+          }
+        },
+        "Terminated": {
+          "type": "boolean"
+        },
+        "Cancelling": {
+          "type": "boolean"
+        },
+        "PendingFault": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnPendingFault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "Tokens",
+        "ActiveWork",
+        "Diagnostics",
+        "Sequence",
+        "Races",
+        "Loops",
+        "Compensables",
+        "CompensationRuns",
+        "Terminated",
+        "Cancelling"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnExtensionElement": {
+      "type": "object",
+      "title": "BpmnExtensionElement",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/bpmnQName"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attributes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnForeignAttribute"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnExtensionElement"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "attributes",
+        "children"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnExtensions": {
+      "type": "object",
+      "title": "BpmnExtensions",
+      "properties": {
+        "documentation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnDocumentation"
+          }
+        },
+        "extensionElements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnExtensionElement"
+          }
+        },
+        "foreignAttributes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnForeignAttribute"
+          }
+        },
+        "foreignChildren": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnForeignChild"
+          }
+        }
+      },
+      "required": [
+        "documentation",
+        "extensionElements",
+        "foreignAttributes",
+        "foreignChildren"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnForeignAttribute": {
+      "type": "object",
+      "title": "BpmnForeignAttribute",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/bpmnQName"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnForeignChild": {
+      "type": "object",
+      "title": "BpmnForeignChild",
+      "properties": {
+        "element": {
+          "$ref": "#/$defs/bpmnExtensionElement"
+        },
+        "index": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "element",
+        "index"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnLabel": {
+      "type": "object",
+      "title": "BpmnLabel",
+      "properties": {
+        "bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnBounds"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "bpmnLane": {
+      "type": "object",
+      "title": "BpmnLane",
+      "properties": {
+        "laneId": {
+          "type": "string"
+        },
+        "poolId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "laneId",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnLoopCharacteristics": {
+      "type": "object",
+      "title": "BpmnLoopCharacteristics",
+      "properties": {
+        "isSequential": {
+          "type": "boolean"
+        },
+        "cardinality": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "collectionVariable": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "itemVariable": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "isSequential",
+        "itemVariable"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnLoopState": {
+      "type": "object",
+      "title": "BpmnLoopState",
+      "properties": {
+        "LoopId": {
+          "type": "string"
+        },
+        "TokenId": {
+          "type": "string"
+        },
+        "ElementId": {
+          "type": "string"
+        },
+        "IsSequential": {
+          "type": "boolean"
+        },
+        "TotalCount": {
+          "type": "integer"
+        },
+        "NextIndex": {
+          "type": "integer"
+        },
+        "CompletedCount": {
+          "type": "integer"
+        },
+        "Items": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {}
+        }
+      },
+      "required": [
+        "LoopId",
+        "TokenId",
+        "ElementId",
+        "IsSequential",
+        "TotalCount",
+        "NextIndex",
+        "CompletedCount"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnMessageDeclaration": {
+      "type": "object",
+      "title": "BpmnMessageDeclaration",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnMessageFlow": {
+      "type": "object",
+      "title": "BpmnMessageFlow",
+      "properties": {
+        "flowId": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceElementId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourcePoolId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetElementId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targetPoolId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "flowId",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnPendingFault": {
+      "type": "object",
+      "title": "BpmnPendingFault",
+      "properties": {
+        "FaultCode": {
+          "type": "string"
+        },
+        "Message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "FaultCode",
+        "Message"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnPlane": {
+      "type": "object",
+      "title": "BpmnPlane",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bpmnElementRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shapes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnShape"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnEdge"
+          }
+        }
+      },
+      "required": [
+        "shapes",
+        "edges"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnPoint": {
+      "type": "object",
+      "title": "BpmnPoint",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnPool": {
+      "type": "object",
+      "title": "BpmnPool",
+      "properties": {
+        "poolId": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isExecutable": {
+          "type": "boolean"
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "poolId",
+        "isExecutable",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnProcessDefinition": {
+      "type": "object",
+      "title": "BpmnProcessDefinition",
+      "properties": {
+        "processId": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isExecutable": {
+          "type": "boolean"
+        },
+        "isTransaction": {
+          "type": "boolean"
+        },
+        "elements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnElement"
+          }
+        },
+        "sequenceFlows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnSequenceFlow"
+          }
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnLane"
+          }
+        },
+        "variables": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/bpmnVariableDeclaration"
+          }
+        },
+        "Extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "processId",
+        "isExecutable",
+        "isTransaction",
+        "elements",
+        "sequenceFlows",
+        "lanes",
+        "variables",
+        "Extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnQName": {
+      "type": "object",
+      "title": "BpmnQName",
+      "properties": {
+        "ns": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "localName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "localName"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnSequenceFlow": {
+      "type": "object",
+      "title": "BpmnSequenceFlow",
+      "properties": {
+        "flowId": {
+          "type": "string"
+        },
+        "sourceRef": {
+          "type": "string"
+        },
+        "targetRef": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conditionOutcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "isDefault": {
+          "type": "boolean"
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "flowId",
+        "sourceRef",
+        "targetRef",
+        "isDefault",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnShape": {
+      "type": "object",
+      "title": "BpmnShape",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bpmnElementRef": {
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bpmnBounds"
+        },
+        "isHorizontal": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isExpanded": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "isMarkerVisible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "label": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "bpmnElementRef",
+        "bounds"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnSignalDeclaration": {
+      "type": "object",
+      "title": "BpmnSignalDeclaration",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnToken": {
+      "type": "object",
+      "title": "BpmnToken",
+      "properties": {
+        "TokenId": {
+          "type": "string"
+        },
+        "AtElementId": {
+          "type": "string"
+        },
+        "FlowId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ParentTokenId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "Status": {
+          "$ref": "#/$defs/bpmnTokenStatus"
+        },
+        "ProducingWorkHandle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "IterationKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "Kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnTokenKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "TokenId",
+        "AtElementId",
+        "Status"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnTokenKind": {
+      "type": "integer",
+      "title": "BpmnTokenKind",
+      "description": "Serialized as an integer: the model declares no JsonStringEnumConverter.",
+      "enum": [
+        0,
+        1
+      ],
+      "x-enumNames": [
+        "Listener",
+        "Activation"
+      ]
+    },
+    "bpmnTokenStatus": {
+      "type": "integer",
+      "title": "BpmnTokenStatus",
+      "description": "Serialized as an integer: the model declares no JsonStringEnumConverter.",
+      "enum": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "x-enumNames": [
+        "Active",
+        "AwaitingChild",
+        "WaitingAtJoin",
+        "Consumed",
+        "Canceled"
+      ]
+    },
+    "bpmnVariableDeclaration": {
+      "type": "object",
+      "title": "BpmnVariableDeclaration",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "typeHint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defaultValue": {}
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
