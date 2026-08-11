@@ -87,7 +87,7 @@ can paste into a bug report.
 ### The serialization is owned and versioned
 
 `Bpmn.Model` owns the JSON serialization of the model rather than leaving it to each host, and
-publishes a JSON Schema for it as a build artifact. Hosts **wrap** rather than replace it: a host that
+publishes a JSON Schema for it. Hosts **wrap** rather than replace it: a host that
 needs to attach its own data puts the library-owned document inside its own envelope.
 
 ```json
@@ -100,6 +100,28 @@ needs to attach its own data puts the library-owned document inside its own enve
 The nested document is identical across hosts, and non-.NET consumers generate their types from the
 published schema instead of hand-mirroring the model. Treat the format as a public contract — see
 [ADR 0005](../adr/0005-the-library-owns-a-versioned-payload-format.md).
+
+The schema ships inside the `Bpmn.Model` package at `schema/bpmn-payload.schema.json`, and lives in the
+repository at `src/Bpmn.Model/schema/`. `BpmnPayloadFormat.Version` is the format version, which is
+**not** the package version: pin to the former.
+
+Three things a consumer generating types should know, all of them described in the schema itself:
+
+- **Enums are integers.** The model declares no `JsonStringEnumConverter`, so every enum crosses the
+  wire as a number. The schema publishes the names alongside as `x-enumNames`.
+- **Properties are camelCase**, uniformly. Every serialized property declares its wire name explicitly
+  rather than relying on a default, and a test fails on any that does not — generating the schema found
+  53 properties that had drifted to PascalCase, and they were normalized before the format was frozen.
+  See ADR 0005.
+- **There are two roots.** The schema root uses a `oneOf` over both `bpmnDefinitions` and
+  `bpmnExecutionState`, so a standard validator accepts either document directly when resolving
+  `bpmn-payload.schema.json`. Both are also listed under `x-roots` as a convenience for code generators.
+
+Regenerate the schema after any model change:
+
+```bash
+dotnet run --project tools/Bpmn.Schema.Generator -- .
+```
 
 ## `Bpmn.Interchange`
 

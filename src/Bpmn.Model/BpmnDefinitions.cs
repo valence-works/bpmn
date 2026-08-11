@@ -105,6 +105,7 @@ public sealed record BpmnProcessDefinition(
     public IReadOnlyList<BpmnVariableDeclaration> Variables { get; init; } = Variables ?? [];
 
     /// <summary>Foreign XML retained from the process element. Never null.</summary>
+    [JsonPropertyName("extensions")]
     public BpmnExtensions Extensions { get; init; } = Extensions ?? BpmnExtensions.Empty;
 }
 

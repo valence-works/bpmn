@@ -12,7 +12,8 @@
 - [ ] No host-specific references introduced (the CI guard and `HostAgnosticBoundaryTests` enforce this)
 - [ ] Public API changes are reflected in `docs/`
 - [ ] A behavior change to the interpreter or the reader/writer has a test that fails without it
-- [ ] If the on-disk format changed, the JSON Schema and its version were updated together
+- [ ] If the on-disk format changed, the JSON Schema and `BpmnPayloadFormat.Version` were updated together
+      (regenerate with `dotnet run --project tools/Bpmn.Schema.Generator -- .`; `PayloadSchemaTests` fails if you forget)
 
 ## BPMN conformance
 

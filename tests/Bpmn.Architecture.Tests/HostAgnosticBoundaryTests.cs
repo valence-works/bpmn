@@ -118,7 +118,7 @@ public sealed class HostAgnosticBoundaryTests
         var allowStart = new Regex("host-agnostic-allow:", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         var allowEnd = new Regex("host-agnostic-allow-end", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        var searchRoots = new[] { "src", "tests", "samples", "docs" }
+        var searchRoots = new[] { "src", "tests", "samples", "docs", "tools" }
             .Select(folder => Path.Combine(repositoryRoot, folder))
             .Where(Directory.Exists)
             .SelectMany(root => Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))

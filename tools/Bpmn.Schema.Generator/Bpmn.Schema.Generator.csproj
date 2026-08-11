@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Build-time only. This never ships, so it is free to exist outside the four packages' zero-dependency
+    promise. It has no PackageReferences anyway; the generator is reflection over System.Text.Json.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsPublishable>false</IsPublishable>
+    <RootNamespace>Bpmn.Schema.Generator</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Bpmn.Model/Bpmn.Model.csproj" />
+  </ItemGroup>
+
+</Project>

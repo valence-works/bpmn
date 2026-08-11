@@ -34,16 +34,24 @@ public sealed record BpmnToken
         Kind = kind;
     }
 
+    [JsonPropertyName("tokenId")]
     public string TokenId { get; init; }
+
+    [JsonPropertyName("atElementId")]
     public string AtElementId { get; init; }
 
     /// <summary>The sequence flow the token arrived on, or <c>null</c> for start-event tokens.</summary>
+    [JsonPropertyName("flowId")]
     public string? FlowId { get; init; }
 
+    [JsonPropertyName("parentTokenId")]
     public string? ParentTokenId { get; init; }
+
+    [JsonPropertyName("status")]
     public BpmnTokenStatus Status { get; init; }
 
     /// <summary>The unit of host work whose completion produced this token, when known.</summary>
+    [JsonPropertyName("producingWorkHandle")]
     public string? ProducingWorkHandle { get; init; }
 
     /// <summary>
@@ -53,6 +61,7 @@ public sealed record BpmnToken
     /// every other minting site inherits its source/parent/group token's key. Join accounting groups arrivals
     /// by <c>(element, iteration key)</c> so a revisited join never conflates one iteration with the next.
     /// </summary>
+    [JsonPropertyName("iterationKey")]
     public string? IterationKey { get; init; }
 
     /// <summary>
@@ -65,6 +74,7 @@ public sealed record BpmnToken
     /// <see cref="BpmnTokenStatus.AwaitingChild"/> token that is excluded from the completion/deadlock liveness view so
     /// it never blocks the scope from completing.
     /// </summary>
+    [JsonPropertyName("kind")]
     public BpmnTokenKind? Kind { get; init; }
 }
 

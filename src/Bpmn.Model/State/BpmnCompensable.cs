@@ -30,14 +30,18 @@ public sealed record BpmnCompensable
     }
 
     /// <summary>The registration id (a pure function of <c>Sequence</c>); reverse-registration replay orders by descending id.</summary>
+    [JsonPropertyName("compensableId")]
     public string CompensableId { get; init; }
 
     /// <summary>The host element whose completion was registered.</summary>
+    [JsonPropertyName("hostElementId")]
     public string HostElementId { get; init; }
 
     /// <summary>The compensation handler element replayed for this registration.</summary>
+    [JsonPropertyName("handlerElementId")]
     public string HandlerElementId { get; init; }
 
+    [JsonPropertyName("status")]
     public BpmnCompensableStatus Status { get; init; }
 }
 

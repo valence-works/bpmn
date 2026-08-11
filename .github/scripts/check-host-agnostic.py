@@ -32,7 +32,7 @@ FORBIDDEN = re.compile(r"elsa", re.IGNORECASE)
 ALLOW_START = re.compile(r"host-agnostic-allow:", re.IGNORECASE)
 ALLOW_END = re.compile(r"host-agnostic-allow-end", re.IGNORECASE)
 
-SEARCH_ROOTS = ["src", "tests", "samples", "docs"]
+SEARCH_ROOTS = ["src", "tests", "samples", "docs", "tools"]
 ROOT_FILES = ["README.md", "CONTRIBUTING.md"]
 EXTENSIONS = {".cs", ".csproj", ".props", ".md", ".yml", ".json", ".bpmn", ".slnx"}
 
