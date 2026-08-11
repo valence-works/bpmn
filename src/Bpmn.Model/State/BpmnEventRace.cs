@@ -7,7 +7,7 @@ namespace Bpmn.Model.State;
 /// member token per outbound flow (each arriving at an intermediate catch event that arms). The first
 /// member whose child completes wins and routes; every other member token is cancelled and its armed child
 /// subtree torn down. <see cref="RaceId"/> derives from <c>BpmnExecutionState.Sequence</c> (the only id
-/// source); the record is additive payload growth — the state schema stays version 1.
+/// source).
 /// </summary>
 public sealed record BpmnEventRace
 {
