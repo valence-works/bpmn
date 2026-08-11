@@ -27,11 +27,14 @@ public sealed record BpmnCompensationRun
     }
 
     /// <summary>The run record id (a pure function of <c>Sequence</c>).</summary>
+    [JsonPropertyName("runId")]
     public string RunId { get; init; }
 
     /// <summary>The compensate throw/end token that coordinates this run (stays <c>AwaitingChild</c> until the run finishes).</summary>
+    [JsonPropertyName("throwTokenId")]
     public string ThrowTokenId { get; init; }
 
     /// <summary>The still-to-run claimed compensables, ordered <b>descending by registration</b> (reverse completion order); the head is the currently running handler.</summary>
+    [JsonPropertyName("pendingCompensableIds")]
     public IReadOnlyList<string> PendingCompensableIds { get; init; }
 }

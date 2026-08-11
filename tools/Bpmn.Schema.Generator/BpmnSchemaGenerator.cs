@@ -27,7 +27,16 @@ namespace Bpmn.Schema.Generator;
 /// </summary>
 public static class BpmnSchemaGenerator
 {
-    /// <summary>The roots a consumer serializes. Everything reachable from them is emitted into <c>$defs</c>.</summary>
+    /// <summary>
+    /// The roots a consumer serializes. Everything reachable from them is emitted into <c>$defs</c>.
+    /// <para>
+    /// There are two, because the format covers two documents: a definition and the execution state of a
+    /// running instance. The schema's own <c>$ref</c> points at the first, since a bare
+    /// <c>bpmn-payload.schema.json</c> should validate a definition; the second is addressed as
+    /// <c>bpmn-payload.schema.json#/$defs/bpmnExecutionState</c>. Both are listed under <c>x-roots</c> so a
+    /// code generator can find them without knowing those names.
+    /// </para>
+    /// </summary>
     private static readonly Type[] Roots =
     [
         typeof(BpmnDefinitions),
@@ -35,11 +44,26 @@ public static class BpmnSchemaGenerator
     ];
 
     /// <summary>Generates the schema document, formatted for a reviewable diff.</summary>
-    public static string Generate()
+    public static string Generate() => Generate(out _);
+
+    /// <summary>
+    /// Generates the schema and reports the type closure it covers - exactly the types that land in
+    /// <c>$defs</c>.
+    /// <para>
+    /// The closure is reported rather than recomputed by callers so that "what the format covers" has a
+    /// single definition. A test asserting a property of the model over a second, hand-maintained list
+    /// would drift from the schema the moment someone added a type, which is the failure this whole
+    /// generator exists to prevent.
+    /// </para>
+    /// </summary>
+    public static string Generate(out IReadOnlyList<Type> covered)
     {
         var defs = new JsonObject();
         var pending = new Queue<Type>(Roots);
         var seen = new HashSet<Type>();
+        var closure = new List<Type>();
+
+        covered = closure;
 
         while (pending.Count > 0)
         {
@@ -48,6 +72,7 @@ public static class BpmnSchemaGenerator
             if (!seen.Add(type))
                 continue;
 
+            closure.Add(type);
             defs[DefName(type)] = type.IsEnum ? DescribeEnum(type) : DescribeObject(type, pending);
         }
 
@@ -66,6 +91,7 @@ public static class BpmnSchemaGenerator
                 $"Version {BpmnPayloadFormat.Version} of the payload format owned by Bpmn.Model. "
                 + "Generated from the model; do not edit by hand. See ADR 0005.",
             ["x-payloadFormatVersion"] = BpmnPayloadFormat.Version,
+            ["x-roots"] = RootPointers(),
             ["$ref"] = Ref(typeof(BpmnDefinitions)),
             ["$defs"] = orderedDefs
         };
@@ -139,9 +165,10 @@ public static class BpmnSchemaGenerator
         if (underlying is not null)
             return Describe(underlying, nullable: true, pending);
 
-        // JsonElement is whatever the host put there. Deliberately unconstrained.
+        // JsonElement is whatever the host put there: any JSON value, including null. Deliberately
+        // unconstrained, so nullability makes no difference to what it accepts.
         if (type == typeof(JsonElement))
-            return nullable ? new JsonObject() : new JsonObject();
+            return new JsonObject();
 
         if (type == typeof(string))
             return Primitive("string", nullable);
@@ -207,7 +234,7 @@ public static class BpmnSchemaGenerator
     /// they are on the wire and therefore part of the contract, whether or not they were intended to be.
     /// </para>
     /// </summary>
-    private static IEnumerable<PropertyInfo> SerializedProperties(Type type) =>
+    public static IEnumerable<PropertyInfo> SerializedProperties(Type type) =>
         type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.GetMethod is not null && p.GetIndexParameters().Length == 0)
             .Where(p => p.GetCustomAttribute<JsonIgnoreAttribute>() is null);
@@ -277,6 +304,21 @@ public static class BpmnSchemaGenerator
 
     private static IEnumerable<Type> Interfaces(Type type) =>
         type.IsInterface ? new[] { type }.Concat(type.GetInterfaces()) : type.GetInterfaces();
+
+    /// <summary>
+    /// The addressable roots, keyed by type name. A consumer generating types needs to know which
+    /// <c>$defs</c> entries are whole documents rather than fragments, and the schema's single
+    /// <c>$ref</c> can only say that about one of them.
+    /// </summary>
+    private static JsonObject RootPointers()
+    {
+        var roots = new JsonObject();
+
+        foreach (var type in Roots)
+            roots[type.Name] = Ref(type);
+
+        return roots;
+    }
 
     private static string Ref(Type type) => "#/$defs/" + DefName(type);
 

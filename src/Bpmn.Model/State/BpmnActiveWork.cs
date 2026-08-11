@@ -26,10 +26,16 @@ public sealed record BpmnActiveWork
     }
 
     /// <summary>The executable node id of the scheduled child activity.</summary>
+    [JsonPropertyName("nodeId")]
     public string NodeId { get; init; }
 
+    [JsonPropertyName("elementId")]
     public string ElementId { get; init; }
+
+    [JsonPropertyName("tokenId")]
     public string TokenId { get; init; }
+
+    [JsonPropertyName("schedulingCause")]
     public string SchedulingCause { get; init; }
 
     /// <summary>
@@ -37,5 +43,6 @@ public sealed record BpmnActiveWork
     /// for ordinary single-run children. A teardown resolves this child's live activity-execution id from the
     /// <c>(NodeId, IterationId)</c> live-child map so N concurrent same-node instances resolve distinctly.
     /// </summary>
+    [JsonPropertyName("iterationId")]
     public string? IterationId { get; init; }
 }

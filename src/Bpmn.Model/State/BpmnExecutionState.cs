@@ -36,24 +36,36 @@ public sealed record BpmnExecutionState
         Cancelling = cancelling;
     }
 
+    [JsonPropertyName("tokens")]
     public IReadOnlyCollection<BpmnToken> Tokens { get; init; }
+
+    [JsonPropertyName("activeWork")]
     public IReadOnlyCollection<BpmnActiveWork> ActiveWork { get; init; }
+
+    [JsonPropertyName("diagnostics")]
     public IReadOnlyCollection<BpmnDiagnosticEvent> Diagnostics { get; init; }
+
+    [JsonPropertyName("sequence")]
     public int Sequence { get; init; }
 
     /// <summary>The open/resolved first-catch-wins races opened by event-based gateways; additive, schema stays v1.</summary>
+    [JsonPropertyName("races")]
     public IReadOnlyCollection<BpmnEventRace> Races { get; init; }
 
     /// <summary>The live multi-instance loops; each is a coordinator token with private per-instance sub-tokens. Additive, schema stays v1.</summary>
+    [JsonPropertyName("loops")]
     public IReadOnlyCollection<BpmnLoopState> Loops { get; init; }
 
     /// <summary>The durable reverse-order compensation log; each host completion carrying an attached compensation boundary is registered here. Never pruned. Additive, schema stays v1.</summary>
+    [JsonPropertyName("compensables")]
     public IReadOnlyCollection<BpmnCompensable> Compensables { get; init; }
 
     /// <summary>The in-flight compensation replay runs; each is a compensate throw/end coordinator token replaying its claimed handlers sequentially. Additive, schema stays v1.</summary>
+    [JsonPropertyName("compensationRuns")]
     public IReadOnlyCollection<BpmnCompensationRun> CompensationRuns { get; init; }
 
     /// <summary>Set when a terminate end event ended the process; late child completions are ignored.</summary>
+    [JsonPropertyName("terminated")]
     public bool Terminated { get; init; }
 
     /// <summary>
@@ -62,6 +74,7 @@ public sealed record BpmnExecutionState
     /// <c>Cancelled</c> outcome (parallel to <see cref="Terminated"/>, but completing with a distinct outcome
     /// rather than <c>Done</c>). Additive, schema stays v1.
     /// </summary>
+    [JsonPropertyName("cancelling")]
     public bool Cancelling { get; init; }
 
     /// <summary>
@@ -69,6 +82,7 @@ public sealed record BpmnExecutionState
     /// evaluation had already staged child schedules (the runtime forbids terminal decisions that also
     /// schedule children). The next callback surfaces it.
     /// </summary>
+    [JsonPropertyName("pendingFault")]
     public BpmnPendingFault? PendingFault { get; init; }
 
     /// <summary>The maximum number of diagnostics <see cref="Prune"/> retains; the oldest are dropped first.</summary>
@@ -106,4 +120,6 @@ public sealed record BpmnExecutionState
 }
 
 /// <summary>A deferred fault decision carried on the execution state (see <see cref="BpmnExecutionState.PendingFault"/>).</summary>
-public sealed record BpmnPendingFault(string FaultCode, string Message);
+public sealed record BpmnPendingFault(
+    [property: JsonPropertyName("faultCode")] string FaultCode,
+    [property: JsonPropertyName("message")] string Message);

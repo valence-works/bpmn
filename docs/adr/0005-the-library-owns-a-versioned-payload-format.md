@@ -51,23 +51,38 @@ Shipped, after this ADR spent a while describing something that did not exist.
 - `tools/Bpmn.Schema.Generator` produces it by reflecting over the model. It describes what
   `System.Text.Json` actually writes, not what the C# types look like.
 - `PayloadSchemaTests` regenerates and compares on every test run, and cross-checks the schema against
-  real serializer output, so the artifact cannot rot.
+  real serializer output for both roots, so the artifact cannot rot.
+
+The format covers two documents, not one: a definition and the execution state of a running instance.
+The schema's own `$ref` describes the first, so validating a bare `bpmn-payload.schema.json` validates a
+definition; the second is `bpmn-payload.schema.json#/$defs/bpmnExecutionState`. Both are listed under
+`x-roots` so a code generator does not have to know those names.
 
 ### What publishing it exposed
 
-Generating the schema immediately found a defect the prose had been hiding: **the format uses two
-naming conventions.** The definition side names properties in camelCase through explicit
-`[JsonPropertyName]` attributes. The whole of `Bpmn.Model.State` carries no such attributes, so it
-serializes under CLR names, PascalCase. `BpmnProcessDefinition.Extensions` is a one-off outlier on the
+Generating the schema immediately found a defect the prose had been hiding: **the format used two
+naming conventions.** The definition side named properties in camelCase through explicit
+`[JsonPropertyName]` attributes. The whole of `Bpmn.Model.State` carried no such attributes, so it
+serialized under CLR names, PascalCase. `BpmnProcessDefinition.Extensions` was a one-off outlier on the
 definition side, inconsistent with its own sibling in the same file. Fifty-three properties in total.
 
 That is precisely the class of thing this ADR predicted a hand-written mirror would get wrong, and it
-was in the format itself the whole time.
+was in the format itself the whole time. Nothing was checking, because nothing had ever written the
+format down.
 
-The schema describes reality rather than the intent, because a schema that flatters the model is worse
-than none. The format version is therefore **0.1.0** rather than 1.0.0: calling it 1.0.0 would freeze
-the inconsistency into a contract on the day it was found. Normalizing the names is cheap now, while
-the library is pre-1.0 with a single consumer, and expensive later.
+The names were normalized to camelCase before the format was frozen, and the version is **1.0.0**
+rather than something below 1.0 to say that it is frozen. The alternative — publishing the
+inconsistency and deferring the fix — was considered and rejected: the cost of normalizing is bounded
+now, while the library is pre-1.0 with no schema behind it, and unbounded once consumers have generated
+types from a 1.0 contract, at which point the same change breaks every language at once. The one thing
+worse than a format with a wart is a format whose first published version enshrines it.
+
+The wire format for `Bpmn.Model.State` therefore changed: state persisted by `0.1.x` does not
+deserialize. Nothing had shipped against a published schema, so there was nothing to migrate.
+
+Explicitness is now the enforced rule, not a convention. Every serialized property declares its wire
+name, and `Model_declares_every_serialized_name` fails on any that does not — because the failure mode
+here was never a wrong name, it was a property nobody had named at all.
 
 ## Consequences
 

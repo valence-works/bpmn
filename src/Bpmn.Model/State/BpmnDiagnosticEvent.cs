@@ -26,12 +26,25 @@ public sealed record BpmnDiagnosticEvent
         Details = details ?? new Dictionary<string, string>();
     }
 
+    [JsonPropertyName("diagnosticId")]
     public string DiagnosticId { get; init; }
+
+    [JsonPropertyName("kind")]
     public BpmnDiagnosticKind Kind { get; init; }
+
+    [JsonPropertyName("message")]
     public string Message { get; init; }
+
+    [JsonPropertyName("elementId")]
     public string? ElementId { get; init; }
+
+    [JsonPropertyName("flowId")]
     public string? FlowId { get; init; }
+
+    [JsonPropertyName("tokenId")]
     public string? TokenId { get; init; }
+
+    [JsonPropertyName("details")]
     public IReadOnlyDictionary<string, string> Details { get; init; }
 }
 

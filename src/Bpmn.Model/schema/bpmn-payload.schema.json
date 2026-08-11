@@ -1,28 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/0.1.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.0.0.json",
   "title": "BPMN payload format",
-  "description": "Version 0.1.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADR 0005.",
-  "x-payloadFormatVersion": "0.1.0",
+  "description": "Version 1.0.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADR 0005.",
+  "x-payloadFormatVersion": "1.0.0",
+  "x-roots": {
+    "BpmnDefinitions": "#/$defs/bpmnDefinitions",
+    "BpmnExecutionState": "#/$defs/bpmnExecutionState"
+  },
   "$ref": "#/$defs/bpmnDefinitions",
   "$defs": {
     "bpmnActiveWork": {
       "type": "object",
       "title": "BpmnActiveWork",
       "properties": {
-        "NodeId": {
+        "nodeId": {
           "type": "string"
         },
-        "ElementId": {
+        "elementId": {
           "type": "string"
         },
-        "TokenId": {
+        "tokenId": {
           "type": "string"
         },
-        "SchedulingCause": {
+        "schedulingCause": {
           "type": "string"
         },
-        "IterationId": {
+        "iterationId": {
           "type": [
             "string",
             "null"
@@ -30,10 +34,10 @@
         }
       },
       "required": [
-        "NodeId",
-        "ElementId",
-        "TokenId",
-        "SchedulingCause"
+        "nodeId",
+        "elementId",
+        "tokenId",
+        "schedulingCause"
       ],
       "additionalProperties": false
     },
@@ -99,24 +103,24 @@
       "type": "object",
       "title": "BpmnCompensable",
       "properties": {
-        "CompensableId": {
+        "compensableId": {
           "type": "string"
         },
-        "HostElementId": {
+        "hostElementId": {
           "type": "string"
         },
-        "HandlerElementId": {
+        "handlerElementId": {
           "type": "string"
         },
-        "Status": {
+        "status": {
           "$ref": "#/$defs/bpmnCompensableStatus"
         }
       },
       "required": [
-        "CompensableId",
-        "HostElementId",
-        "HandlerElementId",
-        "Status"
+        "compensableId",
+        "hostElementId",
+        "handlerElementId",
+        "status"
       ],
       "additionalProperties": false
     },
@@ -139,13 +143,13 @@
       "type": "object",
       "title": "BpmnCompensationRun",
       "properties": {
-        "RunId": {
+        "runId": {
           "type": "string"
         },
-        "ThrowTokenId": {
+        "throwTokenId": {
           "type": "string"
         },
-        "PendingCompensableIds": {
+        "pendingCompensableIds": {
           "type": "array",
           "items": {
             "type": "string"
@@ -153,9 +157,9 @@
         }
       },
       "required": [
-        "RunId",
-        "ThrowTokenId",
-        "PendingCompensableIds"
+        "runId",
+        "throwTokenId",
+        "pendingCompensableIds"
       ],
       "additionalProperties": false
     },
@@ -252,34 +256,34 @@
       "type": "object",
       "title": "BpmnDiagnosticEvent",
       "properties": {
-        "DiagnosticId": {
+        "diagnosticId": {
           "type": "string"
         },
-        "Kind": {
+        "kind": {
           "$ref": "#/$defs/bpmnDiagnosticKind"
         },
-        "Message": {
+        "message": {
           "type": "string"
         },
-        "ElementId": {
+        "elementId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "FlowId": {
+        "flowId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "TokenId": {
+        "tokenId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "Details": {
+        "details": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -287,10 +291,10 @@
         }
       },
       "required": [
-        "DiagnosticId",
-        "Kind",
-        "Message",
-        "Details"
+        "diagnosticId",
+        "kind",
+        "message",
+        "details"
       ],
       "additionalProperties": false
     },
@@ -608,27 +612,27 @@
       "type": "object",
       "title": "BpmnEventRace",
       "properties": {
-        "RaceId": {
+        "raceId": {
           "type": "string"
         },
-        "GatewayElementId": {
+        "gatewayElementId": {
           "type": "string"
         },
-        "MemberTokenIds": {
+        "memberTokenIds": {
           "type": "array",
           "items": {
             "type": "string"
           }
         },
-        "Resolved": {
+        "resolved": {
           "type": "boolean"
         }
       },
       "required": [
-        "RaceId",
-        "GatewayElementId",
-        "MemberTokenIds",
-        "Resolved"
+        "raceId",
+        "gatewayElementId",
+        "memberTokenIds",
+        "resolved"
       ],
       "additionalProperties": false
     },
@@ -636,58 +640,58 @@
       "type": "object",
       "title": "BpmnExecutionState",
       "properties": {
-        "Tokens": {
+        "tokens": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnToken"
           }
         },
-        "ActiveWork": {
+        "activeWork": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnActiveWork"
           }
         },
-        "Diagnostics": {
+        "diagnostics": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnDiagnosticEvent"
           }
         },
-        "Sequence": {
+        "sequence": {
           "type": "integer"
         },
-        "Races": {
+        "races": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnEventRace"
           }
         },
-        "Loops": {
+        "loops": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnLoopState"
           }
         },
-        "Compensables": {
+        "compensables": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnCompensable"
           }
         },
-        "CompensationRuns": {
+        "compensationRuns": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/bpmnCompensationRun"
           }
         },
-        "Terminated": {
+        "terminated": {
           "type": "boolean"
         },
-        "Cancelling": {
+        "cancelling": {
           "type": "boolean"
         },
-        "PendingFault": {
+        "pendingFault": {
           "anyOf": [
             {
               "$ref": "#/$defs/bpmnPendingFault"
@@ -699,16 +703,16 @@
         }
       },
       "required": [
-        "Tokens",
-        "ActiveWork",
-        "Diagnostics",
-        "Sequence",
-        "Races",
-        "Loops",
-        "Compensables",
-        "CompensationRuns",
-        "Terminated",
-        "Cancelling"
+        "tokens",
+        "activeWork",
+        "diagnostics",
+        "sequence",
+        "races",
+        "loops",
+        "compensables",
+        "compensationRuns",
+        "terminated",
+        "cancelling"
       ],
       "additionalProperties": false
     },
@@ -895,28 +899,28 @@
       "type": "object",
       "title": "BpmnLoopState",
       "properties": {
-        "LoopId": {
+        "loopId": {
           "type": "string"
         },
-        "TokenId": {
+        "tokenId": {
           "type": "string"
         },
-        "ElementId": {
+        "elementId": {
           "type": "string"
         },
-        "IsSequential": {
+        "isSequential": {
           "type": "boolean"
         },
-        "TotalCount": {
+        "totalCount": {
           "type": "integer"
         },
-        "NextIndex": {
+        "nextIndex": {
           "type": "integer"
         },
-        "CompletedCount": {
+        "completedCount": {
           "type": "integer"
         },
-        "Items": {
+        "items": {
           "type": [
             "array",
             "null"
@@ -925,13 +929,13 @@
         }
       },
       "required": [
-        "LoopId",
-        "TokenId",
-        "ElementId",
-        "IsSequential",
-        "TotalCount",
-        "NextIndex",
-        "CompletedCount"
+        "loopId",
+        "tokenId",
+        "elementId",
+        "isSequential",
+        "totalCount",
+        "nextIndex",
+        "completedCount"
       ],
       "additionalProperties": false
     },
@@ -1011,16 +1015,16 @@
       "type": "object",
       "title": "BpmnPendingFault",
       "properties": {
-        "FaultCode": {
+        "faultCode": {
           "type": "string"
         },
-        "Message": {
+        "message": {
           "type": "string"
         }
       },
       "required": [
-        "FaultCode",
-        "Message"
+        "faultCode",
+        "message"
       ],
       "additionalProperties": false
     },
@@ -1152,7 +1156,7 @@
             "$ref": "#/$defs/bpmnVariableDeclaration"
           }
         },
-        "Extensions": {
+        "extensions": {
           "$ref": "#/$defs/bpmnExtensions"
         }
       },
@@ -1164,7 +1168,7 @@
         "sequenceFlows",
         "lanes",
         "variables",
-        "Extensions"
+        "extensions"
       ],
       "additionalProperties": false
     },
@@ -1302,40 +1306,40 @@
       "type": "object",
       "title": "BpmnToken",
       "properties": {
-        "TokenId": {
+        "tokenId": {
           "type": "string"
         },
-        "AtElementId": {
+        "atElementId": {
           "type": "string"
         },
-        "FlowId": {
+        "flowId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "ParentTokenId": {
+        "parentTokenId": {
           "type": [
             "string",
             "null"
           ]
         },
-        "Status": {
+        "status": {
           "$ref": "#/$defs/bpmnTokenStatus"
         },
-        "ProducingWorkHandle": {
+        "producingWorkHandle": {
           "type": [
             "string",
             "null"
           ]
         },
-        "IterationKey": {
+        "iterationKey": {
           "type": [
             "string",
             "null"
           ]
         },
-        "Kind": {
+        "kind": {
           "anyOf": [
             {
               "$ref": "#/$defs/bpmnTokenKind"
@@ -1347,9 +1351,9 @@
         }
       },
       "required": [
-        "TokenId",
-        "AtElementId",
-        "Status"
+        "tokenId",
+        "atElementId",
+        "status"
       ],
       "additionalProperties": false
     },

@@ -19,19 +19,21 @@ public static class BpmnPayloadFormat
     /// <summary>
     /// The current payload format version, as a semantic version string.
     /// <para>
-    /// Deliberately below 1.0. Publishing the schema surfaced a real inconsistency in the format: the
-    /// definition side names its properties in camelCase through explicit attributes, while the whole of
-    /// <c>Bpmn.Model.State</c> carries no attributes and therefore serializes PascalCase, and
-    /// <c>BpmnProcessDefinition.Extensions</c> is a one-off outlier on the definition side. That is 53
-    /// properties following the wrong one of two conventions in a single document.
+    /// Publishing the schema surfaced a real inconsistency: the definition side named its properties in
+    /// camelCase through explicit attributes, while the whole of <c>Bpmn.Model.State</c> carried none and
+    /// therefore serialized PascalCase, with <c>BpmnProcessDefinition.Extensions</c> a one-off outlier on
+    /// the definition side. Fifty-three properties following the wrong one of two conventions in a single
+    /// document.
     /// </para>
     /// <para>
-    /// The schema describes the format as it actually is, because a schema that flatters the model is
-    /// worse than none. But calling that 1.0.0 would freeze the inconsistency into a contract on the day
-    /// it was discovered. 0.1.0 says what is true: described, versioned, and not yet frozen.
+    /// Those names were normalized to camelCase before the format was frozen, which is why this is 1.0.0
+    /// rather than something below 1.0. Normalizing cost a day while the library was pre-1.0 with no
+    /// published schema behind it; the same change after consumers had generated types from a 1.0 contract
+    /// would have been a breaking change in every language at once. Every serialized property now declares
+    /// its wire name explicitly, and <c>Model_declares_every_serialized_name</c> keeps it that way.
     /// </para>
     /// </summary>
-    public const string Version = "0.1.0";
+    public const string Version = "1.0.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

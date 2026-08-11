@@ -105,14 +105,23 @@ The schema ships inside the `Bpmn.Model` package at `schema/bpmn-payload.schema.
 repository at `src/Bpmn.Model/schema/`. `BpmnPayloadFormat.Version` is the format version, which is
 **not** the package version: pin to the former.
 
-Two things a consumer generating types should know, because both are easy to get wrong by hand and both
-are described accurately in the schema:
+Three things a consumer generating types should know, all of them described in the schema itself:
 
 - **Enums are integers.** The model declares no `JsonStringEnumConverter`, so every enum crosses the
   wire as a number. The schema publishes the names alongside as `x-enumNames`.
-- **Property naming is not uniform yet.** The definition side is camelCase; everything under
-  `Bpmn.Model.State` is PascalCase. Generate from the schema rather than assuming a convention. This is
-  a known defect, recorded in ADR 0005, and is why the format version is still below 1.0.
+- **Properties are camelCase**, uniformly. Every serialized property declares its wire name explicitly
+  rather than relying on a default, and a test fails on any that does not — generating the schema found
+  53 properties that had drifted to PascalCase, and they were normalized before the format was frozen.
+  See ADR 0005.
+- **There are two roots.** `bpmn-payload.schema.json` describes a definition;
+  `bpmn-payload.schema.json#/$defs/bpmnExecutionState` describes the execution state of a running
+  instance. Both are listed under `x-roots`.
+
+Regenerate the schema after any model change:
+
+```bash
+dotnet run --project tools/Bpmn.Schema.Generator -- .
+```
 
 ## `Bpmn.Interchange`
 

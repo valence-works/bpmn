@@ -27,12 +27,17 @@ public sealed record BpmnEventRace
         Resolved = resolved;
     }
 
+    [JsonPropertyName("raceId")]
     public string RaceId { get; init; }
+
+    [JsonPropertyName("gatewayElementId")]
     public string GatewayElementId { get; init; }
 
     /// <summary>The tokens the gateway minted onto its outbound flows; exactly one wins, the rest are cancelled.</summary>
+    [JsonPropertyName("memberTokenIds")]
     public IReadOnlyCollection<string> MemberTokenIds { get; init; }
 
     /// <summary>Set once the first member's child completed and the losing siblings were cancelled.</summary>
+    [JsonPropertyName("resolved")]
     public bool Resolved { get; init; }
 }

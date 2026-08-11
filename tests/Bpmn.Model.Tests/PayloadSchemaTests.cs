@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Bpmn.Schema.Generator;
@@ -54,9 +56,7 @@ public sealed class PayloadSchemaTests
         var token = new BpmnToken("t1", "e1", status: BpmnTokenStatus.WaitingAtJoin);
         var written = JsonSerializer.SerializeToNode(token)!.AsObject();
 
-        // Note the PascalCase key: BpmnToken declares no [JsonPropertyName], so the CLR name goes out
-        // verbatim. Asserting "status" here would pass against an assumption and fail against reality.
-        written["Status"]!.GetValue<int>().ShouldBe((int)BpmnTokenStatus.WaitingAtJoin);
+        written["status"]!.GetValue<int>().ShouldBe((int)BpmnTokenStatus.WaitingAtJoin);
 
         var declared = (JsonObject)Defs["bpmnTokenStatus"]!;
         declared["type"]!.GetValue<string>().ShouldBe("integer");
@@ -65,20 +65,68 @@ public sealed class PayloadSchemaTests
     }
 
     /// <summary>
+    /// The format names every property in camelCase, and says so explicitly on every one of them.
+    /// <para>
+    /// Explicitness is the point, not just the casing. With no naming policy configured, a property that
+    /// omits the attribute goes out under its CLR name, and the format silently acquires a PascalCase
+    /// member. That is exactly how <c>Bpmn.Model.State</c> and <c>BpmnProcessDefinition.Extensions</c>
+    /// drifted apart from the rest of the format before the schema existed to show it - 53 properties,
+    /// invisible until something generated a document and looked. This test is what stops the 54th.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Model_declares_every_serialized_name()
+    {
+        BpmnSchemaGenerator.Generate(out var covered);
+
+        var offending = (
+            from type in covered
+            where !type.IsEnum
+            from property in BpmnSchemaGenerator.SerializedProperties(type)
+            let declared = property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name
+            where !IsCamelCase(declared)
+            select declared is null
+                ? $"{type.Name}.{property.Name} declares no [JsonPropertyName], so it is written as \"{property.Name}\""
+                : $"{type.Name}.{property.Name} is written as \"{declared}\", which is not camelCase")
+            .ToArray();
+
+        offending.ShouldBeEmpty(
+            "Every serialized property must carry [JsonPropertyName] with a camelCase name. Without the "
+            + "attribute the property goes out under its CLR name and the payload format acquires a second "
+            + "naming convention.\n  " + string.Join("\n  ", offending));
+    }
+
+    /// <summary>
+    /// Both documents the format covers are addressable. The schema's own <c>$ref</c> can only point at
+    /// one, so a consumer persisting execution state needs <c>x-roots</c> to find the other.
+    /// </summary>
+    [Fact]
+    public void Both_payload_roots_are_addressable()
+    {
+        var roots = (JsonObject)Schema["x-roots"]!;
+
+        roots.Count.ShouldBe(2);
+
+        foreach (var (name, _) in roots)
+            RootSchema(name).ShouldNotBeNull($"x-roots lists '{name}' but it resolves to nothing.");
+    }
+
+    /// <summary>
     /// Every property the serializer emits for a realistic document must be described by the schema.
     /// This is the check that catches a computed get-only property quietly joining the contract, and
     /// it is why <c>additionalProperties: false</c> is safe to publish.
     /// </summary>
-    [Fact]
-    public void Every_property_the_serializer_emits_is_described_by_the_schema()
+    [Theory]
+    [MemberData(nameof(SampleDocuments))]
+    public void Every_property_the_serializer_emits_is_described_by_the_schema(string root, object sample)
     {
-        var document = JsonSerializer.SerializeToNode(SampleDefinitions())!;
+        var document = JsonSerializer.SerializeToNode(sample, sample.GetType())!;
         var undescribed = new List<string>();
 
-        Walk(document, RefTarget((JsonObject)Schema), "$", undescribed);
+        Walk(document, RootSchema(root), "$", undescribed);
 
         undescribed.ShouldBeEmpty(
-            "These paths are written by System.Text.Json but not described by the schema:\n  "
+            $"These paths are written by System.Text.Json for {root} but not described by the schema:\n  "
             + string.Join("\n  ", undescribed));
     }
 
@@ -86,15 +134,25 @@ public sealed class PayloadSchemaTests
     /// The mirror image: a property the schema marks required must actually be written. A required
     /// property the serializer omits would make every real document fail validation.
     /// </summary>
-    [Fact]
-    public void Every_required_property_is_actually_written()
+    [Theory]
+    [MemberData(nameof(SampleDocuments))]
+    public void Every_required_property_is_actually_written(string root, object sample)
     {
-        var document = JsonSerializer.SerializeToNode(SampleDefinitions())!.AsObject();
-        var definition = RefTarget((JsonObject)Schema);
+        var document = JsonSerializer.SerializeToNode(sample, sample.GetType())!.AsObject();
 
-        foreach (var name in Required(definition))
-            document.ContainsKey(name).ShouldBeTrue($"Schema requires '{name}' on the root, but it was not written.");
+        foreach (var name in Required(RootSchema(root)))
+            document.ContainsKey(name).ShouldBeTrue($"Schema requires '{name}' on {root}, but it was not written.");
     }
+
+    /// <summary>
+    /// One sample per payload root. A definition alone would leave the whole of
+    /// <c>Bpmn.Model.State</c> unchecked, which is the half of the format that drifted.
+    /// </summary>
+    public static TheoryData<string, object> SampleDocuments() => new()
+    {
+        { nameof(BpmnDefinitions), SampleDefinitions() },
+        { nameof(BpmnExecutionState), SampleExecutionState() }
+    };
 
     // ---- walking ---------------------------------------------------------------------------------
 
@@ -151,7 +209,17 @@ public sealed class PayloadSchemaTests
         return obj;
     }
 
-    private static JsonObject RefTarget(JsonObject schema) => Resolve(schema)!;
+    /// <summary>
+    /// A wire name is checked for the convention, not for being mechanically derived from the CLR name.
+    /// Deliberate renames are legitimate - <c>BpmnQName.Namespace</c> is published as <c>ns</c>, since the
+    /// CLR name only reads that way because <c>namespace</c> is a keyword.
+    /// </summary>
+    private static bool IsCamelCase(string? name) =>
+        !string.IsNullOrEmpty(name) && char.IsLower(name[0]) && name.All(char.IsLetterOrDigit);
+
+    /// <summary>The schema describing one of the payload roots, looked up through <c>x-roots</c>.</summary>
+    private static JsonObject RootSchema(string root) =>
+        Resolve(new JsonObject { ["$ref"] = ((JsonObject)Schema["x-roots"]!)[root]!.DeepClone() })!;
 
     private static IEnumerable<string> Required(JsonObject schema) =>
         schema["required"] is JsonArray required
@@ -183,6 +251,24 @@ public sealed class PayloadSchemaTests
             TargetNamespace: "https://example.test",
             Processes: [process]);
     }
+
+    /// <summary>
+    /// A state document populating every collection on the root, so the walk reaches each record type
+    /// rather than skipping past an empty array.
+    /// </summary>
+    private static BpmnExecutionState SampleExecutionState() =>
+        new(
+            tokens: [new BpmnToken("tok:1", "work", flowId: "flow:1", status: BpmnTokenStatus.AwaitingChild, kind: BpmnTokenKind.Listener)],
+            activeWork: [new BpmnActiveWork("node:1", "work", "tok:1", "sequence-flow", iterationId: "iter:1")],
+            diagnostics: [new BpmnDiagnosticEvent("diag:1", BpmnDiagnosticKind.Scheduled, "Scheduled work", elementId: "work", details: new Dictionary<string, string> { ["reason"] = "test" })],
+            sequence: 7,
+            terminated: true,
+            pendingFault: new BpmnPendingFault("BPMN-1", "A fault"),
+            races: [new BpmnEventRace("race:1", "gateway", ["tok:1"], resolved: true)],
+            loops: [new BpmnLoopState("loop:1", "tok:1", "work", isSequential: true, totalCount: 2, nextIndex: 1, completedCount: 1, items: [JsonSerializer.SerializeToElement("first")])],
+            compensables: [new BpmnCompensable("comp:1", "work", "undo", BpmnCompensableStatus.Registered)],
+            compensationRuns: [new BpmnCompensationRun("comprun:1", "tok:1", ["comp:1"])],
+            cancelling: true);
 
     private static JsonObject LoadSchema() =>
         (JsonObject)JsonNode.Parse(File.ReadAllText(SchemaPath()))!;
