@@ -113,9 +113,9 @@ Three things a consumer generating types should know, all of them described in t
   rather than relying on a default, and a test fails on any that does not — generating the schema found
   53 properties that had drifted to PascalCase, and they were normalized before the format was frozen.
   See ADR 0005.
-- **There are two roots.** `bpmn-payload.schema.json` describes a definition;
-  `bpmn-payload.schema.json#/$defs/bpmnExecutionState` describes the execution state of a running
-  instance. Both are listed under `x-roots`.
+- **There are two roots.** The schema root uses a `oneOf` over both `bpmnDefinitions` and
+  `bpmnExecutionState`, so a standard validator accepts either document directly when resolving
+  `bpmn-payload.schema.json`. Both are also listed under `x-roots` as a convenience for code generators.
 
 Regenerate the schema after any model change:
 

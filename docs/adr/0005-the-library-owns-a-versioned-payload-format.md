@@ -54,9 +54,9 @@ Shipped, after this ADR spent a while describing something that did not exist.
   real serializer output for both roots, so the artifact cannot rot.
 
 The format covers two documents, not one: a definition and the execution state of a running instance.
-The schema's own `$ref` describes the first, so validating a bare `bpmn-payload.schema.json` validates a
-definition; the second is `bpmn-payload.schema.json#/$defs/bpmnExecutionState`. Both are listed under
-`x-roots` so a code generator does not have to know those names.
+The schema root uses a `oneOf` over both, so a standard validator accepts either document when resolving
+`bpmn-payload.schema.json` directly. Both are also listed under `x-roots` so a code generator does not
+have to know the individual `$defs` names.
 
 ### What publishing it exposed
 

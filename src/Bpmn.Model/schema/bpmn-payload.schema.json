@@ -8,7 +8,14 @@
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState"
   },
-  "$ref": "#/$defs/bpmnDefinitions",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/bpmnDefinitions"
+    },
+    {
+      "$ref": "#/$defs/bpmnExecutionState"
+    }
+  ],
   "$defs": {
     "bpmnActiveWork": {
       "type": "object",

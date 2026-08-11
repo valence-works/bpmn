@@ -31,10 +31,9 @@ public static class BpmnSchemaGenerator
     /// The roots a consumer serializes. Everything reachable from them is emitted into <c>$defs</c>.
     /// <para>
     /// There are two, because the format covers two documents: a definition and the execution state of a
-    /// running instance. The schema's own <c>$ref</c> points at the first, since a bare
-    /// <c>bpmn-payload.schema.json</c> should validate a definition; the second is addressed as
-    /// <c>bpmn-payload.schema.json#/$defs/bpmnExecutionState</c>. Both are listed under <c>x-roots</c> so a
-    /// code generator can find them without knowing those names.
+    /// running instance. The schema root uses a <c>oneOf</c> over both, so a standard validator accepts
+    /// either document. Both are also listed under <c>x-roots</c> so a code generator can find them without
+    /// knowing the individual <c>$defs</c> names.
     /// </para>
     /// </summary>
     private static readonly Type[] Roots =
@@ -92,7 +91,7 @@ public static class BpmnSchemaGenerator
                 + "Generated from the model; do not edit by hand. See ADR 0005.",
             ["x-payloadFormatVersion"] = BpmnPayloadFormat.Version,
             ["x-roots"] = RootPointers(),
-            ["$ref"] = Ref(typeof(BpmnDefinitions)),
+            ["oneOf"] = RootOneOf(),
             ["$defs"] = orderedDefs
         };
 
@@ -308,7 +307,7 @@ public static class BpmnSchemaGenerator
     /// <summary>
     /// The addressable roots, keyed by type name. A consumer generating types needs to know which
     /// <c>$defs</c> entries are whole documents rather than fragments, and the schema's single
-    /// <c>$ref</c> can only say that about one of them.
+    /// <c>oneOf</c> expresses the same information to a standard validator.
     /// </summary>
     private static JsonObject RootPointers()
     {
@@ -319,6 +318,13 @@ public static class BpmnSchemaGenerator
 
         return roots;
     }
+
+    /// <summary>
+    /// A <c>oneOf</c> array pointing at each root, so a standard JSON Schema validator accepts either
+    /// payload document when it resolves <c>bpmn-payload.schema.json</c> directly.
+    /// </summary>
+    private static JsonArray RootOneOf() =>
+        new(Roots.Select(t => (JsonNode)new JsonObject { ["$ref"] = Ref(t) }).ToArray());
 
     private static string Ref(Type type) => "#/$defs/" + DefName(type);
 

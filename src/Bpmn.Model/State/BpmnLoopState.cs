@@ -6,10 +6,10 @@ namespace Bpmn.Model.State;
 /// <summary>
 /// The live state of one multi-instance loop. A coordinator token
 /// (<see cref="TokenId"/>) stays <c>AwaitingChild</c> at the host <see cref="ElementId"/> while its instance
-/// sub-tokens run the bound child; this record tracks how many instances remain. It is additive engine state
-/// (schema stays version 1) whose only mutation home is <c>BpmnStateMutator</c>; <see cref="LoopId"/> and the
-/// instance token ids derive from <c>BpmnExecutionState.Sequence</c>. The record is dropped when the loop
-/// completes or its coordinator is cancelled.
+/// sub-tokens run the bound child; this record tracks how many instances remain. The only mutation home is
+/// <c>BpmnStateMutator</c>; <see cref="LoopId"/> and the instance token ids derive from
+/// <c>BpmnExecutionState.Sequence</c>. The record is dropped when the loop completes or its coordinator is
+/// cancelled.
 /// </summary>
 public sealed record BpmnLoopState
 {
@@ -71,7 +71,7 @@ public sealed record BpmnLoopState
     /// value seeded under the host's <c>ItemVariable</c> for instance <c>k</c>. <c>null</c> in cardinality mode.
     /// Persisted on the record because sequential mode seeds instance <c>k+1</c> in a later evaluation (instance
     /// <c>k</c>'s completion) and the snapshot semantics forbid re-reading the variable; parallel mode reads the
-    /// same record for uniformity. Additive state growth (schema stays version 1).
+    /// same record for uniformity.
     /// </summary>
     [JsonPropertyName("items")]
     public IReadOnlyList<JsonElement>? Items { get; init; }
