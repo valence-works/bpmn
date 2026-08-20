@@ -234,6 +234,89 @@ public static class ProcessFixtures
             .Connect("Join", "End")
             .Build();
 
+    /// <summary>
+    /// A transaction subprocess that cancels itself while a compensation replay is already in flight, which is
+    /// the shape that puts two units of work on one slot: stopping the in-flight run releases its unrun
+    /// compensable, and the cancel's own run then re-claims it and restarts the same handler.
+    /// <para>
+    /// The body splits in two (three with <paramref name="withThirdBranch"/>): one branch reserves and then
+    /// throws a compensate event, parking on the replay; another completes a task and hits the cancel end event.
+    /// The third branch, when present, is work that is still genuinely in flight and has nothing to do with the
+    /// slot collision — it is what separates tearing down everything from tearing down only the re-used slot.
+    /// </para>
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) CancellableTransaction(bool withThirdBranch = false)
+    {
+        var body = new BpmnProcessBuilder("booking")
+            .Transaction()
+            .StartEvent("BodyStart")
+            .ParallelGateway("Split")
+            .Task("Reserve", bindingRef: "reserve")
+            .IntermediateThrowEvent("Replay", new BpmnEventDefinition(BpmnEventDefinitionTypes.Compensation))
+            .EndEvent("EndReserved")
+            .Task("Trigger", bindingRef: "trigger")
+            .EndEvent("CancelEnd", null, new BpmnEventDefinition(BpmnEventDefinitionTypes.Cancel))
+            .Connect("BodyStart", "Split")
+            .Connect("Split", "Reserve")
+            .ConnectSequence("Reserve", "Replay", "EndReserved")
+            .Connect("Split", "Trigger")
+            .ConnectSequence("Trigger", "CancelEnd");
+
+        CompensateReserve(body);
+
+        if (withThirdBranch)
+            body.Task("Audit", bindingRef: "audit")
+                .EndEvent("EndAudited")
+                .Connect("Split", "Audit")
+                .ConnectSequence("Audit", "EndAudited");
+
+        return (CancellableTransactionParent(), body.Build());
+    }
+
+    /// <summary>
+    /// The same transaction cancelling with nothing else live: one sequential branch, so when the cancel end
+    /// event fires the only work the scope starts is the compensation the cancel itself replays.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) CancellableTransactionWithNothingElseLive()
+    {
+        var body = new BpmnProcessBuilder("booking")
+            .Transaction()
+            .StartEvent("BodyStart")
+            .Task("Reserve", bindingRef: "reserve")
+            .Task("Trigger", bindingRef: "trigger")
+            .EndEvent("CancelEnd", null, new BpmnEventDefinition(BpmnEventDefinitionTypes.Cancel))
+            .ConnectSequence("BodyStart", "Reserve", "Trigger", "CancelEnd");
+
+        CompensateReserve(body);
+
+        return (CancellableTransactionParent(), body.Build());
+    }
+
+    /// <summary>Registers <c>Reserve</c> for compensation by <c>UndoReserve</c>: the boundary event and the handler it names.</summary>
+    private static void CompensateReserve(BpmnProcessBuilder body) =>
+        body.Element(new BpmnElement(
+                "ReserveCompensation", BpmnElementTypes.BoundaryEvent,
+                attachedToRef: "Reserve",
+                compensationHandlerElementId: "UndoReserve",
+                eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Compensation)]))
+            .Element(new BpmnElement(
+                "UndoReserve", BpmnElementTypes.Task,
+                bindingRef: "undo-reserve",
+                isForCompensation: true));
+
+    /// <summary>The enclosing scope for a cancellable transaction: a cancel boundary routes the cancellation to recovery.</summary>
+    private static BpmnProcessDefinition CancellableTransactionParent() =>
+        new BpmnProcessBuilder("parent")
+            .StartEvent("Start")
+            .SubProcess("Booking", bindingRef: "booking", isTransaction: true)
+            .EndEvent("EndDone")
+            .BoundaryEvent("BookingCancelled", "Booking", new BpmnEventDefinition(BpmnEventDefinitionTypes.Cancel))
+            .Task("Recover", bindingRef: "recover")
+            .EndEvent("EndCancelled")
+            .ConnectSequence("Start", "Booking", "EndDone")
+            .ConnectSequence("BookingCancelled", "Recover", "EndCancelled")
+            .Build();
+
     public static BpmnEventDefinition Timer(string isoDuration) =>
         new(BpmnEventDefinitionTypes.Timer,
             new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Interval] = isoDuration });

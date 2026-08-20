@@ -32,6 +32,14 @@ namespace Bpmn.Semantics;
 /// work per (binding ref, iteration id) within a scope</b>. Multi-instance instances share a binding ref
 /// and are told apart by their iteration id, which is what it is for.
 /// </para>
+/// <para>
+/// The rule holds <b>once a command batch has been applied in full, in order</b> — not at every point
+/// within one. An interrupting path may emit the replacement <see cref="BpmnHostCommand.StartWork"/>
+/// ahead of the <see cref="BpmnHostCommand.CancelWorkSubtree"/> for the unit it supersedes, so a host
+/// that applied the batch halfway would see the slot doubly occupied. Two obligations follow: apply
+/// commands in the order returned, and key the ledger by handle rather than by slot, so the teardown
+/// still names the older unit unambiguously.
+/// </para>
 /// </param>
 /// <param name="Variables">The process's declared variables, as the host sees them.</param>
 /// <param name="Capabilities">What this host can do. Must match what the graph was built with.</param>

@@ -140,7 +140,8 @@ an element with `isTransaction: true` — and a cancel boundary event is valid o
 
 The sequence, when a cancel end event fires:
 
-1. All other live work in the transaction stops.
+1. All other live work in the transaction stops, and is torn down on the host — a cancelled
+   transaction leaves nothing running behind it.
 2. The transaction's registered compensations replay, in reverse order.
 3. The scope completes with the `Cancelled` outcome, which is distinct from ordinary completion.
 4. A cancel boundary event on the transaction, if present, routes the cancellation path in the parent.

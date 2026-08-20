@@ -194,6 +194,13 @@ one binding ref and iteration id are indistinguishable to it, and completing eit
 other's token. Multi-instance is exactly why `IterationId` exists: instances share a binding ref and
 are told apart by it.
 
+Read that as holding **once you have applied a command batch in full, in order** — not at every point
+within one. An interrupting path may emit the replacement `StartWork` ahead of the
+`CancelWorkSubtree` for the unit it supersedes, so a host that stopped halfway through the batch
+would see the slot doubly occupied. That is why two other checklist items are load-bearing here:
+apply commands in the order returned, and key your ledger by handle rather than by slot, so the
+teardown still names the older unit unambiguously.
+
 One corollary, because it is an easy and damaging mistake: **do not put a completing unit of work's
 correlation into `InvocationCorrelation` to "help".** That dictionary is the scope's, fixed for the
 scope's lifetime, and the event-subprocess start-element hint is read from it. Overwriting it
@@ -460,7 +467,8 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
 - [ ] Report a callback with the same binding ref and handle the work was started under.
-- [ ] Keep at most one live unit of work per `(BindingRef, IterationId)` in a scope.
+- [ ] Keep at most one live unit of work per `(BindingRef, IterationId)` in a scope, once each
+      command batch has been applied in full. Key your ledger by handle, not by slot.
 - [ ] Pass `StartWork.Correlation` into a nested process as its `InvocationCorrelation`, and never
       write anything else into that dictionary.
 - [ ] Remove finished work from `LiveWork` **before** calling `OnWorkCompleted` or `OnWorkFaulted`,
