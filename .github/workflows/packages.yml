@@ -86,25 +86,17 @@ jobs:
           set -euo pipefail
           mkdir -p ./artifacts
 
-          # Preview builds publish everything; a tagged release publishes only what is ready to be
-          # stable. Bpmn.Semantics and Bpmn.Runtime.InMemory ship at 0.2.0, once a second host has
-          # validated the interpreter's port - see docs/adr/0002. Publishing them to nuget.org now
-          # would turn every fix to that port into a breaking change against a public surface.
-          if [ "${{ github.event_name }}" = "release" ]; then
-            projects=(
-              "src/Bpmn.Model/Bpmn.Model.csproj"
-              "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
-            )
-            echo "Release: packing the interchange half only."
-          else
-            projects=(
-              "src/Bpmn.Model/Bpmn.Model.csproj"
-              "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
-              "src/Bpmn.Semantics/Bpmn.Semantics.csproj"
-              "src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj"
-            )
-            echo "Preview: packing all four."
-          fi
+          # All four ship together from 0.2.0. Bpmn.Semantics and Bpmn.Runtime.InMemory were held back
+          # through 0.1.x until a second host had validated the interpreter's port - see docs/adr/0002.
+          # One has now done so, and found real defects in it rather than merely compiling against it,
+          # which is the evidence the hold-back was waiting for. From here a fix to that port IS a
+          # change against a public surface, and is versioned accordingly.
+          projects=(
+            "src/Bpmn.Model/Bpmn.Model.csproj"
+            "src/Bpmn.Interchange/Bpmn.Interchange.csproj"
+            "src/Bpmn.Semantics/Bpmn.Semantics.csproj"
+            "src/Bpmn.Runtime.InMemory/Bpmn.Runtime.InMemory.csproj"
+          )
 
           for proj in "${projects[@]}"; do
             echo "Packing $proj..."
@@ -247,13 +239,16 @@ jobs:
           for nupkg in "${nupkgs[@]}"; do
             echo "Pushing $nupkg to NuGet.org..."
 
-            # A 403 on a package ID that does not exist yet almost always means the API key's glob
-            # pattern does not cover it, not that the key is wrong. Those have different fixes, so
-            # say which one this is rather than leaving a bare status code.
+            # A 403 on a package ID that does not exist yet almost always means the trusted publishing
+            # policy does not cover it, not that the token exchange failed - the key was issued, and
+            # nuget.org is refusing this ID specifically. Those have different fixes, so say which one
+            # this is rather than leaving a bare status code. Note the push is not atomic across
+            # packages: earlier ones in this loop are already live and cannot be unpublished, only
+            # delisted, so a 403 here leaves a partial release to finish rather than to retry blindly.
             if ! output=$(dotnet nuget push "$nupkg" --source "$NUGET_SOURCE" --api-key "$NUGET_API_KEY" --skip-duplicate 2>&1); then
               echo "$output"
               if echo "$output" | grep -q "403"; then
-                echo "::error::NuGet rejected the key for $(basename "$nupkg"). For a package ID that has never been published, the key needs the 'Push new packages and package versions' scope AND a glob pattern matching Bpmn.* . Check the key at https://www.nuget.org/account/apikeys ."
+                echo "::error::NuGet rejected $(basename "$nupkg"). For a package ID that has never been published, the trusted publishing policy at https://www.nuget.org/account/trustedpublishing must cover it - its package-ID pattern needs to match Bpmn.* , not just the IDs already published. Packages pushed earlier in this run are already live."
               fi
               exit 1
             fi
