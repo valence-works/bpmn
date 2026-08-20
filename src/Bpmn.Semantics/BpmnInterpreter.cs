@@ -134,9 +134,9 @@ public sealed class BpmnInterpreter
         [CallActivityFaultedOutcomeName, CallActivityDispatchFailedOutcomeName, CallActivityCancelledOutcomeName];
 
     /// <summary>
-    /// An empty live-work map. An own-scope escalation activation stops other live work logically only: work
-    /// already running keeps running and its late completion is absorbed by the cancelled-token guard, so no
-    /// teardown command is issued.
+    /// An empty live-work map, for a path that stops nothing: a non-interrupting escalation catcher leaves the
+    /// scope's other work alone, so it has no handles to resolve and issues no teardown. Every interrupting path
+    /// passes real handles — see <see cref="BuildLiveWorkHandles"/>.
     /// </summary>
     private static readonly IReadOnlyDictionary<(string BindingRef, string? IterationId), string> NoLiveWork =
         new Dictionary<(string BindingRef, string? IterationId), string>();
@@ -728,10 +728,12 @@ public sealed class BpmnInterpreter
     /// element (<c>AwaitingChild</c>, <c>ParentTokenId</c> null, inheriting <paramref name="triggerIterationKey"/>
     /// where one exists), and starts the bound body work seeded at its single event-start element via the
     /// start-element hint. An interrupting activation first stops all OTHER live work in the scope through the
-    /// shared <see cref="StopOtherLiveWork"/> helper (coordinator cascades and carried teardowns honored per the
-    /// caller's live-work map), keeping the activation token alive so the scope survives until the body completes. Non-
-    /// interrupting activations leave other scope work untouched: repeated or concurrent activations are
-    /// independent, each with its own token and its own body. Does not propagate; the caller drives that.
+    /// shared <see cref="StopOtherLiveWork"/> helper, which cascades coordinators and collects a teardown for
+    /// each stopped unit into <paramref name="pendingCancellations"/>, keeping the activation token alive so the
+    /// scope survives until the body completes. Non-interrupting activations leave other scope work untouched:
+    /// repeated or concurrent activations are independent, each with its own token and its own body. Does not
+    /// propagate, and does not deliver the teardowns it collected; the caller drives both, and which teardown
+    /// channel reaches the clean exit depends on where the caller sits — see <see cref="EvaluationResult"/>.
     /// </summary>
     private EvaluationResult ActivateEventSubprocess(
         BpmnEvaluationContext context,
@@ -1614,14 +1616,23 @@ public sealed class BpmnInterpreter
             }
         }
 
-        // Activate the own-scope event subprocess now that the throw's routing command has run. This evaluation
-        // rides the propagation loop, so an interrupting activation stops other live work logically only
-        // (NoLiveWork); work already running is absorbed on late completion by the cancelled-token guard.
+        // Activate the own-scope event subprocess now that the throw's routing command has run. An interrupting
+        // activation stops all OTHER live work in the scope and tears it down on the host: the interruption is
+        // real, and work nothing will ever complete on its own — a human task, a message subscription — would
+        // otherwise be held by the host for the rest of the scope's life.
         if (ownScopeActivation is { } catcher)
         {
             var ownScopeCancellations = new List<PendingTeardown>();
-            return ActivateEventSubprocess(context, graph, state, catcher, token.IterationKey, NoLiveWork, ownScopeCancellations,
-                producedBy, $"own-scope escalation code '{ReadEscalation(element).Code}'");
+            var activation = ActivateEventSubprocess(context, graph, state, catcher, token.IterationKey, BuildLiveWorkHandles(context),
+                ownScopeCancellations, producedBy, $"own-scope escalation code '{ReadEscalation(element).Code}'");
+
+            // This evaluation rides the propagation loop, whose result never reaches the caller intact, so the
+            // teardowns travel on the context instead. Cleared from the result so exactly one channel carries
+            // them however this activation's result is consumed.
+            foreach (var teardown in ownScopeCancellations)
+                context.CarryTeardown(teardown);
+
+            return activation with { PendingTeardowns = null };
         }
 
         return new EvaluationResult(state);

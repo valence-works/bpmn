@@ -317,6 +317,40 @@ public static class ProcessFixtures
             .ConnectSequence("BookingCancelled", "Recover", "EndCancelled")
             .Build();
 
+    /// <summary>
+    /// A scope that escalates to its own interrupting event subprocess while a second branch is still working.
+    /// The throw sits behind a task so the escalation fires only once the other branch's work is genuinely live.
+    /// The activation drains the scope, so the branch's task is abandoned mid-flight and must be torn down on
+    /// the host: nothing will ever complete it, and the scope that started it is being interrupted.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) OwnScopeEscalationInterruptsASecondBranch(string code = "overdue")
+    {
+        var body = new BpmnProcessBuilder("on-overdue")
+            .StartEvent("HandlerStart", null, Escalation(code))
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("HandlerEnd")
+            .ConnectSequence("HandlerStart", "Handle", "HandlerEnd")
+            .Build();
+
+        var parent = new BpmnProcessBuilder("escalating-scope")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .Task("Trigger", bindingRef: "escalate-trigger")
+            .IntermediateThrowEvent("Escalate", Escalation(code))
+            .EndEvent("EndEscalated")
+            .Task("LongRunning", bindingRef: "long-running")
+            .EndEvent("EndWorked")
+            .SubProcess("OnOverdue", bindingRef: "on-overdue", triggeredByEvent: true)
+            .Connect("Start", "Split")
+            .Connect("Split", "Trigger")
+            .ConnectSequence("Trigger", "Escalate", "EndEscalated")
+            .Connect("Split", "LongRunning")
+            .ConnectSequence("LongRunning", "EndWorked")
+            .Build();
+
+        return (parent, body);
+    }
+
     public static BpmnEventDefinition Timer(string isoDuration) =>
         new(BpmnEventDefinitionTypes.Timer,
             new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Interval] = isoDuration });
