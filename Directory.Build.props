@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <!-- The single base version. CI reads this to compute preview and release package versions. -->
-    <Version>0.1.1</Version>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <PropertyGroup>
