@@ -163,6 +163,7 @@ day it does not.
 | Catch boundary event (timer, message, signal), even non-interrupting | `SubtreeCancellation` | Its armed listener is torn down when its host completes. |
 | Event subprocess | `SubtreeCancellation` | An interrupting one drains the scope; every scope listener is retired when the scope completes. |
 | Event-based gateway | `SubtreeCancellation` | The losing branches are torn down when the first catch wins. |
+| Cancel end event | `SubtreeCancellation` | It tears down the transaction's other live work when it abandons it. |
 | Escalation throw or end event, escalation boundary event | `ScopeSignalling` | A throw signals the enclosing scope, and a scope re-signals what it cannot match itself. |
 | Multi-instance activity | `IterationScopes` | Each instance needs its own frame. |
 | Collection-mode multi-instance | `ScopeVariables` | Its instance count and items come from a declared variable. |

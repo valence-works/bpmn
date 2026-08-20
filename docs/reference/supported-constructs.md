@@ -140,7 +140,7 @@ graph-build time.
 | Compensation registration | Supported | A successful completion of an activity carrying a compensation boundary is logged. |
 | Reverse-order replay | Supported | Last registered, first compensated. Entries are never pruned; a claimed entry whose run is torn down before it ran is released back to registered. |
 | Targeted compensation (`activityRef`) | Supported | Compensates only that element's registrations; absent means everything registered in the process. |
-| Transaction subprocess | Supported | Cancel from within stops other live work, replays compensations, and completes with the `Cancelled` outcome. A transaction that completes `Cancelled` with no cancel boundary attached raises a fault. |
+| Transaction subprocess | Supported | Cancel from within stops and tears down other live work, replays compensations, and completes with the `Cancelled` outcome. A transaction that completes `Cancelled` with no cancel boundary attached raises a fault. |
 
 ## Collaboration
 

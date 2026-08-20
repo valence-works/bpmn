@@ -78,8 +78,9 @@ public sealed record BpmnCapabilityRequirements(
     /// <item><b>Subtree cancellation</b> — every construct that tears running work down: an interrupting
     /// boundary event, a catch boundary event (whose armed listener is torn down when its host completes),
     /// an event subprocess (an interrupting one drains the whole scope; every scope listener is retired when
-    /// the scope completes), and an event-based gateway (whose losing branches are torn down when the first
-    /// catch wins).</item>
+    /// the scope completes), an event-based gateway (whose losing branches are torn down when the first
+    /// catch wins), and a cancel end event (which tears down the transaction's other live work when it
+    /// abandons it).</item>
     /// <item><b>Scope signalling</b> — escalation: a throw or end event signals the enclosing scope, and a
     /// scope carrying escalation catchers re-signals what it cannot match itself.</item>
     /// <item><b>Iteration scopes</b> — a multi-instance activity.</item>
@@ -115,6 +116,9 @@ public sealed record BpmnCapabilityRequirements(
                 Require(BpmnHostCapabilities.SubtreeCancellation, element.ElementId);
 
             if (StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EventBasedGateway))
+                Require(BpmnHostCapabilities.SubtreeCancellation, element.ElementId);
+
+            if (BpmnElementFamilies.IsCancelEndEvent(element))
                 Require(BpmnHostCapabilities.SubtreeCancellation, element.ElementId);
 
             if (BpmnElementFamilies.IsEscalationThrowOrEnd(element) || BpmnElementFamilies.IsEscalationBoundary(element))

@@ -134,9 +134,9 @@ public sealed class BpmnInterpreter
         [CallActivityFaultedOutcomeName, CallActivityDispatchFailedOutcomeName, CallActivityCancelledOutcomeName];
 
     /// <summary>
-    /// An empty live-work map. A cancel end event and an own-scope escalation activation stop other live work
-    /// logically only: work already running keeps running and its late completion is absorbed by the
-    /// cancelled-token guard, so no teardown command is issued.
+    /// An empty live-work map. An own-scope escalation activation stops other live work logically only: work
+    /// already running keeps running and its late completion is absorbed by the cancelled-token guard, so no
+    /// teardown command is issued.
     /// </summary>
     private static readonly IReadOnlyDictionary<(string BindingRef, string? IterationId), string> NoLiveWork =
         new Dictionary<(string BindingRef, string? IterationId), string>();
@@ -1421,6 +1421,11 @@ public sealed class BpmnInterpreter
     /// <summary>
     /// The result of one internal step. Faults, teardowns, and the outward signal are <b>carried</b> here and
     /// only turned into commands at the clean exit — see <see cref="FinishEvaluation"/>.
+    /// <para>
+    /// This is not the only teardown channel. A step inside the propagation loop returns a result the loop
+    /// discards but for its state, so it carries teardowns on <see cref="BpmnEvaluationContext"/> instead; both
+    /// drain in <see cref="IssueCarriedCommands"/> under the same non-fault rule.
+    /// </para>
     /// </summary>
     private sealed record EvaluationResult(
         BpmnExecutionState State,
@@ -1432,12 +1437,6 @@ public sealed class BpmnInterpreter
 
     /// <summary>A deterministic process failure, carried until the evaluation decides how to surface it.</summary>
     private sealed record BpmnFault(string Code, string Message);
-
-    /// <summary>
-    /// One running unit of work to tear down: a losing event-based-gateway branch, an interrupted boundary
-    /// host, a retired listener. Carried on the evaluation result and issued only on a non-fault continuation.
-    /// </summary>
-    private sealed record PendingTeardown(string Handle, string ElementId, string Reason);
 
     /// <summary>An escalation this scope could not match, to be re-signalled one hop outward. Issued only on a non-fault continuation.</summary>
     private sealed record PendingScopeSignal(string Code, JsonElement? Payload);
@@ -1617,7 +1616,7 @@ public sealed class BpmnInterpreter
 
         // Activate the own-scope event subprocess now that the throw's routing command has run. This evaluation
         // rides the propagation loop, so an interrupting activation stops other live work logically only
-        // (NoLiveWork); work already running is absorbed on late completion, as for a cancelled transaction.
+        // (NoLiveWork); work already running is absorbed on late completion by the cancelled-token guard.
         if (ownScopeActivation is { } catcher)
         {
             var ownScopeCancellations = new List<PendingTeardown>();
@@ -1722,14 +1721,21 @@ public sealed class BpmnInterpreter
 
     /// <summary>
     /// Handles a <c>CancelTransaction</c> command: a cancel end event fired inside a transaction
-    /// scope. First it stops all OTHER live work logically — every live token except the cancel-end token is
-    /// cancelled through <see cref="CancelTokenAndWork"/> so the multi-instance, race, and compensation-run
-    /// coordinator cascades tear loops, races, and replays down consistently — while work already running keeps
-    /// running and is absorbed on late completion (logical only, no teardown issued). It records the <c>Cancelling</c>
+    /// scope. First it stops all OTHER live work — every live token except the cancel-end token is cancelled
+    /// through <see cref="CancelTokenAndWork"/> so the multi-instance, race, and compensation-run coordinator
+    /// cascades tear loops, races, and replays down consistently — and the work behind those tokens is torn
+    /// down on the host, so an abandoned transaction leaves nothing running. It records the <c>Cancelling</c>
     /// verdict, then claims every <c>Registered</c> compensable (the whole scope) in reverse registration order and
     /// opens a <see cref="BpmnCompensationRun"/> coordinated by the cancel-end token, starting the first
     /// handler. An empty claim consumes the cancel-end token immediately; <see cref="FinishEvaluation"/> then
     /// completes the process with the <c>Cancelled</c> outcome once nothing is live.
+    /// <para>
+    /// Tearing the abandoned work down is what keeps the scope's slots honest. Stopping an in-flight
+    /// compensation run releases its unrun compensables, and the fresh run re-claims them and restarts its head
+    /// handler — the same element, under the same binding ref and inherited iteration key. Without the teardown
+    /// the host would hold two live units for that one slot, which is the one thing
+    /// <see cref="BpmnHostSnapshot"/> asks a host never to do and which it has no way to prevent by itself.
+    /// </para>
     /// </summary>
     private EvaluationResult CancelTransaction(
         BpmnEvaluationContext context,
@@ -1739,14 +1745,21 @@ public sealed class BpmnInterpreter
         BpmnElement cancelEndElement,
         string producedBy)
     {
-        // Step 1: stop all OTHER live work logically. The cancel-end token stays live as the coming replay's
-        // coordinator; every other live token is cancelled, cascading loop, race, and compensation-run teardown.
-        // Work already running keeps running (empty live-work map, so no teardown is issued) and is absorbed on
-        // late completion. The stop-others loop is shared with an interrupting event-subprocess activation.
-        var stopScratch = new List<PendingTeardown>();
-        var (stoppedState, stoppedCount) = StopOtherLiveWork(state, cancelEndToken.TokenId, TransactionCancelledStopReason, NoLiveWork, stopScratch,
+        // Step 1: stop all OTHER live work. The cancel-end token stays live as the coming replay's coordinator;
+        // every other live token is cancelled, cascading loop, race, and compensation-run teardown, and the work
+        // behind it is torn down on the host. The teardown is not optional here: step 2 re-claims the compensables
+        // an in-flight run just released and restarts its head handler on the same (binding ref, iteration id)
+        // slot, so leaving the old unit live would put two of them in one slot. The stop-others loop is shared
+        // with an interrupting event-subprocess activation.
+        var pendingCancellations = new List<PendingTeardown>();
+        var (stoppedState, stoppedCount) = StopOtherLiveWork(state, cancelEndToken.TokenId, TransactionCancelledStopReason, BuildLiveWorkHandles(context), pendingCancellations,
             (token, reason) => $"BPMN cancel end event '{cancelEndElement.ElementId}' stopped live token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
         state = stoppedState;
+
+        // A cancel end event is reached by a token arriving, so this runs inside the propagation loop, whose
+        // result never reaches the caller intact. The teardowns ride the context to the clean exit instead.
+        foreach (var teardown in pendingCancellations)
+            context.CarryTeardown(teardown);
 
         state = state with { Cancelling = true, Sequence = state.Sequence + 1 };
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.TransactionCancelled, cancelEndElement.ElementId, null, cancelEndToken.TokenId,
@@ -2201,9 +2214,10 @@ public sealed class BpmnInterpreter
     /// Stops all live work in the scope except <paramref name="keepTokenId"/>: every other
     /// live token is cancelled through <see cref="CancelTokenAndWork"/> so the multi-instance, race, and
     /// compensation-run coordinator cascades tear loops, races, and replays down consistently. Shared by the
-    /// cancel-transaction path (which keeps the cancel-end coordinator, logical only via
-    /// <see cref="NoLiveWork"/>) and by an interrupting event-subprocess activation (which keeps the activation
-    /// token). Returns the count of stopped tokens for the caller's diagnostic.
+    /// cancel-transaction path (which keeps the cancel-end coordinator) and by an interrupting event-subprocess
+    /// activation (which keeps the activation token). Whether the stopped work is torn down on the host or only
+    /// dropped logically is the caller's call, made by what it passes as <paramref name="liveWorkHandles"/>.
+    /// Returns the count of stopped tokens for the caller's diagnostic.
     /// </summary>
     private static (BpmnExecutionState State, int StoppedCount) StopOtherLiveWork(
         BpmnExecutionState state,
@@ -2288,10 +2302,15 @@ public sealed class BpmnInterpreter
         return liveWorkHandles;
     }
 
-    /// <summary>Issues each carried teardown and the re-signalled escalation, if any. Only called from a non-fault continuation.</summary>
+    /// <summary>
+    /// Issues each carried teardown and the re-signalled escalation, if any. Only called from a non-fault
+    /// continuation. Teardowns arrive on two channels — the result, for a step whose result reaches the caller,
+    /// and the context, for one inside the propagation loop whose result does not — and both drain here, so the
+    /// non-fault rule holds for either.
+    /// </summary>
     private static void IssueCarriedCommands(BpmnEvaluationContext context, EvaluationResult result)
     {
-        foreach (var teardown in result.PendingTeardowns ?? [])
+        foreach (var teardown in (result.PendingTeardowns ?? []).Concat(context.CarriedTeardowns))
             context.AddCommand(new BpmnHostCommand.CancelWorkSubtree(teardown.Handle, teardown.ElementId, teardown.Reason));
 
         if (result.PendingScopeSignal is { } signal)
