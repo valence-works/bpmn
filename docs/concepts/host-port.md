@@ -68,8 +68,9 @@ you last got out for that scope instance.
 Call `Prune()` before persisting. It removes the records that can never influence a future decision —
 consumed tokens no longer referenced by active work, and diagnostics beyond `DiagnosticsCap` (200) —
 so a long-running process does not re-serialize an ever-growing blob. Canceled tokens are never
-pruned: a terminate strips in-flight work while that work may still complete, and the late completion
-is absorbed by the token lookup that the pruned record would have broken.
+pruned: stopping work drops its record while the work may still report back, and the cancelled token
+is how that late callback is recognized (see
+[Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
 against the same starting state and you get byte-identical state, not merely equivalent state.
@@ -148,6 +149,11 @@ message subscription that may never fire, a scope listener armed for the life of
 `StartWork`. The interpreter does not distinguish them, because the difference is only in how they
 run.
 
+Every `StartWork` you receive is for a token that is still waiting on it when the evaluation returns.
+When the same evaluation stops that token again, the command is withdrawn rather than returned: an
+interrupting event subprocess or a cancel end event reached in the same propagation as a sibling
+branch's task, say. No teardown is issued for withdrawn work either, because you never had it.
+
 #### `CancelWorkSubtree`
 
 Stop a unit of work **and everything started underneath it**. The name is exact. An interrupting
@@ -204,6 +210,20 @@ This is the only place the library says anything about failure policy, and it sa
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
 is not modeled here, because BPMN does not model it. See
 [Errors and escalation](errors-and-escalation.md).
+
+### Callbacks for work already stopped
+
+A callback can still reach a running scope for work it already stopped: a completion that raced the
+teardown an interruption issued, or work an earlier version started and stopped in the same
+evaluation. When no work record matches the callback but the scope still holds the `Canceled` token
+the work belonged to, the callback is absorbed. It changes nothing in the scope, nothing is issued,
+and a `Canceled` diagnostic records it. A multi-instance iteration id names that token exactly.
+Single-run work is matched by the element that binds it, so any cancelled token at that element
+counts.
+
+A callback nothing accounts for is a broken contract rather than a race, and stays loud: a completion
+throws `BpmnExecutionException`, and a fault faults the scope. A second report for work that
+completed normally is one of these, as is a binding no element binds.
 
 ## The one callback
 

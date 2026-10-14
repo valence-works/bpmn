@@ -57,6 +57,25 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     }
 
     /// <summary>
+    /// Withdraws the <see cref="BpmnHostCommand.StartWork"/> this evaluation issued for <paramref name="tokenId"/>,
+    /// if it issued one, keeps every other command where it was, and returns what was withdrawn. A token is started
+    /// at most once, so there is at most one. Called when the same evaluation cancels that token: the host has not
+    /// seen the command yet, so the work is never started rather than started with no token waiting for it.
+    /// </summary>
+    public BpmnHostCommand.StartWork? WithdrawStartedWorkFor(string tokenId)
+    {
+        var index = _commands.FindIndex(command =>
+            command is BpmnHostCommand.StartWork start && StringComparer.Ordinal.Equals(start.TokenId, tokenId));
+        if (index < 0)
+            return null;
+
+        var withdrawn = (BpmnHostCommand.StartWork)_commands[index];
+        _commands.RemoveAt(index);
+        StartedWork = _commands.Exists(command => command is BpmnHostCommand.StartWork);
+        return withdrawn;
+    }
+
+    /// <summary>
     /// Asks the host to tear running work down, or to signal the enclosing scope. A teardown is only ever added
     /// on a non-fault continuation: one that has been carried but not staged is discarded when the process
     /// faults, because the whole scope is going away and a premature teardown would race the fault. The one
