@@ -25,7 +25,11 @@ value. The interpreter never calls the host, with one narrow exception described
 Work is named by two values together. The **binding ref** is the interpreter's name for it, taken
 from `BpmnElement.BindingRef` or `BpmnElement.ListenerBindingRef`. The **handle** is the host's own
 opaque identifier, which the interpreter stores and echoes and never parses. Every callback carries
-both, and multi-instance work additionally carries the iteration id it ran under.
+both, and multi-instance work additionally carries the iteration id it ran under. A completion and a
+signal take it as a trailing parameter; a fault takes it as the init-only
+`BpmnWorkFaultedRequest.FaultedIterationId`. The interpreter finds the unit a completion or a fault
+reports from the binding ref and iteration id alone, so a report for one of several concurrent
+instances that leaves the iteration id out throws `BpmnExecutionException` rather than guess which.
 
 ## Inputs
 
@@ -125,7 +129,7 @@ call. It is a value, built fresh per evaluation, never held.
 | `ScopeInstanceId` | An opaque host-chosen identity for this scope. | Echoed onto tokens for provenance. Never parsed. |
 | `HasEnclosingScope` | Whether a parent exists to receive a signal. | A root process has none, so an unhandled escalation is a documented no-op rather than a fault. |
 | `LiveWork` | `BpmnLiveWork(BindingRef, IterationId, Handle)` per outstanding unit. | Deciding what an interruption must tear down, and whether a scope can complete. |
-| `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. |
+| `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. Never used to find the work a callback reports: in a nested scope the token id it carries belongs to the enclosing scope. |
 | `Variables` | An `IBpmnVariableReader`. | Reading a named value mid-evaluation. |
 | `Capabilities` | What this host can do. | Consistency with the graph it was built against. |
 
@@ -337,7 +341,8 @@ There is deliberately no async path here.
 
 1. Pass back the state you were last given, for that scope instance — pruned, if you like.
 2. Apply commands in order.
-3. Report a callback with the binding ref and handle the work was started under.
+3. Report a callback with the binding ref and handle the work was started under, and with its
+   iteration id when it is a multi-instance instance.
 4. Carry `StartWork.Correlation` with the work and hand it back.
 5. Make `CancelWorkSubtree` recursive.
 6. Do not mutate anything you were handed. The model and the state are immutable by design; treat

@@ -312,7 +312,20 @@ public sealed record BpmnWorkFaultedRequest(
     BpmnHostSnapshot Host,
     string FaultedBindingRef,
     string FaultedHandle,
-    string? FaultMessage = null);
+    string? FaultMessage = null)
+{
+    /// <summary>
+    /// The iteration id the failed work ran under, for a multi-instance instance; <c>null</c> for ordinary
+    /// single-run work. The faulted unit is found from this and <see cref="FaultedBindingRef"/>, exactly as a
+    /// completion is, so a fault of one of several concurrent instances must carry it: without it the
+    /// interpreter cannot tell the instances apart and throws <see cref="BpmnExecutionException"/>.
+    /// <para>
+    /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+    /// nor the deconstruction a host compiled against an earlier version uses.
+    /// </para>
+    /// </summary>
+    public string? FaultedIterationId { get; init; }
+}
 
 /// <summary>
 /// Reports a signal raised by a nested process this scope invoked — the receiving half of

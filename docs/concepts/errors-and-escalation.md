@@ -24,7 +24,8 @@ A host reports that work failed; it does not name the error:
 
 ```csharp
 interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-    graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded"));
+    graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
+    { FaultedIterationId = work.IterationId });   // null unless a multi-instance instance failed
 ```
 
 Which error a catcher matches is a property of the model, not of the report. An error boundary event
@@ -77,6 +78,10 @@ The interpreter reports which of these happened, as a `BpmnErrorDisposition` on 
 - `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched. From BPMN's point of
   view nothing is wrong; the model anticipated this. A null code means the catcher is a catch-all.
 - `Propagated` — nothing here matched. The continuation is a `Fault` and the failure has gone up.
+
+Steps 2 and 3 work the same in a nested scope as at the root. The interpreter finds the failing
+activity from the binding ref and iteration id you report, never from the scope's invocation
+correlation, whose token id names a token of the enclosing scope.
 
 Because a scope's interpreter has no view of the tree above it, propagation across a scope boundary
 is your host's routing job. `HasEnclosingScope` and `InvocationCorrelation` on the snapshot are how
@@ -222,7 +227,7 @@ What the library gives you instead is the one piece of information you cannot co
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-    graph, state, snapshot, work.BindingRef, work.Handle, message));
+    graph, state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId });
 
 if (evaluation.Disposition is BpmnErrorDisposition.Propagated)
     _incidents.Record(work, message);   // your model, your policy

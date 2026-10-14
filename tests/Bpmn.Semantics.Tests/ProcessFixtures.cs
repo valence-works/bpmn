@@ -119,6 +119,80 @@ public static class ProcessFixtures
             .Build();
     }
 
+    /// <summary>
+    /// <see cref="RiskyActivity"/> with a preparation task ahead of the risky one, so by the time <c>Risky</c> runs
+    /// the scope holds a consumed token of its own.
+    /// </summary>
+    public static BpmnProcessDefinition RiskyActivityAfterPreparation() =>
+        new BpmnProcessBuilder("prepared-risky")
+            .StartEvent("Start")
+            .Task("Prep", bindingRef: "prep")
+            .Task("Risky", bindingRef: "risky")
+            .EndEvent("EndOk")
+            .BoundaryEvent("Failed", "Risky", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))
+            .Task("Recover", bindingRef: "recover")
+            .EndEvent("EndRecovered")
+            .ConnectSequence("Start", "Prep", "Risky", "EndOk")
+            .ConnectSequence("Failed", "Recover", "EndRecovered")
+            .Build();
+
+    /// <summary>A risky activity with no boundary, whose failure the scope's error event subprocess catches.</summary>
+    public static (BpmnProcessDefinition Body, BpmnProcessDefinition Handler) RiskyActivityWithErrorEventSubprocess()
+    {
+        var handler = new BpmnProcessBuilder("on-error")
+            .StartEvent("ErrorStart", null, new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("HandlerEnd")
+            .ConnectSequence("ErrorStart", "Handle", "HandlerEnd")
+            .Build();
+
+        var body = new BpmnProcessBuilder("risky-with-handler")
+            .StartEvent("Start")
+            .Task("Risky", bindingRef: "risky")
+            .EndEvent("EndOk")
+            .SubProcess("OnError", bindingRef: "on-error", triggeredByEvent: true)
+            .ConnectSequence("Start", "Risky", "EndOk")
+            .Build();
+
+        return (body, handler);
+    }
+
+    /// <summary>A parallel multi-instance task under an error boundary, so one instance's failure interrupts the others.</summary>
+    public static BpmnProcessDefinition ParallelMultiInstanceWithErrorBoundary(int cardinality = 3) =>
+        new BpmnProcessBuilder("multi-instance-risky")
+            .StartEvent("Start")
+            .Task(BpmnElementTypes.Task, "Review", bindingRef: "review",
+                loopCharacteristics: new BpmnLoopCharacteristics(isSequential: false, cardinality: cardinality))
+            .EndEvent("EndOk")
+            .BoundaryEvent("Failed", "Review", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))
+            .Task("Recover", bindingRef: "recover")
+            .EndEvent("EndRecovered")
+            .ConnectSequence("Start", "Review", "EndOk")
+            .ConnectSequence("Failed", "Recover", "EndRecovered")
+            .Build();
+
+    /// <summary>
+    /// A subprocess bound to <c>body</c> behind <paramref name="padTasks"/> tasks. Every element ahead of the
+    /// subprocess moves the id of the parent's token parked on it, and that id travels into the nested scope on
+    /// its invocation correlation.
+    /// </summary>
+    public static BpmnProcessDefinition SubProcessAfterPads(int padTasks)
+    {
+        var builder = new BpmnProcessBuilder("padded-parent").StartEvent("Start");
+        var chain = new List<string> { "Start" };
+        for (var index = 0; index < padTasks; index++)
+        {
+            builder.Task($"Pad{index}", bindingRef: $"pad{index}");
+            chain.Add($"Pad{index}");
+        }
+
+        return builder
+            .SubProcess("Sub", bindingRef: "body")
+            .EndEvent("End")
+            .ConnectSequence([.. chain, "Sub", "End"])
+            .Build();
+    }
+
     /// <summary>A subprocess whose body this host runs as a nested scope, with the body's own activity inside it.</summary>
     public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) NestedSubProcess()
     {

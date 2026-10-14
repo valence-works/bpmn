@@ -254,7 +254,7 @@ public sealed class InMemoryProcessInstance
 
         Evaluate(new BpmnTranscriptTrigger.WorkFaulted(work, message), snapshot =>
             _host.Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-                Graph, _state, snapshot, work.BindingRef, work.Handle, message)));
+                Graph, _state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId }));
     }
 
     internal void RunWorkSignalled(InMemoryWorkItem work, string code, JsonElement? payload)
