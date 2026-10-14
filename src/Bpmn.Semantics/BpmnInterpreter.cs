@@ -77,6 +77,9 @@ public sealed class BpmnInterpreter
     /// <summary>The reason recorded on the other live tokens a cancel end event stops when it begins cancelling a transaction scope.</summary>
     public const string TransactionCancelledStopReason = "bpmn.transaction.cancel-stopped-live-work";
 
+    /// <summary>The teardown reason recorded on the work still running in a scope when a terminate end event ended it.</summary>
+    public const string TerminateStopReason = "bpmn.terminate.stopped-live-work";
+
     /// <summary>The distinguishable outcome a cancelled transaction completes with; an enclosing scope maps it to the attached cancel boundary event.</summary>
     public const string CancelledOutcomeName = "Cancelled";
 
@@ -163,7 +166,7 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Host);
+        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var state = request.PriorState ?? new BpmnExecutionState();
 
         if (graph.Elements.Count == 0)
@@ -284,15 +287,26 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Host);
+        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var completionContext = request;
         var state = request.PriorState ?? new BpmnExecutionState();
+
+        // A scope that already holds its verdict absorbs the completion without resolving it: a terminate, or a
+        // fault an earlier version parked on the state. Reaching that verdict dropped every work record, so there
+        // is nothing left to resolve the completion against, and the by-slot lookup would throw for any host that
+        // follows the rule of not handing correlation back. FinishEvaluation answers the verdict again.
+        if (state.Terminated || state.PendingFault is not null)
+        {
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, graph.FindElementByBindingRef(completionContext.CompletedBindingRef)?.ElementId, null, null,
+                $"BPMN ignored completion of work '{completionContext.CompletedBindingRef}' because the process had already ended.");
+            return FinishEvaluation(context, new EvaluationResult(state));
+        }
 
         var tokenId = ResolveTokenId(context, state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
         state = RemoveActiveWork(state, tokenId);
         var token = GetRequiredToken(state, tokenId);
 
-        if (state.Terminated || token.Status == BpmnTokenStatus.Canceled)
+        if (token.Status == BpmnTokenStatus.Canceled)
         {
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, $"BPMN ignored completion for canceled token '{token.TokenId}'.");
             return FinishEvaluation(context, new EvaluationResult(state));
@@ -423,7 +437,7 @@ public sealed class BpmnInterpreter
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var context = new BpmnEvaluationContext(request.Host);
+        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var result = EvaluateWorkFaulted(context, request);
         var evaluation = FinishEvaluation(context, result);
 
@@ -916,7 +930,7 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Host);
+        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var state = request.PriorState ?? new BpmnExecutionState();
 
         // An unrecognized code (a future consumer's) is ignored with a diagnostic — never a fault.
@@ -1597,8 +1611,9 @@ public sealed class BpmnInterpreter
                 case BpmnBehaviorCommandKind.TerminateProcess:
                 {
                     state = UpdateToken(state, token with { Status = BpmnTokenStatus.Consumed });
-                    // Work already running keeps running; its late completion is absorbed by the
-                    // cancelled-token guard, or ignored outright once the process has completed.
+                    // The logical half only. The host half needs the whole command list in view — tearing down
+                    // what the host is running, and withdrawing what this evaluation was about to start — so
+                    // FinishEvaluation does it. A completion that races the teardown is absorbed.
                     state = CancelLiveWork(state);
                     state = state with { Terminated = true, Sequence = state.Sequence + 1 };
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Terminated, element.ElementId, null, token.TokenId, command.Message ?? $"BPMN terminate end event '{element.ElementId}' ended the process.");
@@ -1932,41 +1947,45 @@ public sealed class BpmnInterpreter
     /// <summary>
     /// Picks the continuation and packages the evaluation.
     /// <para>
-    /// A terminal continuation (Complete or Fault) may not be returned from an evaluation that also started
-    /// work: the host would have to both discard the work and honor the completion. Terminate and behavior
-    /// faults raised mid-propagation are therefore deferred — the state carries the verdict
-    /// (<see cref="BpmnExecutionState.Terminated"/> or <see cref="BpmnExecutionState.PendingFault"/>) and the
-    /// next work completion surfaces it.
+    /// A terminal continuation (Complete or Fault) may not be returned from an evaluation that also starts
+    /// work: the host would have to both discard the work and honor the completion. A terminate or a fault is
+    /// never deferred on that account. The StartWork commands this evaluation issued for the scope it is now
+    /// ending have not reached the host — commands are returned, not executed — so they are withdrawn instead,
+    /// together with their work records: work activated and ended in the same instant is never started. The
+    /// verdict is then answered at once.
+    /// </para>
+    /// <para>
+    /// A terminate also tears down every unit of work the host still reports live in the scope. A fault does
+    /// not: it is a verdict, not a command (ADR 0003), and stopping the work a faulted scope leaves running is
+    /// the host's half of the fault.
     /// </para>
     /// <para>
     /// This is also the only place teardown and outward-signal commands are issued, and only on a non-fault
     /// continuation. Carrying them and issuing them last is what prevents premature teardown: work must not be
     /// stopped for a routing decision that the same evaluation then abandons by faulting.
     /// </para>
+    /// <para>
+    /// States persisted by an earlier version may still carry a verdict it deferred
+    /// (<see cref="BpmnExecutionState.Terminated"/> or <see cref="BpmnExecutionState.PendingFault"/>). The next
+    /// callback answers it through the same branches.
+    /// </para>
     /// </summary>
     private BpmnEvaluation FinishEvaluation(BpmnEvaluationContext context, EvaluationResult result)
     {
-        var startedWorkThisEvaluation = context.StartedWork;
         var state = result.State;
 
         if (result.Fault is not null)
-        {
-            if (!startedWorkThisEvaluation)
-                return Evaluated(context, state, MakeFault(result.Fault));
+            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(result.Fault));
 
-            state = CancelLiveWork(state);
-            state = state with { PendingFault = new BpmnPendingFault(result.Fault.Code, result.Fault.Message), Sequence = state.Sequence + 1 };
-            return Evaluated(context, state, BpmnContinuation.Defer.Instance);
-        }
-
-        if (state.PendingFault is { } pendingFault && !startedWorkThisEvaluation)
-            return Evaluated(context, state, MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
+        if (state.PendingFault is { } pendingFault)
+            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
 
         if (result.Terminated || state.Terminated)
         {
-            return startedWorkThisEvaluation
-                ? Evaluated(context, state, BpmnContinuation.Defer.Instance)
-                : Evaluated(context, state, new BpmnContinuation.Complete(DoneOutcomeName));
+            state = WithdrawStartedWork(context, state);
+            IssueCarriedCommands(context, result);
+            IssueTerminateTeardowns(context);
+            return Evaluated(context, state, new BpmnContinuation.Complete(DoneOutcomeName));
         }
 
         var liveTokens = state.Tokens.Where(token => token.Status is BpmnTokenStatus.Active or BpmnTokenStatus.AwaitingChild or BpmnTokenStatus.WaitingAtJoin).ToArray();
@@ -1986,7 +2005,7 @@ public sealed class BpmnInterpreter
         if (nonListenerLiveTokens.Length == 0 && nonListenerLiveWorkCount == 0)
         {
             // Only scope listeners (if any) remain live: the real work is done. Strictly AFTER the fault,
-            // pending-fault, and terminate branches above (which own their teardown via CancelLiveWork), retire the
+            // pending-fault, and terminate branches above (which own their own ending of the scope), retire the
             // still-armed listeners — CancelTokenAndWork carries each live listener's teardown, folded into this
             // evaluation's commands in token-id ordinal order — then complete with the normal outcome selection.
             var liveListenerTokenIds = liveTokens
@@ -2328,7 +2347,71 @@ public sealed class BpmnInterpreter
             context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(signal.Code, signal.Payload));
     }
 
-    /// <summary>Cancels every live token and drops the work records; work already running keeps running and its late completion is absorbed by the token-status guard.</summary>
+    /// <summary>
+    /// Withdraws the work this evaluation activated in a scope it is now ending: every
+    /// <see cref="BpmnHostCommand.StartWork"/> leaves the command list, and the work record and live token
+    /// behind it leave the state, so the state never claims work the host was never asked to start. Every other
+    /// command — a <see cref="BpmnHostCommand.SignalEnclosingScope"/> an escalation already raised in this
+    /// evaluation, say — stays, in its original order. Every StartWork goes, not only those of tokens the verdict
+    /// cancelled: a terminal continuation may not carry one at all.
+    /// </summary>
+    private static BpmnExecutionState WithdrawStartedWork(BpmnEvaluationContext context, BpmnExecutionState state)
+    {
+        if (!context.StartedWork)
+            return state;
+
+        foreach (var start in context.WithdrawStartedWork())
+        {
+            if (state.ActiveWork.Any(work => StringComparer.Ordinal.Equals(work.TokenId, start.TokenId)))
+                state = RemoveActiveWork(state, start.TokenId);
+
+            if (state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, start.TokenId)) is
+                { Status: BpmnTokenStatus.Active or BpmnTokenStatus.AwaitingChild or BpmnTokenStatus.WaitingAtJoin } token)
+                state = UpdateToken(state, token with { Status = BpmnTokenStatus.Canceled });
+
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, start.ElementId, null, start.TokenId,
+                $"BPMN withdrew work '{start.BindingRef}' for token '{start.TokenId}' before the host started it: the same evaluation ended the scope.");
+        }
+
+        return state;
+    }
+
+    /// <summary>
+    /// Tears down every unit of work the host still reports live in a terminated scope, unless a carried teardown
+    /// already named it with a more specific reason. Nothing a terminated scope started may keep running, and a
+    /// host that does not stop a finished scope's children by itself would otherwise hold that work for good: a
+    /// user task, a message subscription, a durable timer, a called process. Driven by the snapshot rather than by
+    /// the state's work records — the terminate has already dropped those — so it also reaches work no record names
+    /// any more, such as what an earlier version left running when it deferred a terminate. Issued in snapshot order.
+    /// </summary>
+    private static void IssueTerminateTeardowns(BpmnEvaluationContext context)
+    {
+        var tornDown = context.Commands
+            .OfType<BpmnHostCommand.CancelWorkSubtree>()
+            .Select(teardown => teardown.Handle)
+            .ToHashSet(StringComparer.Ordinal);
+
+        foreach (var live in context.Host.LiveWork)
+        {
+            if (tornDown.Add(live.Handle))
+                context.AddCommand(new BpmnHostCommand.CancelWorkSubtree(live.Handle, ElementIdOf(context.Graph, live.BindingRef), TerminateStopReason));
+        }
+    }
+
+    /// <summary>
+    /// The element that binds <paramref name="bindingRef"/>, as its work or as its scope listener; a graph binds each
+    /// ref exactly once. Falls back to the ref itself for a binding this graph does not know, so a teardown still
+    /// names the handle the host must stop.
+    /// </summary>
+    private static string ElementIdOf(BpmnGraph graph, string bindingRef) =>
+        graph.FindElementByBindingRef(bindingRef)?.ElementId
+        ?? graph.Elements.FirstOrDefault(element => StringComparer.Ordinal.Equals(element.ListenerBindingRef, bindingRef))?.ElementId
+        ?? bindingRef;
+
+    /// <summary>
+    /// Cancels every live token and drops every work record: the logical half of a terminate. The host half — tearing
+    /// down the work the host is still running — is <see cref="IssueTerminateTeardowns"/>, at the clean exit.
+    /// </summary>
     private static BpmnExecutionState CancelLiveWork(BpmnExecutionState state)
     {
         foreach (var liveToken in state.Tokens.Where(candidate => candidate.Status is BpmnTokenStatus.Active or BpmnTokenStatus.AwaitingChild or BpmnTokenStatus.WaitingAtJoin).ToArray())

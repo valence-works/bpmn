@@ -351,6 +351,193 @@ public static class ProcessFixtures
         return (parent, body);
     }
 
+    /// <summary>
+    /// A parallel split into two waiting tasks and a terminate end event. The order the split emits its branches
+    /// decides whether the tasks' work is activated earlier in the same evaluation that then terminates
+    /// (<paramref name="workFirst"/>), or whether the terminate cancels their tokens before they reach a task.
+    /// </summary>
+    public static BpmnProcessDefinition SplitIntoWorkAndTerminate(bool workFirst = true)
+    {
+        var builder = new BpmnProcessBuilder("split-terminate")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .Task("Wait", bindingRef: "wait")
+            .Task("Hold", bindingRef: "hold")
+            .EndEvent("EndWaited")
+            .EndEvent("EndHeld")
+            .EndEvent("Terminate", null, Terminate())
+            .Connect("Start", "Split");
+
+        if (workFirst)
+            builder.Connect("Split", "Wait").Connect("Split", "Hold").Connect("Split", "Terminate");
+        else
+            builder.Connect("Split", "Terminate").Connect("Split", "Wait").Connect("Split", "Hold");
+
+        return builder
+            .Connect("Wait", "EndWaited")
+            .Connect("Hold", "EndHeld")
+            .Build();
+    }
+
+    /// <summary>
+    /// A parallel split into a waiting task and an exclusive gateway that can never choose: it binds no decision,
+    /// declares no default, and both of its flows are conditional, so a token arriving there faults the process.
+    /// The task is emitted first, so its work is activated earlier in the same evaluation that then faults.
+    /// </summary>
+    public static BpmnProcessDefinition SplitIntoWorkAndFault() =>
+        WithUndecidableGateway(new BpmnProcessBuilder("split-fault")
+                .StartEvent("Start")
+                .ParallelGateway("Split")
+                .Task("Wait", bindingRef: "wait")
+                .EndEvent("EndWaited")
+                .Connect("Start", "Split")
+                .Connect("Split", "Wait")
+                .Connect("Wait", "EndWaited"),
+            from: "Split")
+            .Build();
+
+    /// <summary>
+    /// A scope with a spread of work already running when a trigger branch ends it: a task under an interrupting
+    /// timer boundary (so its listener is live too), a parallel multi-instance activity, a subprocess with a task
+    /// of its own, and a message event subprocess's scope listener. Completing <c>trigger</c> reaches a terminate
+    /// end event. With <paramref name="activatesWorkInTheSameInstant"/> the trigger first splits off a follow-up
+    /// task, so the terminate is reached in the same evaluation that activated that task's work.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, IReadOnlyDictionary<string, BpmnProcessDefinition> Nested) TerminateBesideLiveWork(
+        bool activatesWorkInTheSameInstant = false)
+    {
+        var parent = ScopeWithLiveWork("terminate-beside-live-work")
+            .EndEvent("Terminate", null, Terminate());
+
+        if (activatesWorkInTheSameInstant)
+            parent.ParallelGateway("Fork")
+                .Task("Followup", bindingRef: "followup")
+                .EndEvent("EndFollowedUp")
+                .Connect("Trigger", "Fork")
+                .Connect("Fork", "Followup")
+                .Connect("Fork", "Terminate")
+                .Connect("Followup", "EndFollowedUp");
+        else
+            parent.Connect("Trigger", "Terminate");
+
+        return (parent.Build(), ScopeWithLiveWorkNestedProcesses());
+    }
+
+    /// <summary>
+    /// The same scope, but the trigger splits into a follow-up task and an exclusive gateway that can never
+    /// choose, so the scope faults in the same evaluation that activated the follow-up's work.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, IReadOnlyDictionary<string, BpmnProcessDefinition> Nested) FaultBesideLiveWork()
+    {
+        var parent = ScopeWithLiveWork("fault-beside-live-work")
+            .ParallelGateway("Fork")
+            .Task("Followup", bindingRef: "followup")
+            .EndEvent("EndFollowedUp")
+            .Connect("Trigger", "Fork")
+            .Connect("Fork", "Followup")
+            .Connect("Followup", "EndFollowedUp");
+
+        return (WithUndecidableGateway(parent, from: "Fork").Build(), ScopeWithLiveWorkNestedProcesses());
+    }
+
+    /// <summary>
+    /// A subprocess whose body terminates in its start evaluation, beside a parent branch that keeps working.
+    /// The body splits three ways, in this order: an escalation throw that signals the parent, a task, and a
+    /// terminate end event. So by the time the terminate is reached, the same evaluation has already raised a
+    /// scope signal and activated the task's work.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) SubProcessThatEscalatesThenTerminates(string code = "overdue")
+    {
+        var body = new BpmnProcessBuilder("terminating-body")
+            .StartEvent("BodyStart")
+            .ParallelGateway("BodySplit")
+            .IntermediateThrowEvent("BodyEscalate", Escalation(code))
+            .EndEvent("BodyEscalated")
+            .Task("Inner", bindingRef: "inner")
+            .EndEvent("BodyEnd")
+            .EndEvent("BodyTerminate", null, Terminate())
+            .Connect("BodyStart", "BodySplit")
+            .Connect("BodySplit", "BodyEscalate")
+            .Connect("BodySplit", "Inner")
+            .Connect("BodySplit", "BodyTerminate")
+            .Connect("BodyEscalate", "BodyEscalated")
+            .Connect("Inner", "BodyEnd")
+            .Build();
+
+        var parent = new BpmnProcessBuilder("parent")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .SubProcess("Sub", bindingRef: "sub")
+            .EndEvent("EndSub")
+            .Task("ParentWork", bindingRef: "parent-work")
+            .EndEvent("EndParentWork")
+            .Connect("Start", "Split")
+            .Connect("Split", "Sub")
+            .Connect("Split", "ParentWork")
+            .Connect("Sub", "EndSub")
+            .Connect("ParentWork", "EndParentWork")
+            .Build();
+
+        return (parent, body);
+    }
+
+    /// <summary>The shared shape of <see cref="TerminateBesideLiveWork"/> and <see cref="FaultBesideLiveWork"/>, up to the trigger's outbound flow.</summary>
+    private static BpmnProcessBuilder ScopeWithLiveWork(string processId) =>
+        new BpmnProcessBuilder(processId)
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .Task("Long", bindingRef: "long")
+            .EndEvent("EndLong")
+            .BoundaryEvent("Timeout", "Long", Timer("PT1H"), interrupting: true, bindingRef: "timeout")
+            .EndEvent("EndTimedOut")
+            .Task(BpmnElementTypes.Task, "Review", bindingRef: "review",
+                loopCharacteristics: new BpmnLoopCharacteristics(isSequential: false, cardinality: 2))
+            .EndEvent("EndReviewed")
+            .SubProcess("Sub", bindingRef: "sub")
+            .EndEvent("EndSub")
+            .Element(new BpmnElement("OnNudge", BpmnElementTypes.SubProcess,
+                bindingRef: "on-nudge", triggeredByEvent: true, listenerBindingRef: "on-nudge-listener"))
+            .Task("Trigger", bindingRef: "trigger")
+            .Connect("Start", "Split")
+            .Connect("Split", "Long")
+            .Connect("Split", "Review")
+            .Connect("Split", "Sub")
+            .Connect("Split", "Trigger")
+            .Connect("Long", "EndLong")
+            .Connect("Timeout", "EndTimedOut")
+            .Connect("Review", "EndReviewed")
+            .Connect("Sub", "EndSub");
+
+    /// <summary>The nested processes <see cref="ScopeWithLiveWork"/> runs: the subprocess body and the message event subprocess body.</summary>
+    private static IReadOnlyDictionary<string, BpmnProcessDefinition> ScopeWithLiveWorkNestedProcesses() =>
+        new Dictionary<string, BpmnProcessDefinition>(StringComparer.Ordinal)
+        {
+            ["sub"] = new BpmnProcessBuilder("sub-body")
+                .StartEvent("BodyStart")
+                .Task("Inner", bindingRef: "inner")
+                .EndEvent("BodyEnd")
+                .ConnectSequence("BodyStart", "Inner", "BodyEnd")
+                .Build(),
+            ["on-nudge"] = new BpmnProcessBuilder("on-nudge-body")
+                .StartEvent("NudgeStart", null, Message("nudge"))
+                .Task("HandleNudge", bindingRef: "handle-nudge")
+                .EndEvent("NudgeEnd")
+                .ConnectSequence("NudgeStart", "HandleNudge", "NudgeEnd")
+                .Build()
+        };
+
+    /// <summary>Adds an exclusive gateway reached from <paramref name="from"/> that binds no decision, declares no default, and has only conditional flows.</summary>
+    private static BpmnProcessBuilder WithUndecidableGateway(BpmnProcessBuilder builder, string from) =>
+        builder
+            .ExclusiveGateway("Undecidable")
+            .EndEvent("EndLeft")
+            .EndEvent("EndRight")
+            .Connect(from, "Undecidable")
+            .Connect("Undecidable", "EndLeft", condition: "Left")
+            .Connect("Undecidable", "EndRight", condition: "Right");
+
+    public static BpmnEventDefinition Terminate() => new(BpmnEventDefinitionTypes.Terminate);
+
     public static BpmnEventDefinition Timer(string isoDuration) =>
         new(BpmnEventDefinitionTypes.Timer,
             new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Interval] = isoDuration });

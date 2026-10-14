@@ -150,8 +150,8 @@ public abstract record BpmnHostCommand
     /// <summary>
     /// Stop a running unit of work and everything it in turn started. Issued when BPMN interrupts: a losing
     /// event-based-gateway branch, an interrupting boundary event tearing its host down, a host completion
-    /// retiring its still-armed boundary listeners, an interrupting event subprocess draining its scope, and a
-    /// completing scope retiring its listeners.
+    /// retiring its still-armed boundary listeners, an interrupting event subprocess draining its scope, a
+    /// completing scope retiring its listeners, and a terminate end event ending its scope.
     /// </summary>
     /// <param name="Handle">The <see cref="BpmnLiveWork.Handle"/> of the work to stop.</param>
     /// <param name="ElementId">The element whose work is being stopped, for the host's own reporting.</param>

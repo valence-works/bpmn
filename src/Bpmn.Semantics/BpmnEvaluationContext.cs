@@ -11,14 +11,17 @@ namespace Bpmn.Semantics;
 internal sealed record PendingTeardown(string Handle, string ElementId, string Reason);
 
 /// <summary>
-/// The mutable scratch space of one interpreter evaluation: the host snapshot it reads, and the command list
-/// it builds. It exists so the interpreter can stay a pure function of its request — nothing here reaches the
-/// host, and nothing here survives the evaluation.
+/// The mutable scratch space of one interpreter evaluation: the graph and host snapshot it reads, and the
+/// command list it builds. It exists so the interpreter can stay a pure function of its request — nothing here
+/// reaches the host, and nothing here survives the evaluation.
 /// </summary>
-internal sealed class BpmnEvaluationContext(BpmnHostSnapshot host)
+internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot host)
 {
     private readonly List<BpmnHostCommand> _commands = [];
     private readonly List<PendingTeardown> _carriedTeardowns = [];
+
+    /// <summary>The graph this evaluation runs.</summary>
+    public BpmnGraph Graph { get; } = graph;
 
     /// <summary>What the host told the interpreter about its world.</summary>
     public BpmnHostSnapshot Host { get; } = host;
@@ -27,9 +30,9 @@ internal sealed class BpmnEvaluationContext(BpmnHostSnapshot host)
     public IReadOnlyList<BpmnHostCommand> Commands => _commands;
 
     /// <summary>
-    /// Whether this evaluation already asked the host to start work. A terminal continuation may not be
-    /// returned from an evaluation that also started work, so the verdict is carried on the state instead
-    /// (see <see cref="BpmnExecutionState.Terminated"/> and <see cref="BpmnExecutionState.PendingFault"/>).
+    /// Whether the command list currently asks the host to start work. A terminal continuation may not also
+    /// start work, so an evaluation that ends its scope withdraws those starts (see
+    /// <see cref="WithdrawStartedWork"/>) rather than deferring its verdict.
     /// </summary>
     public bool StartedWork { get; private set; }
 
@@ -38,6 +41,19 @@ internal sealed class BpmnEvaluationContext(BpmnHostSnapshot host)
     {
         _commands.Add(command);
         StartedWork = true;
+    }
+
+    /// <summary>
+    /// Withdraws every <see cref="BpmnHostCommand.StartWork"/> on the command list, keeps every other command
+    /// where it was, and returns what was withdrawn. Commands are returned rather than executed, so nothing
+    /// withdrawn here has reached the host: work activated and ended in the same instant is never started.
+    /// </summary>
+    public IReadOnlyList<BpmnHostCommand.StartWork> WithdrawStartedWork()
+    {
+        var withdrawn = _commands.OfType<BpmnHostCommand.StartWork>().ToArray();
+        _commands.RemoveAll(command => command is BpmnHostCommand.StartWork);
+        StartedWork = false;
+        return withdrawn;
     }
 
     /// <summary>

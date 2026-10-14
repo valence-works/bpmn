@@ -68,7 +68,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Construct | Status | Notes |
 | --- | --- | --- |
 | None (plain) | Supported | Consumes a token; the process completes when none remain. |
-| Terminate | Supported | Ends the process, discarding remaining tokens. Late child completions are ignored. |
+| Terminate | Supported | Ends the process, discarding remaining tokens and tearing down the work still running. Late child completions are ignored. |
 | Message | Supported | Publishes by name and ends. An unresolvable name degrades to a plain end event. |
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |

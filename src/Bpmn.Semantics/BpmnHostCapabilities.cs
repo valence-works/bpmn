@@ -79,8 +79,8 @@ public sealed record BpmnCapabilityRequirements(
     /// boundary event, a catch boundary event (whose armed listener is torn down when its host completes),
     /// an event subprocess (an interrupting one drains the whole scope; every scope listener is retired when
     /// the scope completes), an event-based gateway (whose losing branches are torn down when the first
-    /// catch wins), and a cancel end event (which tears down the transaction's other live work when it
-    /// abandons it).</item>
+    /// catch wins), a cancel end event (which tears down the transaction's other live work when it
+    /// abandons it), and a terminate end event (which tears down whatever its scope still has running).</item>
     /// <item><b>Scope signalling</b> — escalation: a throw or end event signals the enclosing scope, and a
     /// scope carrying escalation catchers re-signals what it cannot match itself.</item>
     /// <item><b>Iteration scopes</b> — a multi-instance activity.</item>
@@ -118,7 +118,7 @@ public sealed record BpmnCapabilityRequirements(
             if (StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EventBasedGateway))
                 Require(BpmnHostCapabilities.SubtreeCancellation, element.ElementId);
 
-            if (BpmnElementFamilies.IsCancelEndEvent(element))
+            if (BpmnElementFamilies.IsCancelEndEvent(element) || IsTerminateEndEvent(element))
                 Require(BpmnHostCapabilities.SubtreeCancellation, element.ElementId);
 
             if (BpmnElementFamilies.IsEscalationThrowOrEnd(element) || BpmnElementFamilies.IsEscalationBoundary(element))
@@ -172,6 +172,12 @@ public sealed record BpmnCapabilityRequirements(
             missing,
             drivingElementIds);
     }
+
+    /// <summary>True for a terminate end event: an <c>endEvent</c> whose single event definition is <see cref="BpmnEventDefinitionTypes.Terminate"/>.</summary>
+    private static bool IsTerminateEndEvent(BpmnElement element) =>
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent)
+        && element.EventDefinitions.Count == 1
+        && StringComparer.Ordinal.Equals(element.EventDefinitions.Single().Type, BpmnEventDefinitionTypes.Terminate);
 
     /// <summary>True for a boundary event that arms suspending listener work (timer, message, or signal).</summary>
     private static bool IsCatchBoundary(BpmnElement element) =>

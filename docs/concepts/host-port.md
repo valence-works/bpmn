@@ -60,7 +60,7 @@ interpreter is willing to run.
 | `Compensables` | The durable, reverse-order compensation log. |
 | `CompensationRuns` | In-flight compensation replays. |
 | `Terminated` / `Cancelling` | Whether a terminate or cancel end event has ended the scope. |
-| `PendingFault` | A fault decision deferred to the next callback. |
+| `PendingFault` | A fault decision an earlier version deferred to the next callback. No longer written, and surfaced on the next callback when present. |
 
 Treat it as opaque. It serializes to JSON; the only rule is that the state you pass in is the state
 you last got out for that scope instance.

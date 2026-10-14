@@ -181,6 +181,15 @@ A **terminate end event** ends the process immediately, discarding every remaini
 compensation, no boundary paths, no outcome negotiation. The state records `Terminated`, and late
 child completions are ignored.
 
+Every unit of work still running in the scope is torn down on the host, with the reason
+`bpmn.terminate.stopped-live-work`, so a terminated process leaves nothing running behind it. Work
+the same evaluation was about to start is never started: the interpreter withdraws its `StartWork`
+and completes at once, rather than starting work only to stop it.
+
+A fault ends the scope at once in the same way, withdrawing work it was about to start, but it
+carries no teardown. A fault is a verdict, not a command, so stopping what a faulted scope still has
+running is the host's half of the fault.
+
 It is the bluntest instrument BPMN has. Use it when "stop, right now, everywhere" is genuinely the
 requirement, and something more specific otherwise.
 
