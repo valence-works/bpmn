@@ -57,9 +57,11 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     }
 
     /// <summary>
-    /// Asks the host to tear running work down, or to signal the enclosing scope. Only ever called from a
-    /// non-fault continuation: teardown that has been carried but not staged is discarded when the process
-    /// faults, because the whole scope is going away and a premature teardown would race the fault.
+    /// Asks the host to tear running work down, or to signal the enclosing scope. A teardown is only ever added
+    /// on a non-fault continuation: one that has been carried but not staged is discarded when the process
+    /// faults, because the whole scope is going away and a premature teardown would race the fault. The one
+    /// command added mid-propagation is the signal an escalation throw raises, which happened before any
+    /// verdict and so rides whichever continuation follows.
     /// </summary>
     public void AddCommand(BpmnHostCommand command) => _commands.Add(command);
 

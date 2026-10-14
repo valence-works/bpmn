@@ -177,7 +177,10 @@ because the listener it arms has to be retired when its host finishes. It is eas
 interrupting events tear anything down; the analyzer knows better.
 
 `BpmnCapabilityRequirements.Analyze(definition)` is the authority for a specific document, and the
-graph builder is the authority overall.
+graph builder is the authority overall. The table above is the maintained list. The one in
+[ADR 0004](../adr/0004-capabilities-refuse-at-graph-build-time.md) records the decision as it stood
+when it was made, so it does not list the cancel and terminate end events that later began tearing
+work down.
 
 ## Related
 

@@ -291,16 +291,9 @@ public sealed class BpmnInterpreter
         var completionContext = request;
         var state = request.PriorState ?? new BpmnExecutionState();
 
-        // A scope that already holds its verdict absorbs the completion without resolving it: a terminate, or a
-        // fault an earlier version parked on the state. Reaching that verdict dropped every work record, so there
-        // is nothing left to resolve the completion against, and the by-slot lookup would throw for any host that
-        // follows the rule of not handing correlation back. FinishEvaluation answers the verdict again.
-        if (state.Terminated || state.PendingFault is not null)
-        {
-            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, graph.FindElementByBindingRef(completionContext.CompletedBindingRef)?.ElementId, null, null,
-                $"BPMN ignored completion of work '{completionContext.CompletedBindingRef}' because the process had already ended.");
-            return FinishEvaluation(context, new EvaluationResult(state));
-        }
+        if (AbsorbIntoEndedScope(context, graph, state, completionContext.CompletedBindingRef,
+                $"completion of work '{completionContext.CompletedBindingRef}'") is { } absorbedCompletion)
+            return absorbedCompletion;
 
         var tokenId = ResolveTokenId(context, state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
         state = RemoveActiveWork(state, tokenId);
@@ -420,6 +413,29 @@ public sealed class BpmnInterpreter
             result = Propagate(context, graph, result.State, completionContext.CompletedHandle);
 
         return FinishEvaluation(context, result with { PendingTeardowns = pendingCancellations });
+    }
+
+    /// <summary>
+    /// Absorbs a callback into a scope that already holds its verdict — a terminate, or a fault an earlier version
+    /// parked on the state — and answers that verdict again through <see cref="FinishEvaluation"/>; <c>null</c> for a
+    /// scope still running. The callback is not resolved or acted on. Reaching the verdict dropped every work
+    /// record, so there is nothing to resolve it against, and the by-slot lookup would throw for any host that
+    /// follows the rule of not handing correlation back. Nor may a dead scope act on it: a signal from work it is
+    /// tearing down, arriving before the host applied that teardown, must not fire a boundary or reach the parent.
+    /// </summary>
+    private BpmnEvaluation? AbsorbIntoEndedScope(
+        BpmnEvaluationContext context,
+        BpmnGraph graph,
+        BpmnExecutionState state,
+        string bindingRef,
+        string callback)
+    {
+        if (!state.Terminated && state.PendingFault is null)
+            return null;
+
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, graph.FindElementByBindingRef(bindingRef)?.ElementId, null, null,
+            $"BPMN ignored {callback} because the process had already ended.");
+        return FinishEvaluation(context, new EvaluationResult(state));
     }
 
     /// <summary>
@@ -704,9 +720,10 @@ public sealed class BpmnInterpreter
     /// First consults the throwing scope's OWN escalation event subprocesses (exact code beats the code-less
     /// catch-all): a match returns that catcher so the caller activates it, instead of signalling outward. That
     /// preserves one-hop bubbling — each scope checks itself before passing the signal on. On no own-scope
-    /// match, when this process has an enclosing scope it carries a <see cref="BpmnHostCommand.SignalEnclosingScope"/>
-    /// (code <see cref="EscalationSignalCode"/>, payload <c>{ code, name? }</c>) issued at the clean exit; at a
-    /// root process it is a no-op with an <c>EscalationUnhandled</c> diagnostic. Never faults. The companion
+    /// match, when this process has an enclosing scope it issues a <see cref="BpmnHostCommand.SignalEnclosingScope"/>
+    /// (code <see cref="EscalationSignalCode"/>, payload <c>{ code, name? }</c>) at once, so the parent hears it
+    /// whatever verdict this evaluation then reaches, a fault included; at a root process it is a no-op with an
+    /// <c>EscalationUnhandled</c> diagnostic. Never faults. The companion
     /// routing command routes or consumes as usual.
     /// </summary>
     private static (BpmnExecutionState State, BpmnEventSubprocessCatcher? OwnScopeActivation) RaiseEscalation(
@@ -932,6 +949,10 @@ public sealed class BpmnInterpreter
         var graph = request.Graph;
         var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var state = request.PriorState ?? new BpmnExecutionState();
+
+        if (AbsorbIntoEndedScope(context, graph, state, request.SignallingBindingRef,
+                $"signal '{request.Code}' from work '{request.SignallingBindingRef}'") is { } absorbedSignal)
+            return absorbedSignal;
 
         // An unrecognized code (a future consumer's) is ignored with a diagnostic — never a fault.
         if (!StringComparer.Ordinal.Equals(request.Code, EscalationSignalCode))
@@ -1960,9 +1981,12 @@ public sealed class BpmnInterpreter
     /// the host's half of the fault.
     /// </para>
     /// <para>
-    /// This is also the only place teardown and outward-signal commands are issued, and only on a non-fault
-    /// continuation. Carrying them and issuing them last is what prevents premature teardown: work must not be
-    /// stopped for a routing decision that the same evaluation then abandons by faulting.
+    /// This is also the only place teardowns and the re-signal of an unmatched escalation are issued, and only on
+    /// a non-fault continuation. Carrying them and issuing them last is what prevents premature teardown: work
+    /// must not be stopped for a routing decision that the same evaluation then abandons by faulting. An
+    /// escalation an escalation throw raises is different: its <see cref="BpmnHostCommand.SignalEnclosingScope"/>
+    /// is issued as it is raised, because the escalation happened before whatever verdict the evaluation then
+    /// reaches. It therefore stays on the command list of every continuation, a fault included.
     /// </para>
     /// <para>
     /// States persisted by an earlier version may still carry a verdict it deferred
@@ -1983,7 +2007,13 @@ public sealed class BpmnInterpreter
         if (result.Terminated || state.Terminated)
         {
             state = WithdrawStartedWork(context, state);
-            IssueCarriedCommands(context, result);
+
+            // Carried teardowns go out; a carried re-signal does not. A re-signal is only carried by an evaluation
+            // that matched nothing and propagated nothing, so it can never be raised on the way to a terminate:
+            // here it could only come from a scope that had already ended, and a dead scope forwards nothing.
+            // An escalation a throw raised earlier in this same evaluation is already on the command list, and
+            // stays there.
+            IssueCarriedCommands(context, result with { PendingScopeSignal = null });
             IssueTerminateTeardowns(context);
             return Evaluated(context, state, new BpmnContinuation.Complete(DoneOutcomeName));
         }

@@ -162,11 +162,21 @@ cancelled" into "work was cancelled because the first catch won the race".
 When you apply it is your choice. Eager recursive teardown and staged teardown flushed on commit are
 both legitimate, and that freedom is exactly why this is returned data rather than a callback.
 
+Make it idempotent: a `CancelWorkSubtree` for a handle you no longer hold, because that work already
+finished or was already torn down, must be a no-op. You will see repeats. Once a terminate has ended a
+scope, any callback that still reaches it is answered with `Complete` again, plus a teardown for every
+handle the snapshot still lists, including ones you were already asked to stop but have not yet
+stopped. Nothing is ever started again in that scope.
+
 #### `SignalEnclosingScope`
 
 Deliver a notification to this scope's parent — the mechanism behind escalation crossing a scope
 boundary. Route it to the immediate parent scope, not the root, and deliver it there through
 `OnWorkSignalled` under the handle the parent started this scope with.
+
+It is the one command a `Fault` continuation may carry. An escalation throw issues its signal as it
+is raised, before the evaluation reaches any verdict, so when the same evaluation then faults, the
+parent still hears the escalation. A scope that has already ended forwards nothing.
 
 It carries a `Code` and an optional JSON `Payload`. There is exactly one code for escalation —
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity

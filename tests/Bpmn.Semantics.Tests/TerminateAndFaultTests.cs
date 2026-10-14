@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Bpmn.Runtime.InMemory;
@@ -25,6 +26,11 @@ namespace Bpmn.Semantics.Tests;
 public sealed class TerminateAndFaultTests
 {
     private static readonly BpmnContinuation Done = new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName);
+
+    private static readonly BpmnInterpreter Interpreter = BpmnInterpreter.CreateDefault();
+
+    private static BpmnGraph BuildGraph(BpmnProcessDefinition definition) =>
+        BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.Full);
 
     private static InMemoryProcessInstance Start(BpmnProcessDefinition definition) => new InMemoryBpmnHost().Start(definition);
 
@@ -72,6 +78,21 @@ public sealed class TerminateAndFaultTests
         instance.State.Tokens.Single(token => token.AtElementId == "Wait").Status.ShouldBe(BpmnTokenStatus.Canceled);
     }
 
+    [Fact]
+    public void A_caught_error_whose_path_then_faults_beside_new_work_propagates_at_once()
+    {
+        var instance = Start(ProcessFixtures.ErrorPathThatForksIntoWorkAndFault());
+
+        instance.FaultWork("risky", "boom");
+
+        var evaluation = instance.Transcript[^1];
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>(instance.Transcript.ToString())
+            .Code.ShouldBe("bpmn.gateway.no-flow-selected");
+        evaluation.Disposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance,
+            "the catcher's own path faulted, so the error was not caught after all");
+        evaluation.Commands.ShouldBeEmpty("neither the recovery's StartWork nor any teardown rides the fault");
+    }
+
     // --- Teardown --------------------------------------------------------------------------------------
 
     [Theory]
@@ -101,6 +122,24 @@ public sealed class TerminateAndFaultTests
             "the host must not have had to stop anything the interpreter did not name");
         instance.Children.Single(child => child.ParentWorkHandle == earlier.Single(work => work.ElementId == "Sub").Handle)
             .IsCancelled.ShouldBeTrue("tearing the subprocess down takes its own work with it");
+    }
+
+    [Fact]
+    public void A_unit_a_carried_teardown_already_names_keeps_its_own_reason_when_a_terminate_follows()
+    {
+        var instance = Start(ProcessFixtures.RaceWonIntoTerminate());
+        var loser = instance.ResolveWork("catch-b").Handle;
+        var other = instance.ResolveWork("other").Handle;
+
+        instance.CompleteWork("catch-a");
+
+        var evaluation = instance.Transcript[^1];
+        evaluation.Continuation.ShouldBe(Done, instance.Transcript.ToString());
+        evaluation.Commands.ShouldBe(
+        [
+            new BpmnHostCommand.CancelWorkSubtree(loser, "CatchB", BpmnInterpreter.EventGatewayRaceCancellationReason),
+            new BpmnHostCommand.CancelWorkSubtree(other, "Other", BpmnInterpreter.TerminateStopReason)
+        ], "the losing catch is torn down once, for losing the race; only the rest is torn down for the terminate");
     }
 
     [Fact]
@@ -160,6 +199,77 @@ public sealed class TerminateAndFaultTests
         child.ScopeSignals.ShouldHaveSingleItem().Delivered.ShouldBeTrue();
     }
 
+    // --- Callbacks that reach a scope after it terminated -----------------------------------------------
+
+    private static readonly BpmnGraph SignallingChildGraph = BuildGraph(ProcessFixtures.TerminateBesideASignallingChild());
+    private static readonly BpmnLiveWork LiveChild = new("child", null, "h-child");
+    private static readonly BpmnLiveWork LiveOther = new("other", null, "h-other");
+
+    private static BpmnHostSnapshot NestedScope(params BpmnLiveWork[] liveWork) =>
+        BpmnHostSnapshot.Root("scope-1") with { HasEnclosingScope = true, LiveWork = liveWork };
+
+    private static BpmnHostCommand[] TerminateTeardowns(params (BpmnLiveWork Work, string ElementId)[] units) =>
+        units.Select(unit => (BpmnHostCommand)new BpmnHostCommand.CancelWorkSubtree(unit.Work.Handle, unit.ElementId, BpmnInterpreter.TerminateStopReason)).ToArray();
+
+    /// <summary>
+    /// Drives <see cref="ProcessFixtures.TerminateBesideASignallingChild"/>, as a nested scope, through its terminate
+    /// and returns the state a host would persist. The test is the host's ledger here, and it deliberately has not
+    /// applied the terminate's teardowns yet: that is the window in which a real host can still receive a callback
+    /// from the child or the other task.
+    /// </summary>
+    private static BpmnExecutionState TerminateBesideASignallingChild()
+    {
+        var started = Interpreter.Start(new BpmnStartRequest(SignallingChildGraph, null, NestedScope()));
+        started.Commands.OfType<BpmnHostCommand.StartWork>().Select(start => start.BindingRef).ShouldBe(["child", "other", "trigger"]);
+
+        var terminated = Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
+            SignallingChildGraph, started.State, NestedScope(LiveChild, LiveOther), "trigger", "h-trigger", []));
+        terminated.Continuation.ShouldBe(Done);
+        terminated.Commands.ShouldBe(TerminateTeardowns((LiveChild, "Child"), (LiveOther, "Other")));
+
+        return terminated.State;
+    }
+
+    [Theory]
+    [InlineData("late")]
+    [InlineData("forward")]
+    public void A_terminated_scope_neither_forwards_nor_catches_a_signal_from_work_it_is_tearing_down(string code)
+    {
+        // 'late' matches nothing here, so a live scope would bubble it to the parent. 'forward' fires the
+        // child's non-interrupting boundary, whose path throws an escalation outward.
+        var payload = JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["code"] = code });
+
+        var evaluation = Interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
+            SignallingChildGraph, TerminateBesideASignallingChild(), NestedScope(LiveChild, LiveOther),
+            "child", LiveChild.Handle, BpmnInterpreter.EscalationSignalCode, payload));
+
+        evaluation.Continuation.ShouldBe(Done);
+        evaluation.Commands.ShouldBe(TerminateTeardowns((LiveChild, "Child"), (LiveOther, "Other")),
+            "a dead scope forwards nothing and starts nothing; it only repeats the teardowns still outstanding");
+    }
+
+    [Fact]
+    public void A_terminated_scope_absorbs_a_fault_from_work_it_is_tearing_down()
+    {
+        var evaluation = Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
+            SignallingChildGraph, TerminateBesideASignallingChild(), NestedScope(LiveOther), "child", LiveChild.Handle, "boom"));
+
+        evaluation.Continuation.ShouldBe(Done, "the scope already ended; a fault cannot reopen it");
+        evaluation.Commands.ShouldBe(TerminateTeardowns((LiveOther, "Other")));
+    }
+
+    [Fact]
+    public void A_late_completion_after_a_terminate_completes_again_repeats_the_outstanding_teardowns_and_starts_nothing()
+    {
+        // The child finished on its own before the host got to its teardown; the other task is still listed.
+        var evaluation = Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
+            SignallingChildGraph, TerminateBesideASignallingChild(), NestedScope(LiveOther), "child", LiveChild.Handle, []));
+
+        evaluation.Continuation.ShouldBe(Done);
+        evaluation.Commands.ShouldBe(TerminateTeardowns((LiveOther, "Other")),
+            "the child's outbound flow is not routed, and the teardown for the unit still listed is sent again");
+    }
+
     // --- States an earlier version persisted -----------------------------------------------------------
 
     /// <summary>
@@ -184,12 +294,10 @@ public sealed class TerminateAndFaultTests
     /// <summary>Reports that <c>wait</c> completed against <paramref name="state"/>, with <c>hold</c> still running on the host.</summary>
     private static BpmnEvaluation CompleteWaitAgainst(BpmnExecutionState state)
     {
-        var definition = ProcessFixtures.SplitIntoWorkAndTerminate();
-        var graph = BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.Full);
         var host = BpmnHostSnapshot.Root("scope-1") with { LiveWork = [new BpmnLiveWork("hold", null, "work-2")] };
 
-        return BpmnInterpreter.CreateDefault().OnWorkCompleted(new BpmnWorkCompletedRequest(
-            graph, state, host, CompletedBindingRef: "wait", CompletedHandle: "work-1", OutcomeNames: []));
+        return Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
+            BuildGraph(ProcessFixtures.SplitIntoWorkAndTerminate()), state, host, CompletedBindingRef: "wait", CompletedHandle: "work-1", OutcomeNames: []));
     }
 
     [Fact]

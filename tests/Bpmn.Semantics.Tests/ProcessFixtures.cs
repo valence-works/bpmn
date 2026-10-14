@@ -481,6 +481,81 @@ public static class ProcessFixtures
         return (parent, body);
     }
 
+    /// <summary>
+    /// A scope that terminates while a subprocess and a task are still running. The subprocess carries a
+    /// non-interrupting escalation boundary for <c>forward</c> whose path throws an escalation outward, so a
+    /// signal reaching a live scope either bubbles to the parent (an unmatched code) or is caught and
+    /// re-thrown (<c>forward</c>). Completing <c>trigger</c> reaches the terminate end event.
+    /// </summary>
+    public static BpmnProcessDefinition TerminateBesideASignallingChild() =>
+        new BpmnProcessBuilder("terminate-beside-signalling-child")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .SubProcess("Child", bindingRef: "child")
+            .EndEvent("EndChild")
+            .BoundaryEvent("Forwarded", "Child", Escalation("forward"), interrupting: false)
+            .IntermediateThrowEvent("Forward", Escalation("forward-out"))
+            .EndEvent("EndForwarded")
+            .Task("Other", bindingRef: "other")
+            .EndEvent("EndOther")
+            .Task("Trigger", bindingRef: "trigger")
+            .EndEvent("Terminate", null, Terminate())
+            .Connect("Start", "Split")
+            .Connect("Split", "Child")
+            .Connect("Split", "Other")
+            .Connect("Split", "Trigger")
+            .Connect("Child", "EndChild")
+            .ConnectSequence("Forwarded", "Forward", "EndForwarded")
+            .Connect("Other", "EndOther")
+            .Connect("Trigger", "Terminate")
+            .Build();
+
+    /// <summary>
+    /// A risky task whose error boundary path forks into a recovery task and an exclusive gateway that can never
+    /// choose. Catching the error starts the recovery's work and then faults, in the same evaluation.
+    /// </summary>
+    public static BpmnProcessDefinition ErrorPathThatForksIntoWorkAndFault() =>
+        WithUndecidableGateway(new BpmnProcessBuilder("error-path-faults")
+                .StartEvent("Start")
+                .Task("Risky", bindingRef: "risky")
+                .EndEvent("EndOk")
+                .BoundaryEvent("Failed", "Risky", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))
+                .ParallelGateway("Fork")
+                .Task("Recover", bindingRef: "recover")
+                .EndEvent("EndRecovered")
+                .ConnectSequence("Start", "Risky", "EndOk")
+                .Connect("Failed", "Fork")
+                .Connect("Fork", "Recover")
+                .Connect("Recover", "EndRecovered"),
+            from: "Fork")
+            .Build();
+
+    /// <summary>
+    /// An event-based gateway race beside a running task, where the winning catch leads to a terminate end
+    /// event. Winning the race tears the losing catch down for its own reason in the same evaluation that
+    /// terminates.
+    /// </summary>
+    public static BpmnProcessDefinition RaceWonIntoTerminate() =>
+        new BpmnProcessBuilder("race-into-terminate")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .EventBasedGateway("Race")
+            .IntermediateCatchEvent("CatchA", Message("a"), bindingRef: "catch-a")
+            .IntermediateCatchEvent("CatchB", Message("b"), bindingRef: "catch-b")
+            .EndEvent("Terminate", null, Terminate())
+            .EndEvent("EndB")
+            .Task("Other", bindingRef: "other")
+            .EndEvent("EndOther")
+            .Connect("Start", "Split")
+            .Connect("Split", "Race")
+            .Connect("Split", "Other")
+            .Connect("Race", "CatchA")
+            .Connect("Race", "CatchB")
+            .Connect("CatchA", "Terminate")
+            .Connect("CatchB", "EndB")
+            .Connect("Other", "EndOther")
+            .Build();
+
     /// <summary>The shared shape of <see cref="TerminateBesideLiveWork"/> and <see cref="FaultBesideLiveWork"/>, up to the trigger's outbound flow.</summary>
     private static BpmnProcessBuilder ScopeWithLiveWork(string processId) =>
         new BpmnProcessBuilder(processId)
