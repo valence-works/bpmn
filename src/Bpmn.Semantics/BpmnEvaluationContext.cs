@@ -75,4 +75,21 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
 
     /// <summary>Carries a teardown to the clean exit, for a step whose result never reaches the caller.</summary>
     public void CarryTeardown(PendingTeardown teardown) => _carriedTeardowns.Add(teardown);
+
+    /// <summary>
+    /// How many tokens this evaluation has dispatched to an element behavior on arrival. Counted here rather
+    /// than in the propagation loop so the limit holds for the evaluation as a whole, however many times it
+    /// enters that loop.
+    /// </summary>
+    public int PropagationSteps { get; private set; }
+
+    /// <summary>The element of the token most recently dispatched, or <c>null</c> before the first.</summary>
+    public string? LastPropagatedElementId { get; private set; }
+
+    /// <summary>Records one token dispatched to the behavior of <paramref name="elementId"/>.</summary>
+    public void CountPropagationStep(string elementId)
+    {
+        PropagationSteps++;
+        LastPropagatedElementId = elementId;
+    }
 }

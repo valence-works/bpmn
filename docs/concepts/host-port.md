@@ -45,6 +45,42 @@ characteristics, a binding supplied twice. Those throw `BpmnExecutionException`;
 an undeclared capability throws `BpmnCapabilityException`. A graph that builds is a graph the
 interpreter is willing to run.
 
+#### A cycle must be able to wait
+
+Cycles are executable, but one structural problem is specific to them. If every element on a cycle
+passes a token straight on, a token that enters it is routed around the cycle forever within one
+evaluation, and the evaluation never returns to the host. `Build` refuses such a definition with a
+`BpmnExecutionException` that names the cycle's element ids in flow order, starting where the loop-back
+flow lands.
+
+A cycle can wait when at least one element on it can hold a token:
+
+- any element that binds work, because the token waits for the host: every kind of task, including a
+  call activity, plus a subprocess, a catch event, a message throw event, and an exclusive or inclusive
+  gateway bound to a decision;
+- a join, meaning a parallel or inclusive gateway with more than one incoming flow;
+- a compensate throw event, which holds the token while compensation handlers run;
+- an escalation throw event that an interrupting event subprocess of the same scope catches, because
+  the activation stops every other token in the scope.
+
+Everything else passes the token on: an unbound task, an unbound exclusive or inclusive split, a
+parallel split, and an escalation throw that nothing interrupting catches. That includes one a
+non-interrupting event subprocess catches, which starts the handler on every pass while the throw's own
+token carries on. The check follows only the flows these elements actually take when a token arrives.
+An arriving token reports no outcome, so a conditional flow out of an unbound element is never taken,
+and a cycle closed only by such a flow is not a cycle the token can follow.
+
+The check reads the built-in behaviors. An interpreter given a registry that replaces one of them
+behaves as that registry says, but `Build` still answers for the built-in behavior. The check also
+judges the cycle on its own, so it does not credit another branch that might end the scope first, such
+as a parallel path into a terminate end event.
+
+The rule refuses only what is certain to circulate. A join, a compensate throw and a multi-instance
+activity hold a token on some runs and not on others: a join the cycle satisfies by itself fires at
+once, a compensate throw with nothing registered completes at once, and a multi-instance activity
+whose collection is empty routes on at once. Cycles through those build, and the propagation limit
+described under [the continuation](#the-continuation) stops a run on which they did not wait.
+
 ### The prior state
 
 `BpmnExecutionState` is the interpreter's entire memory of an instance:
@@ -120,6 +156,19 @@ What the scope itself should do now.
 `Defer` is not "waiting". The interpreter has no notion of waiting; it has a notion of having nothing
 left to decide. What you do during that gap — suspend, poll, park a message subscription, hold a
 thread, do nothing — is invisible to it.
+
+One `Fault` comes from the interpreter rather than from the process. A single evaluation dispatches at
+most `BpmnInterpreter.PropagationStepLimit` tokens to element behaviors, which is 10,000; a dispatch is
+one token arriving at one element. An evaluation that reaches the limit without coming to rest answers
+`Fault` with the code `bpmn.propagation.limit` (`BpmnInterpreter.PropagationLimitFaultCode`), and the
+message names the element dispatched last. In practice it means a cycle that could have waited did not
+on this run; see [A cycle must be able to wait](#a-cycle-must-be-able-to-wait). An evaluation that
+comes to rest crosses each sequence flow about once, so no ordinary process gets near the limit.
+
+The limit is a count, not a clock, so where a run stops is deterministic. It is not configurable.
+Reaching it costs far more than an ordinary evaluation, because every dispatch grows the state the next
+one copies, so read it as a defect report about the definition rather than as a way to bound a loop.
+Like every `Fault`, it carries no `StartWork`.
 
 ### The commands
 

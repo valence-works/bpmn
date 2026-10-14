@@ -156,6 +156,31 @@ public sealed class BpmnInterpreter
     /// <summary>The fault code raised when a collection-mode multi-instance activity's collection variable is held outside the inline payload and cannot be read.</summary>
     public const string CollectionNotInlineFaultCode = "bpmn.loop.collection-not-inline";
 
+    /// <summary>The fault code an evaluation answers when it reaches <see cref="PropagationStepLimit"/> without coming to rest.</summary>
+    public const string PropagationLimitFaultCode = "bpmn.propagation.limit";
+
+    /// <summary>
+    /// The most tokens one evaluation dispatches to element behaviors. Reaching it faults the scope with
+    /// <see cref="PropagationLimitFaultCode"/> instead of letting the evaluation run on.
+    /// <para>
+    /// It is the backstop for a cycle graph build cannot see. Graph build refuses a cycle on which nothing can
+    /// hold a token, but whether a token is actually held can depend on run-time data: a multi-instance activity
+    /// whose collection is empty routes on at once, and a join the cycle satisfies by itself fires at once.
+    /// Without a limit such a cycle never returns to the host.
+    /// </para>
+    /// <para>
+    /// A dispatch is one token arriving at one element. An evaluation that comes to rest crosses each sequence
+    /// flow about once, so it dispatches roughly as many tokens as the flows it crosses before every token waits
+    /// or ends. That is tens in a typical process and hundreds in a large one, so ten thousand leaves a wide
+    /// margin. The margin is kept wide on purpose: the limit cannot be configured, so a process that needed more
+    /// would have no way around it, whereas a cycle that runs into the limit late still faults. Late is not free,
+    /// though. Every dispatch grows the state the next one copies, so an evaluation stopped here has done far
+    /// more work than an ordinary one, and returns a large state. It is a count, not a clock, so where a run
+    /// stops is as deterministic as the run.
+    /// </para>
+    /// </summary>
+    public const int PropagationStepLimit = 10_000;
+
     /// <summary>
     /// Starts a process instance. Seeds the start token — from the external trigger the host resolved, from the
     /// start-element hint an event subprocess body carries, or, on direct invocation, one token per none start
@@ -1268,8 +1293,12 @@ public sealed class BpmnInterpreter
                 ?? throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' resolved no instance count; its loop characteristics declare neither a cardinality nor a collection.");
         }
 
+        // A zero-instance loop routes at once, and only routes. This runs inside a behavior decision, and every
+        // caller of ApplyDecision propagates what the decision leaves behind. Propagating here as well nests one
+        // propagation loop per pass, so a cycle through this element with an empty collection would exhaust the
+        // stack long before the evaluation reached PropagationStepLimit.
         if (total <= 0)
-            return RouteMultiInstanceCoordinatorOutbound(context, graph, state, element, coordinatorToken, producedBy);
+            return ApplyMultiInstanceCoordinatorRouting(context, graph, state, element, coordinatorToken, producedBy);
 
         state = UpdateToken(state, coordinatorToken with { Status = BpmnTokenStatus.AwaitingChild });
         var (stateWithLoop, loop) = AddLoop(state, coordinatorToken.TokenId, element.ElementId, loopCharacteristics.IsSequential, total, items);
@@ -1430,8 +1459,23 @@ public sealed class BpmnInterpreter
         return result with { PendingTeardowns = pendingCancellations };
     }
 
-    /// <summary>Routes a multi-instance coordinator's outbound flows through the host element's normal behavior: task-flow selection with no outcome names, faulting <c>bpmn.flow.none-taken</c> when nothing matches, exactly as a single-run host.</summary>
+    /// <summary>Routes a multi-instance coordinator's outbound flows through the host element's normal behavior, then propagates.</summary>
     private EvaluationResult RouteMultiInstanceCoordinatorOutbound(
+        BpmnEvaluationContext context,
+        BpmnGraph graph,
+        BpmnExecutionState state,
+        BpmnElement element,
+        BpmnToken coordinatorToken,
+        string producedBy)
+    {
+        var result = ApplyMultiInstanceCoordinatorRouting(context, graph, state, element, coordinatorToken, producedBy);
+        if (result is { Fault: null, Terminated: false })
+            result = Propagate(context, graph, result.State, producedBy);
+        return result;
+    }
+
+    /// <summary>Applies a multi-instance coordinator's routing through the host element's normal behavior: task-flow selection with no outcome names, faulting <c>bpmn.flow.none-taken</c> when nothing matches, exactly as a single-run host. Does not propagate.</summary>
+    private EvaluationResult ApplyMultiInstanceCoordinatorRouting(
         BpmnEvaluationContext context,
         BpmnGraph graph,
         BpmnExecutionState state,
@@ -1449,10 +1493,7 @@ public sealed class BpmnInterpreter
             [],
             state);
 
-        var result = ApplyDecision(context, graph, state, coordinatorToken, element, Execute(behavior, behaviorContext, element), producedBy);
-        if (result is { Fault: null, Terminated: false })
-            result = Propagate(context, graph, result.State, producedBy);
-        return result;
+        return ApplyDecision(context, graph, state, coordinatorToken, element, Execute(behavior, behaviorContext, element), producedBy);
     }
 
     /// <summary>
@@ -1488,7 +1529,8 @@ public sealed class BpmnInterpreter
     /// <summary>
     /// The token propagation loop: releases ready joins, then dispatches the first live
     /// <see cref="BpmnTokenStatus.Active"/> token to its element behavior, until the state is quiescent
-    /// (every token consumed, parked at a join, or awaiting started work).
+    /// (every token consumed, parked at a join, or awaiting started work), or until the evaluation has
+    /// dispatched <see cref="PropagationStepLimit"/> tokens, which faults the scope.
     /// </summary>
     private EvaluationResult Propagate(BpmnEvaluationContext context, BpmnGraph graph, BpmnExecutionState state, string producedBy)
     {
@@ -1500,7 +1542,14 @@ public sealed class BpmnInterpreter
             if (token is null)
                 return new EvaluationResult(state);
 
+            // A token is still live, so the evaluation has not come to rest. Answering anything but a fault here
+            // would be wrong in the quiet direction: returning the state as it stands reads as Defer, a scope
+            // apparently waiting, with a live token nothing will ever move.
+            if (context.PropagationSteps >= PropagationStepLimit)
+                return PropagationLimitReached(context, state);
+
             var element = graph.GetRequiredElement(token.AtElementId);
+            context.CountPropagationStep(element.ElementId);
             var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
             var behaviorContext = new BpmnBehaviorContext(
                 BpmnBehaviorTrigger.TokenArrived,
@@ -1517,6 +1566,21 @@ public sealed class BpmnInterpreter
 
             state = result.State;
         }
+    }
+
+    /// <summary>
+    /// The fault an evaluation answers when it reaches <see cref="PropagationStepLimit"/>. In practice that means
+    /// a cycle is routing tokens without holding one: graph build refuses a cycle on which nothing can hold a
+    /// token, so what remains is a cycle that could have waited and did not on this run. The message names the
+    /// element dispatched last, which in that case is on the cycle.
+    /// </summary>
+    private static EvaluationResult PropagationLimitReached(BpmnEvaluationContext context, BpmnExecutionState state)
+    {
+        var elementId = context.LastPropagatedElementId;
+        var message = $"BPMN process dispatched {PropagationStepLimit} tokens in one evaluation without coming to rest, the last to element '{elementId}'. "
+                      + "That is almost always a cycle through it that did not wait on this run; the evaluation was stopped rather than left to run forever.";
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, elementId, null, null, message);
+        return new EvaluationResult(state, new BpmnFault(PropagationLimitFaultCode, message));
     }
 
     private static BpmnBehaviorDecision Execute(IBpmnElementBehavior behavior, IBpmnBehaviorContext behaviorContext, BpmnElement element)

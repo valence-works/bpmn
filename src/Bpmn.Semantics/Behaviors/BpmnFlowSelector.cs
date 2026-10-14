@@ -10,10 +10,20 @@ namespace Bpmn.Semantics.Behaviors;
 /// </summary>
 internal static class BpmnFlowSelector
 {
-    public static IReadOnlyCollection<BpmnSequenceFlow> SelectTaskFlows(IBpmnBehaviorContext context)
+    public static IReadOnlyCollection<BpmnSequenceFlow> SelectTaskFlows(IBpmnBehaviorContext context) =>
+        SelectTaskFlows(context.Element, context.OutboundFlows, context.OutcomeNames);
+
+    /// <summary>
+    /// Task selection without a behavior context. Graph build uses it to predict where a token arriving at an
+    /// unbound element goes (arrival reports no outcomes), so it reads the same rule the behaviors run.
+    /// </summary>
+    public static IReadOnlyCollection<BpmnSequenceFlow> SelectTaskFlows(
+        BpmnElement element,
+        IReadOnlyCollection<BpmnSequenceFlow> outboundFlows,
+        IReadOnlyCollection<string> outcomeNames)
     {
-        var outcomes = context.OutcomeNames.ToHashSet(StringComparer.Ordinal);
-        var taken = context.OutboundFlows
+        var outcomes = outcomeNames.ToHashSet(StringComparer.Ordinal);
+        var taken = outboundFlows
             .Where(flow => !flow.IsDefault)
             .Where(flow => flow.ConditionOutcome is null || outcomes.Contains(flow.ConditionOutcome))
             .ToArray();
@@ -21,7 +31,7 @@ internal static class BpmnFlowSelector
         if (taken.Length > 0)
             return taken;
 
-        return DefaultOrEmpty(context);
+        return ResolveDefaultFlow(element, outboundFlows) is { } defaultFlow ? [defaultFlow] : [];
     }
 
     /// <summary>Exclusive selection: the first matching conditional flow in declaration order, else the default.</summary>
@@ -48,12 +58,16 @@ internal static class BpmnFlowSelector
         return defaultFlow is null ? [] : [defaultFlow];
     }
 
-    public static BpmnSequenceFlow? ResolveDefaultFlow(IBpmnBehaviorContext context)
-    {
-        if (context.Element.DefaultFlowId is { } defaultFlowId)
-            return context.OutboundFlows.FirstOrDefault(flow => StringComparer.Ordinal.Equals(flow.FlowId, defaultFlowId));
+    public static BpmnSequenceFlow? ResolveDefaultFlow(IBpmnBehaviorContext context) =>
+        ResolveDefaultFlow(context.Element, context.OutboundFlows);
 
-        return context.OutboundFlows.FirstOrDefault(flow => flow.IsDefault);
+    /// <summary>The element's default flow among <paramref name="outboundFlows"/>, without a behavior context.</summary>
+    public static BpmnSequenceFlow? ResolveDefaultFlow(BpmnElement element, IReadOnlyCollection<BpmnSequenceFlow> outboundFlows)
+    {
+        if (element.DefaultFlowId is { } defaultFlowId)
+            return outboundFlows.FirstOrDefault(flow => StringComparer.Ordinal.Equals(flow.FlowId, defaultFlowId));
+
+        return outboundFlows.FirstOrDefault(flow => flow.IsDefault);
     }
 
     public static IReadOnlyCollection<string> FlowIds(IReadOnlyCollection<BpmnSequenceFlow> flows) =>
