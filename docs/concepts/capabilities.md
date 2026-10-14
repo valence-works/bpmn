@@ -164,6 +164,7 @@ day it does not.
 | Event subprocess | `SubtreeCancellation` | An interrupting one drains the scope; every scope listener is retired when the scope completes. |
 | Event-based gateway | `SubtreeCancellation` | The losing branches are torn down when the first catch wins. |
 | Cancel end event | `SubtreeCancellation` | It tears down the transaction's other live work when it abandons it. |
+| Terminate end event | `SubtreeCancellation` | It tears down whatever its scope still has running when it ends it. |
 | Escalation throw or end event, escalation boundary event | `ScopeSignalling` | A throw signals the enclosing scope, and a scope re-signals what it cannot match itself. |
 | Multi-instance activity | `IterationScopes` | Each instance needs its own frame. |
 | Collection-mode multi-instance | `ScopeVariables` | Its instance count and items come from a declared variable. |
@@ -176,7 +177,10 @@ because the listener it arms has to be retired when its host finishes. It is eas
 interrupting events tear anything down; the analyzer knows better.
 
 `BpmnCapabilityRequirements.Analyze(definition)` is the authority for a specific document, and the
-graph builder is the authority overall.
+graph builder is the authority overall. The table above is the maintained list. The one in
+[ADR 0004](../adr/0004-capabilities-refuse-at-graph-build-time.md) records the decision as it stood
+when it was made, so it does not list the cancel and terminate end events that later began tearing
+work down.
 
 ## Related
 

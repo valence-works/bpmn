@@ -78,9 +78,9 @@ public sealed record BpmnExecutionState
     public bool Cancelling { get; init; }
 
     /// <summary>
-    /// A fault decision that could not be returned as a terminal continuation because the same
-    /// evaluation had already staged child schedules (the runtime forbids terminal decisions that also
-    /// schedule children). The next callback surfaces it.
+    /// A fault decision an earlier version deferred because the same evaluation had already started work.
+    /// The interpreter no longer defers a fault: it withdraws the work instead and answers the fault at once.
+    /// A state persisted by an earlier version may still carry one, and the next callback surfaces it.
     /// </summary>
     [JsonPropertyName("pendingFault")]
     public BpmnPendingFault? PendingFault { get; init; }
