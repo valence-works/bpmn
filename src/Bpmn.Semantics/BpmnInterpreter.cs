@@ -22,13 +22,29 @@ public sealed class BpmnInterpreter
 {
     private readonly IBpmnBehaviorRegistry _behaviors;
     private readonly BpmnTokenCoordinator _tokenCoordinator = new();
+    private readonly int _propagationStepLimit;
 
     /// <summary>Creates an interpreter dispatching through <paramref name="behaviors"/>.</summary>
     public BpmnInterpreter(IBpmnBehaviorRegistry behaviors)
+        : this(behaviors, PropagationStepLimit)
+    {
+    }
+
+    /// <summary>
+    /// Creates an interpreter that stops an evaluation at <paramref name="propagationStepLimit"/> dispatches rather
+    /// than at <see cref="PropagationStepLimit"/>. For the tests only: reaching the published limit takes seconds,
+    /// so the tests that reach it on purpose run a small one. Hosts get the published limit and no way to change it.
+    /// </summary>
+    internal BpmnInterpreter(IBpmnBehaviorRegistry behaviors, int propagationStepLimit)
     {
         ArgumentNullException.ThrowIfNull(behaviors);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(propagationStepLimit);
         _behaviors = behaviors;
+        _propagationStepLimit = propagationStepLimit;
     }
+
+    /// <summary>The propagation limit this interpreter stops an evaluation at.</summary>
+    internal int EffectivePropagationStepLimit => _propagationStepLimit;
 
     /// <summary>An interpreter carrying the built-in behavior for every element family. No container required.</summary>
     public static BpmnInterpreter CreateDefault() => new(BpmnBehaviorRegistry.CreateDefault());
@@ -169,17 +185,21 @@ public sealed class BpmnInterpreter
     /// Without a limit such a cycle never returns to the host.
     /// </para>
     /// <para>
-    /// A dispatch is one token arriving at one element. An evaluation that comes to rest crosses each sequence
-    /// flow about once, so it dispatches roughly as many tokens as the flows it crosses before every token waits
-    /// or ends. That is tens in a typical process and hundreds in a large one, so ten thousand leaves a wide
-    /// margin. The margin is kept wide on purpose: the limit cannot be configured, so a process that needed more
-    /// would have no way around it, whereas a cycle that runs into the limit late still faults. Late is not free,
-    /// though. Every dispatch grows the state the next one copies, so an evaluation stopped here has done far
-    /// more work than an ordinary one, and returns a large state. It is a count, not a clock, so where a run
-    /// stops is as deterministic as the run.
+    /// A dispatch is one token arriving at one element. An evaluation that comes to rest crosses each flow roughly
+    /// once per token, so it dispatches on the order of the tokens it handles times the elements each one passes
+    /// before it waits or ends. That is tens in a typical process and hundreds in a large one, so ten thousand
+    /// leaves a wide margin. The margin is kept wide on purpose: the limit cannot be
+    /// configured, so a process that needed more would have no way around it, whereas a cycle that runs into the
+    /// limit late still faults. Late is not free, though. Every dispatch grows the state the next one copies, so
+    /// hitting the limit takes seconds and returns a state of several megabytes. It is a count, not a clock, so
+    /// where a run stops is as deterministic as the run.
+    /// </para>
+    /// <para>
+    /// A field rather than a constant, so a consumer reads the value of the version it runs against instead of
+    /// compiling in the value of the version it was built against.
     /// </para>
     /// </summary>
-    public const int PropagationStepLimit = 10_000;
+    public static readonly int PropagationStepLimit = 10_000;
 
     /// <summary>
     /// Starts a process instance. Seeds the start token — from the external trigger the host resolved, from the
@@ -747,7 +767,8 @@ public sealed class BpmnInterpreter
     /// preserves one-hop bubbling — each scope checks itself before passing the signal on. On no own-scope
     /// match, when this process has an enclosing scope it issues a <see cref="BpmnHostCommand.SignalEnclosingScope"/>
     /// (code <see cref="EscalationSignalCode"/>, payload <c>{ code, name? }</c>) at once, so the parent hears it
-    /// whatever verdict this evaluation then reaches, a fault included; at a root process it is a no-op with an
+    /// whatever verdict this evaluation then reaches, a fault included, except the propagation limit (see
+    /// <see cref="PropagationLimitReached"/>); at a root process it is a no-op with an
     /// <c>EscalationUnhandled</c> diagnostic. Never faults. The companion
     /// routing command routes or consumes as usual.
     /// </summary>
@@ -1545,7 +1566,7 @@ public sealed class BpmnInterpreter
             // A token is still live, so the evaluation has not come to rest. Answering anything but a fault here
             // would be wrong in the quiet direction: returning the state as it stands reads as Defer, a scope
             // apparently waiting, with a live token nothing will ever move.
-            if (context.PropagationSteps >= PropagationStepLimit)
+            if (context.PropagationSteps >= _propagationStepLimit)
                 return PropagationLimitReached(context, state);
 
             var element = graph.GetRequiredElement(token.AtElementId);
@@ -1569,15 +1590,28 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// The fault an evaluation answers when it reaches <see cref="PropagationStepLimit"/>. In practice that means
-    /// a cycle is routing tokens without holding one: graph build refuses a cycle on which nothing can hold a
-    /// token, so what remains is a cycle that could have waited and did not on this run. The message names the
-    /// element dispatched last, which in that case is on the cycle.
+    /// The fault an evaluation answers when it reaches the propagation limit. In practice that means a cycle is
+    /// routing tokens without holding one: graph build refuses a cycle on which nothing can hold a token, so what
+    /// remains is a cycle that could have waited and did not on this run. The message names the element
+    /// dispatched last, which in that case is on the cycle.
+    /// <para>
+    /// This fault carries no commands at all. Its StartWork commands are withdrawn like any fault's, and so, unlike
+    /// any other fault, are the <see cref="BpmnHostCommand.SignalEnclosingScope"/> commands the evaluation raised.
+    /// An escalation throw on the cycle raised one on every pass, so the parent would hear thousands of
+    /// escalations, and a non-interrupting escalation boundary there would fire once per pass, for a scope that is
+    /// faulting because of a defect in its own definition. One diagnostic records how many were dropped.
+    /// </para>
     /// </summary>
-    private static EvaluationResult PropagationLimitReached(BpmnEvaluationContext context, BpmnExecutionState state)
+    private EvaluationResult PropagationLimitReached(BpmnEvaluationContext context, BpmnExecutionState state)
     {
         var elementId = context.LastPropagatedElementId;
-        var message = $"BPMN process dispatched {PropagationStepLimit} tokens in one evaluation without coming to rest, the last to element '{elementId}'. "
+
+        var droppedSignals = context.WithdrawScopeSignals();
+        if (droppedSignals > 0)
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, elementId, null, null,
+                $"BPMN dropped {droppedSignals} escalation signal(s) this evaluation raised for the enclosing scope: they came from a cycle stopped at the propagation limit, and forwarding them would have the parent act once per pass.");
+
+        var message = $"BPMN process dispatched {_propagationStepLimit} tokens in one evaluation without coming to rest, the last to element '{elementId}'. "
                       + "That is almost always a cycle through it that did not wait on this run; the evaluation was stopped rather than left to run forever.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, elementId, null, null, message);
         return new EvaluationResult(state, new BpmnFault(PropagationLimitFaultCode, message));
@@ -2050,7 +2084,8 @@ public sealed class BpmnInterpreter
     /// must not be stopped for a routing decision that the same evaluation then abandons by faulting. An
     /// escalation an escalation throw raises is different: its <see cref="BpmnHostCommand.SignalEnclosingScope"/>
     /// is issued as it is raised, because the escalation happened before whatever verdict the evaluation then
-    /// reaches. It therefore stays on the command list of every continuation, a fault included.
+    /// reaches. It therefore stays on the command list of every continuation, a fault included. The one exception
+    /// is the propagation limit, which withdraws it (see <see cref="PropagationLimitReached"/>).
     /// </para>
     /// <para>
     /// States persisted by an earlier version may still carry a verdict it deferred

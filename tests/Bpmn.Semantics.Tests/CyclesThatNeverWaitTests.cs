@@ -19,7 +19,13 @@ namespace Bpmn.Semantics.Tests;
 /// </summary>
 public sealed class CyclesThatNeverWaitTests
 {
-    private static readonly BpmnInterpreter Interpreter = BpmnInterpreter.CreateDefault();
+    /// <summary>
+    /// The limit the tests that reach it on purpose run with. Reaching the published one takes seconds, and what
+    /// is tested here, where the evaluation stops and what it answers, does not depend on the number.
+    /// </summary>
+    private const int TestLimit = 100;
+
+    private static readonly BpmnInterpreter Interpreter = new(BpmnBehaviorRegistry.CreateDefault(), TestLimit);
 
     /// <summary>A definition, and the event subprocess bodies graph build needs to read alongside it.</summary>
     private sealed record Shape(BpmnProcessDefinition Definition, IReadOnlyDictionary<string, BpmnProcessDefinition>? Nested = null);
@@ -31,11 +37,11 @@ public sealed class CyclesThatNeverWaitTests
             BpmnHostCapabilities.Full);
 
     /// <summary>Runs the start evaluation directly, so the state comes back unpruned.</summary>
-    private static BpmnEvaluation Start(BpmnProcessDefinition definition, IBpmnVariableReader? variables = null) =>
+    private static BpmnEvaluation Start(BpmnProcessDefinition definition, IBpmnVariableReader? variables = null, bool hasEnclosingScope = false) =>
         Interpreter.Start(new BpmnStartRequest(
             Build(new Shape(definition)),
             PriorState: null,
-            BpmnHostSnapshot.Root("scope") with { Variables = variables ?? BpmnNoVariables.Instance }));
+            BpmnHostSnapshot.Root("scope") with { Variables = variables ?? BpmnNoVariables.Instance, HasEnclosingScope = hasEnclosingScope }));
 
     private static InMemoryProcessInstance Run(Shape shape) =>
         new InMemoryBpmnHost(new InMemoryBpmnHostOptions { NestedProcesses = shape.Nested }).Start(shape.Definition);
@@ -56,6 +62,18 @@ public sealed class CyclesThatNeverWaitTests
 
         refusal.ShouldNotBeOfType<BpmnCapabilityException>("this is a structural refusal, not a missing capability");
         refusal.Message.ShouldContain($"has a cycle that can never wait: {expectedCycle}.");
+    }
+
+    [Fact]
+    public void A_refusal_names_the_conditional_flow_an_unbound_gateway_on_the_cycle_never_takes()
+    {
+        var (gatewayLoop, _) = Refused["gateways and an unbound task"]();
+        var (selfLoop, _) = Refused["an unbound task looping on itself"]();
+
+        Should.Throw<BpmnExecutionException>(() => Build(gatewayLoop)).Message
+            .ShouldContain("'Check' binds no decision, so its conditional flow 'flow-Check-End' is never taken.");
+        Should.Throw<BpmnExecutionException>(() => Build(selfLoop)).Message
+            .ShouldNotContain("never taken", customMessage: "a cycle with no conditional flow has nothing to explain");
     }
 
     /// <summary>Each shape, and the cycle its refusal must name: in flow order, opening where the loop-back flow lands.</summary>
@@ -168,6 +186,38 @@ public sealed class CyclesThatNeverWaitTests
     // --- The runtime limit ---------------------------------------------------------------------------------
 
     [Fact]
+    public void An_interpreter_a_host_creates_stops_at_the_published_limit()
+    {
+        BpmnInterpreter.PropagationStepLimit.ShouldBe(10_000, "the documentation states the number");
+        BpmnInterpreter.CreateDefault().EffectivePropagationStepLimit.ShouldBe(BpmnInterpreter.PropagationStepLimit);
+        new BpmnInterpreter(BpmnBehaviorRegistry.CreateDefault()).EffectivePropagationStepLimit.ShouldBe(BpmnInterpreter.PropagationStepLimit);
+    }
+
+    [Fact]
+    public void A_fault_at_the_limit_carries_no_commands_and_drops_the_signals_its_cycle_raised()
+    {
+        var evaluation = Start(EscalatingJoinLoop(), hasEnclosingScope: true);
+
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe(BpmnInterpreter.PropagationLimitFaultCode);
+        evaluation.Commands.ShouldBeEmpty("one escalation per pass would otherwise reach the parent");
+
+        var raised = evaluation.State.Diagnostics.Count(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.EscalationRaised);
+        raised.ShouldBeGreaterThan(1, "the fixture must really raise an escalation on more than one pass");
+        evaluation.State.Diagnostics.ShouldContain(diagnostic =>
+            diagnostic.Kind == BpmnDiagnosticKind.Canceled && diagnostic.Message.StartsWith($"BPMN dropped {raised} escalation signal(s)"));
+    }
+
+    [Fact]
+    public void Any_other_fault_still_carries_the_signal_its_evaluation_raised()
+    {
+        var evaluation = Start(EscalateThenFault(), hasEnclosingScope: true);
+
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.gateway.no-flow-selected");
+        evaluation.Commands.ShouldHaveSingleItem().ShouldBeOfType<BpmnHostCommand.SignalEnclosingScope>()
+            .Code.ShouldBe(BpmnInterpreter.EscalationSignalCode, "the escalation happened before the fault, so the parent still hears it");
+    }
+
+    [Fact]
     public void A_cycle_through_a_join_it_always_satisfies_itself_builds_and_then_faults_at_the_limit()
     {
         var evaluation = Start(JoinLoop());
@@ -191,8 +241,8 @@ public sealed class CyclesThatNeverWaitTests
 
         // The start event, then Review and Check on every pass. Each dispatch consumes the token it was handed,
         // so the count of consumed tokens is the count of dispatches.
-        Dispatched(evaluation.State).ShouldBe(BpmnInterpreter.PropagationStepLimit);
-        var last = BpmnInterpreter.PropagationStepLimit % 2 == 0 ? "Review" : "Check";
+        Dispatched(evaluation.State).ShouldBe(TestLimit);
+        var last = TestLimit % 2 == 0 ? "Review" : "Check";
         fault.Message.ShouldContain($"the last to element '{last}'");
         var diagnostic = evaluation.State.Diagnostics.Last();
         diagnostic.Kind.ShouldBe(BpmnDiagnosticKind.Faulted);
@@ -202,10 +252,10 @@ public sealed class CyclesThatNeverWaitTests
     [Fact]
     public void An_evaluation_that_comes_to_rest_after_exactly_the_limit_completes()
     {
-        var evaluation = Start(FanOutDispatching(BpmnInterpreter.PropagationStepLimit));
+        var evaluation = Start(FanOutDispatching(TestLimit));
 
         evaluation.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
-        Dispatched(evaluation.State).ShouldBe(BpmnInterpreter.PropagationStepLimit, "the fixture must really dispatch exactly the limit");
+        Dispatched(evaluation.State).ShouldBe(TestLimit, "the fixture must really dispatch exactly the limit");
     }
 
     // --- Fixtures ------------------------------------------------------------------------------------------
@@ -239,6 +289,33 @@ public sealed class CyclesThatNeverWaitTests
             .Connect("Split", "Right")
             .Connect("Left", "Join")
             .Connect("Right", "Join"));
+
+    /// <summary>The join cycle with an escalation throw on it that nothing in the scope catches, so every pass signals the parent.</summary>
+    private static BpmnProcessDefinition EscalatingJoinLoop() =>
+        LoopThrough("Split", "Raise", builder => builder
+            .ParallelGateway("Split")
+            .Element(new BpmnElement("Left", BpmnElementTypes.Task))
+            .Element(new BpmnElement("Right", BpmnElementTypes.Task))
+            .ParallelGateway("Join")
+            .IntermediateThrowEvent("Raise", Escalation("up"))
+            .Connect("Split", "Left")
+            .Connect("Split", "Right")
+            .Connect("Left", "Join")
+            .Connect("Right", "Join")
+            .Connect("Join", "Raise"));
+
+    /// <summary>An escalation nothing in the scope catches, then a gateway that faults because it can decide nothing.</summary>
+    private static BpmnProcessDefinition EscalateThenFault() =>
+        new BpmnProcessBuilder("escalate-then-fault")
+            .StartEvent("Start")
+            .IntermediateThrowEvent("Raise", Escalation("up"))
+            .ExclusiveGateway("Undecidable")
+            .EndEvent("EndLeft")
+            .EndEvent("EndRight")
+            .ConnectSequence("Start", "Raise", "Undecidable")
+            .Connect("Undecidable", "EndLeft", condition: "Left")
+            .Connect("Undecidable", "EndRight", condition: "Right")
+            .Build();
 
     /// <summary>A compensate throw on a cycle, compensating the work that ran before the cycle.</summary>
     private static BpmnProcessDefinition CompensateLoop() =>

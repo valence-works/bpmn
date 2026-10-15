@@ -68,12 +68,15 @@ parallel split, and an escalation throw that nothing interrupting catches. That 
 non-interrupting event subprocess catches, which starts the handler on every pass while the throw's own
 token carries on. The check follows only the flows these elements actually take when a token arrives.
 An arriving token reports no outcome, so a conditional flow out of an unbound element is never taken,
-and a cycle closed only by such a flow is not a cycle the token can follow.
+and a cycle closed only by such a flow is not a cycle the token can follow. When a refused cycle has
+such a flow, the refusal names it, because it is usually the way out the modeler meant.
 
 The check reads the built-in behaviors. An interpreter given a registry that replaces one of them
-behaves as that registry says, but `Build` still answers for the built-in behavior. The check also
-judges the cycle on its own, so it does not credit another branch that might end the scope first, such
-as a parallel path into a terminate end event.
+behaves as that registry says, but `Build` still answers for the built-in behavior, and a host whose
+registry routes differently has no way to override the check yet. The check also judges the cycle on
+its own: it does not credit another branch that might end the scope first, such as a parallel path
+into a terminate end event, and it does not ask whether any token can reach the cycle, so a cycle no
+token can get to is refused too.
 
 The rule refuses only what is certain to circulate. A join, a compensate throw and a multi-instance
 activity hold a token on some runs and not on others: a join the cycle satisfies by itself fires at
@@ -163,12 +166,19 @@ one token arriving at one element. An evaluation that reaches the limit without 
 `Fault` with the code `bpmn.propagation.limit` (`BpmnInterpreter.PropagationLimitFaultCode`), and the
 message names the element dispatched last. In practice it means a cycle that could have waited did not
 on this run; see [A cycle must be able to wait](#a-cycle-must-be-able-to-wait). An evaluation that
-comes to rest crosses each sequence flow about once, so no ordinary process gets near the limit.
+comes to rest crosses each sequence flow roughly once per token, so no ordinary process gets near the
+limit.
 
 The limit is a count, not a clock, so where a run stops is deterministic. It is not configurable.
-Reaching it costs far more than an ordinary evaluation, because every dispatch grows the state the next
-one copies, so read it as a defect report about the definition rather than as a way to bound a loop.
-Like every `Fault`, it carries no `StartWork`.
+Reaching it is expensive: every dispatch grows the state the next one copies, so hitting the limit takes
+seconds and returns a state of several megabytes. Read it as a defect report about the definition, not
+as a way to bound a loop.
+
+This `Fault` carries no commands at all. Like every fault it carries no `StartWork`, and unlike every
+other fault it also drops the `SignalEnclosingScope` commands the evaluation raised, recording how many
+in a diagnostic. An escalation throw on the cycle raised one on every pass, so the parent would
+otherwise hear thousands of escalations, and a non-interrupting escalation boundary there would fire
+once per pass.
 
 ### The commands
 
@@ -225,7 +235,8 @@ boundary. Route it to the immediate parent scope, not the root, and deliver it t
 
 It is the one command a `Fault` continuation may carry. An escalation throw issues its signal as it
 is raised, before the evaluation reaches any verdict, so when the same evaluation then faults, the
-parent still hears the escalation. A scope that has already ended forwards nothing.
+parent still hears the escalation. A scope that has already ended forwards nothing, and a fault at the
+propagation limit drops what it raised; see [the continuation](#the-continuation).
 
 It carries a `Code` and an optional JSON `Payload`. There is exactly one code for escalation —
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity

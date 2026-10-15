@@ -334,6 +334,7 @@ public sealed class BpmnGraph
     /// The cycle is judged on its own. Another branch that ends the scope first, such as a parallel path into a
     /// terminate end event, can cut such a cycle short within the same evaluation, but nothing that happens off
     /// the cycle makes the cycle itself able to wait, and a model whose termination rests on that race is refused.
+    /// Nor does the check ask whether a token can reach the cycle at all: one no token can get to is refused too.
     /// </para>
     /// <para>
     /// The search runs over the pass-through elements only. Searching the whole graph and testing each cycle it
@@ -375,7 +376,7 @@ public sealed class BpmnGraph
 
                 var known = color.TryGetValue(flow.TargetRef, out var state) ? state : 0;
                 if (known == gray)
-                    throw CycleThatCannotWait(pathFlows.Skip(pathElementIds.IndexOf(flow.TargetRef)).Append(flow).ToList());
+                    throw CycleThatCannotWait(pathFlows.Skip(pathElementIds.IndexOf(flow.TargetRef)).Append(flow).ToList(), passThrough);
 
                 if (known != black)
                 {
@@ -390,8 +391,13 @@ public sealed class BpmnGraph
         }
     }
 
-    /// <summary>The refusal for a cycle, given its flows in order: each flow's target is the next flow's source, and the last closes back on the first.</summary>
-    private BpmnExecutionException CycleThatCannotWait(List<BpmnSequenceFlow> cycle)
+    /// <summary>
+    /// The refusal for a cycle, given its flows in order: each flow's target is the next flow's source, and the last
+    /// closes back on the first. It also names every conditional flow an element on the cycle never takes. That flow
+    /// is usually the way out the modeler meant, and it is not taken because the element binds nothing that could
+    /// report the outcome it waits for.
+    /// </summary>
+    private BpmnExecutionException CycleThatCannotWait(List<BpmnSequenceFlow> cycle, IReadOnlyDictionary<string, IReadOnlyCollection<BpmnSequenceFlow>> passThrough)
     {
         // Open at the loop entry, so the message reads from where the modeler drew the loop back to. Every cycle
         // contains a backward flow; the fallback only keeps a defect in that reasoning from hiding the refusal.
@@ -399,18 +405,40 @@ public sealed class BpmnGraph
         if (backward >= 0)
             cycle = cycle.Skip(backward + 1).Concat(cycle.Take(backward + 1)).ToList();
 
-        var elementIds = cycle.Select(flow => flow.SourceRef).Append(cycle[0].SourceRef);
+        var elementIds = cycle.Select(flow => flow.SourceRef).ToList();
+        var ignored = elementIds.Select(id => IgnoredConditionalFlows(GetRequiredElement(id), passThrough[id])).Where(clause => clause is not null);
+
         return new BpmnExecutionException(
-            $"BPMN process '{ProcessId}' has a cycle that can never wait: {string.Join(" -> ", elementIds.Select(id => $"'{id}'"))}. "
+            $"BPMN process '{ProcessId}' has a cycle that can never wait: {string.Join(" -> ", elementIds.Append(elementIds[0]).Select(id => $"'{id}'"))}. "
             + "Every element on it passes a token straight on in the same evaluation, so a token that enters it circulates forever and the evaluation never returns. "
+            + string.Concat(ignored.Select(clause => clause + " "))
             + "Put something on the cycle that waits, such as an element that binds work (a task, a catch event, a decision gateway), or route out of it.");
+    }
+
+    /// <summary>The sentence naming the conditional flows <paramref name="element"/> never takes, or <c>null</c> when it takes every one it has.</summary>
+    private string? IgnoredConditionalFlows(BpmnElement element, IReadOnlyCollection<BpmnSequenceFlow> taken)
+    {
+        var ignored = OutboundFlows(element.ElementId)
+            .Where(flow => flow.ConditionOutcome is not null && !taken.Any(candidate => StringComparer.Ordinal.Equals(candidate.FlowId, flow.FlowId)))
+            .Select(flow => $"'{flow.FlowId}'")
+            .ToArray();
+        if (ignored.Length == 0)
+            return null;
+
+        var binds = BpmnElementFamilies.Resolve(element) is BpmnElementFamilies.ExclusiveGateway or BpmnElementFamilies.InclusiveGateway
+            ? "binds no decision"
+            : "binds no work";
+        return ignored.Length == 1
+            ? $"'{element.ElementId}' {binds}, so its conditional flow {ignored[0]} is never taken."
+            : $"'{element.ElementId}' {binds}, so its conditional flows {string.Join(", ", ignored)} are never taken.";
     }
 
     /// <summary>
     /// The sequence flows a token arriving at <paramref name="element"/> is certain to leave on in the same
     /// evaluation, or <c>null</c> when the element can hold the token. Read from the built-in behaviors and the
     /// interpreter's dispatch: a registry that replaces a built-in behavior changes what the interpreter does, but
-    /// not this answer, and the propagation limit still covers it.
+    /// not this answer. A host whose registry routes differently has no way to override the check yet; the
+    /// propagation limit still covers what the check lets through.
     /// <list type="bullet">
     /// <item>An element that binds work starts it, and the token waits for the host: every task including call
     /// activities, subprocesses, catch events, message throw events, and an exclusive or inclusive gateway bound
@@ -447,7 +475,8 @@ public sealed class BpmnGraph
             case BpmnElementFamilies.InclusiveGateway:
                 return BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
             case BpmnElementFamilies.IntermediateThrowEventEscalation:
-                return EscalationEventSubprocess(ReadEscalationCode(element)!) is { Interrupting: true }
+                // Validation already refused a throw without a code; without one, nothing in the scope could catch it.
+                return ReadEscalationCode(element) is { } code && EscalationEventSubprocess(code) is { Interrupting: true }
                     ? null
                     : BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
             default:

@@ -5,4 +5,8 @@
   <ItemGroup>
     <ProjectReference Include="../Bpmn.Model/Bpmn.Model.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- For a test-only propagation limit; see the internal BpmnInterpreter constructor. -->
+    <InternalsVisibleTo Include="Bpmn.Semantics.Tests" />
+  </ItemGroup>
 </Project>
