@@ -454,6 +454,29 @@ public static class ProcessFixtures
     }
 
     /// <summary>
+    /// A task retried by its own interrupting timer boundary, beside a second branch that keeps the scope running.
+    /// The boundary routes back to a merge ahead of the task, so every timeout tears one pass's unit down and starts
+    /// the next pass on the very same (binding ref, iteration id) slot under a new handle.
+    /// </summary>
+    public static BpmnProcessDefinition RetriedOnTimeout() =>
+        new BpmnProcessBuilder("retried-on-timeout")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .ExclusiveGateway("Retry")
+            .Task("Long", bindingRef: "long")
+            .EndEvent("EndLong")
+            .BoundaryEvent("Timeout", "Long", Timer("PT1M"), interrupting: true, bindingRef: "timeout")
+            .Task("Other", bindingRef: "other")
+            .EndEvent("EndOther")
+            .Connect("Start", "Split")
+            .Connect("Split", "Retry")
+            .Connect("Split", "Other")
+            .ConnectSequence("Retry", "Long", "EndLong")
+            .Connect("Timeout", "Retry")
+            .Connect("Other", "EndOther")
+            .Build();
+
+    /// <summary>
     /// A parallel multi-instance task under an interrupting message boundary, which tears every live instance down
     /// when it fires. The boundary path waits on a cleanup task, so the scope is still running afterwards.
     /// </summary>

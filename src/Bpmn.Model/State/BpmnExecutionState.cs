@@ -94,10 +94,10 @@ public sealed record BpmnExecutionState
     /// <see cref="DiagnosticsCap"/>. Intended for a host about to persist the state, so a long-running
     /// process never re-serializes an ever-growing blob.
     /// <para>
-    /// <see cref="BpmnTokenStatus.Canceled"/> tokens are <b>never</b> pruned. A terminate strips in-flight
-    /// work from <see cref="ActiveWork"/> while that work may still complete, and the late completion is
-    /// absorbed by the by-id token lookup; prune the record and that lookup faults the process instead.
-    /// Cancelled counts are bounded by graph structure.
+    /// <see cref="BpmnTokenStatus.Canceled"/> tokens are <b>never</b> pruned. Stopping work strips it from
+    /// <see cref="ActiveWork"/> while it may still report back, and the Canceled token's
+    /// <see cref="BpmnToken.StoppedHandle"/> is what recognizes that late callback; prune the token and the
+    /// callback is refused as unknown work instead. Cancelled counts are bounded by graph structure.
     /// </para>
     /// <para>
     /// Pruning shapes only what is written: the schema is unchanged and <see cref="Sequence"/> is not bumped,

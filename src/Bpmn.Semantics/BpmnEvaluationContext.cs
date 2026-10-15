@@ -6,9 +6,9 @@ namespace Bpmn.Semantics;
 /// One running unit of work to tear down: a losing event-based-gateway branch, an interrupted boundary
 /// host, a retired listener, the work a cancelled transaction abandons. Carried — on the evaluation result,
 /// or on the evaluation context when the result cannot reach the caller — and issued only on a non-fault
-/// continuation.
+/// continuation, which is also when <paramref name="TokenId"/>'s token records the handle as stopped.
 /// </summary>
-internal sealed record PendingTeardown(string Handle, string ElementId, string Reason);
+internal sealed record PendingTeardown(string Handle, string ElementId, string Reason, string TokenId);
 
 /// <summary>
 /// The mutable scratch space of one interpreter evaluation: the graph and host snapshot it reads, and the

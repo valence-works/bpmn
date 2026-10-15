@@ -68,8 +68,8 @@ you last got out for that scope instance.
 Call `Prune()` before persisting. It removes the records that can never influence a future decision —
 consumed tokens no longer referenced by active work, and diagnostics beyond `DiagnosticsCap` (200) —
 so a long-running process does not re-serialize an ever-growing blob. Canceled tokens are never
-pruned: stopping work drops its record while the work may still report back, and the cancelled token
-is how that late callback is recognized (see
+pruned: tearing work down drops its record while the work may still report back, and the cancelled
+token carries the torn-down handle that recognizes that late callback (see
 [Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
@@ -213,17 +213,24 @@ is not modeled here, because BPMN does not model it. See
 
 ### Callbacks for work already stopped
 
-A callback can still reach a running scope for work it already stopped: a completion that raced the
-teardown an interruption issued, or work an earlier version started and stopped in the same
-evaluation. When no work record matches the callback but the scope still holds the `Canceled` token
-the work belonged to, the callback is absorbed. It changes nothing in the scope, nothing is issued,
-and a `Canceled` diagnostic records it. A multi-instance iteration id names that token exactly.
-Single-run work is matched by the element that binds it, so any cancelled token at that element
-counts.
+A callback can still reach a running scope for work it already tore down: a completion that raced
+the teardown an interruption issued. The scope recognizes it by its handle. Each `CancelWorkSubtree`
+that goes out on a non-fault continuation records its handle on the token it cancelled
+(`BpmnToken.StoppedHandle`, added in payload format 1.1.0). A completion or fault reporting one of
+those handles is absorbed once: it changes nothing in the scope, nothing is issued, and a `Canceled`
+diagnostic records it. The record is then spent, so a second report for the same handle is not
+absorbed. Matching is on the handle alone, never on the binding or the element, because a loop that
+re-enters an element starts a new unit on the same `(binding ref, iteration id)` slot, and an earlier
+pass's late report must neither pass for the later pass's nor stop a later pass's duplicate from
+being caught. That requires a handle to name one unit for the scope's lifetime: never reuse one.
 
-A callback nothing accounts for is a broken contract rather than a race, and stays loud: a completion
-throws `BpmnExecutionException`, and a fault faults the scope. A second report for work that
-completed normally is one of these, as is a binding no element binds.
+Any other callback is a broken contract rather than a race, and stays loud: a completion throws
+`BpmnExecutionException`, and a fault faults the scope. That covers a second report for work that
+completed normally, a binding no element binds, and work the interpreter withdrew before you ever
+started it, which has no handle to match. A report the snapshot contradicts throws even when a
+record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
+its slot under another handle, that slot belongs to other work. A state an earlier version persisted
+records no handles, so a late callback against it is refused rather than absorbed.
 
 ## The one callback
 

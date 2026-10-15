@@ -32,8 +32,12 @@ public static class BpmnPayloadFormat
     /// would have been a breaking change in every language at once. Every serialized property now declares
     /// its wire name explicitly, and <c>Model_declares_every_serialized_name</c> keeps it that way.
     /// </para>
+    /// <para>
+    /// 1.1.0 adds one optional property, <c>BpmnToken.StoppedHandle</c>. A 1.0.0 document reads as before, with
+    /// the property absent.
+    /// </para>
     /// </summary>
-    public const string Version = "1.0.0";
+    public const string Version = "1.1.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

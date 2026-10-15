@@ -467,6 +467,8 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
 - [ ] Report a callback with the same binding ref and handle the work was started under.
+- [ ] Never reuse a handle within a scope. A late report for torn-down work is recognized by its
+      handle alone.
 - [ ] Keep at most one live unit of work per `(BindingRef, IterationId)` in a scope, once each
       command batch has been applied in full. Key your ledger by handle, not by slot.
 - [ ] Pass `StartWork.Correlation` into a nested process as its `InvocationCorrelation`, and never
