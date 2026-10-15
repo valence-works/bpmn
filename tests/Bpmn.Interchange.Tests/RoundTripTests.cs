@@ -476,4 +476,180 @@ public sealed class RoundTripTests
         BpmnXmlNames.VendorNamespaceName.ShouldBe("https://bpmn.valenceworks.io/schema/bpmn");
         BpmnXmlNames.VendorPrefix.ShouldBe("vw");
     }
+
+    // -----------------------------------------------------------------------------------------------
+    // Multi-instance on a subprocess (#21)
+    // -----------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A subprocess is both a container and an activity. Its
+    /// <c>multiInstanceLoopCharacteristics</c> belong to the activity, but they sit among the nested
+    /// body's children. The reader has to interpret them without also treating them as leftover
+    /// content of that body, or each write-read cycle grows another copy.
+    /// </summary>
+    private const string MultiInstanceSubProcess = """
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:startEvent id="Start" />
+            <bpmn:subProcess id="Batch">
+              <bpmn:startEvent id="Inner_Start" />
+              <bpmn:endEvent id="Inner_Done" />
+              <bpmn:sequenceFlow id="Inner_F" sourceRef="Inner_Start" targetRef="Inner_Done" />
+              <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+                <bpmn:loopCardinality>3</bpmn:loopCardinality>
+              </bpmn:multiInstanceLoopCharacteristics>
+            </bpmn:subProcess>
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Batch" />
+            <bpmn:sequenceFlow id="F2" sourceRef="Batch" targetRef="Done" />
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
+    /// <summary>Same shape, with the collection bound on the parent process rather than a literal cardinality.</summary>
+    private const string CollectionMultiInstanceSubProcess = $$"""
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:vw="{{BpmnXmlNames.VendorNamespaceName}}" id="Defs">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:extensionElements>
+              <vw:variable name="items" typeHint="string[]" />
+            </bpmn:extensionElements>
+            <bpmn:startEvent id="Start" />
+            <bpmn:subProcess id="Batch">
+              <bpmn:startEvent id="Inner_Start" />
+              <bpmn:endEvent id="Inner_Done" />
+              <bpmn:sequenceFlow id="Inner_F" sourceRef="Inner_Start" targetRef="Inner_Done" />
+              <bpmn:multiInstanceLoopCharacteristics isSequential="true" vw:collection="items" vw:itemVariable="line" />
+            </bpmn:subProcess>
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Batch" />
+            <bpmn:sequenceFlow id="F2" sourceRef="Batch" targetRef="Done" />
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
+    /// <summary>
+    /// A Camunda-authored collection the model cannot represent. The marker must stay on the nested
+    /// body as retained content, once, rather than being reported as dropped.
+    /// </summary>
+    private const string DegradedMultiInstanceSubProcess = """
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:camunda="http://camunda.org/schema/1.0/bpmn" id="Defs">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:startEvent id="Start" />
+            <bpmn:subProcess id="Batch">
+              <bpmn:startEvent id="Inner_Start" />
+              <bpmn:endEvent id="Inner_Done" />
+              <bpmn:sequenceFlow id="Inner_F" sourceRef="Inner_Start" targetRef="Inner_Done" />
+              <bpmn:multiInstanceLoopCharacteristics isSequential="true"
+                                                     camunda:collection="items"
+                                                     camunda:elementVariable="item" />
+            </bpmn:subProcess>
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Batch" />
+            <bpmn:sequenceFlow id="F2" sourceRef="Batch" targetRef="Done" />
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
+    private static int MultiInstanceMarkersOn(string xml, string subprocessId) =>
+        XDocument.Parse(xml).Descendants()
+            .Single(element => element.Name.LocalName == "subProcess" && (string?)element.Attribute("id") == subprocessId)
+            .Elements()
+            .Count(child => child.Name.LocalName == "multiInstanceLoopCharacteristics");
+
+    private static BpmnProcessDefinition NestedBody(BpmnImportResult result, string elementId) =>
+        result.Bindings.OfType<BpmnWorkBinding.NestedProcess>().Single(binding => binding.ElementId == elementId).Definition;
+
+    [Fact]
+    public void A_subprocess_multi_instance_marker_is_read_onto_the_activity()
+    {
+        var read = Read(MultiInstanceSubProcess);
+
+        var loop = Process(read).Elements.Single(element => element.ElementId == "Batch").LoopCharacteristics.ShouldNotBeNull();
+        loop.IsSequential.ShouldBeFalse();
+        loop.Cardinality.ShouldBe(3);
+
+        read.Analysis.Issues.ShouldNotContain(issue =>
+            issue.Severity == BpmnImportIssueSeverity.Dropped
+            && issue.Message.Contains("multiInstanceLoopCharacteristics", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void An_interpreted_subprocess_marker_is_not_kept_on_the_nested_body()
+    {
+        var read = Read(MultiInstanceSubProcess);
+
+        NestedBody(read, "Batch").Extensions.ForeignChildren
+            .ShouldNotContain(child => child.Element.Name.LocalName == "multiInstanceLoopCharacteristics");
+    }
+
+    [Fact]
+    public void A_collection_subprocess_marker_uses_the_parent_declared_variable()
+    {
+        var read = Read(CollectionMultiInstanceSubProcess);
+
+        var loop = Process(read).Elements.Single(element => element.ElementId == "Batch").LoopCharacteristics.ShouldNotBeNull();
+        loop.IsSequential.ShouldBeTrue();
+        loop.CollectionVariable.ShouldBe("items");
+        loop.ItemVariable.ShouldBe("line");
+
+        NestedBody(read, "Batch").Extensions.ForeignChildren
+            .ShouldNotContain(child => child.Element.Name.LocalName == "multiInstanceLoopCharacteristics");
+        read.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+    }
+
+    /// <summary>
+    /// The write-read fixed point the host save path depends on: writing a second generation must not
+    /// grow another marker, and must not change the document.
+    /// </summary>
+    [Theory]
+    [InlineData(MultiInstanceSubProcess)]
+    [InlineData(CollectionMultiInstanceSubProcess)]
+    public void A_subprocess_multi_instance_round_trip_is_a_fixed_point(string xml)
+    {
+        var first = Read(xml);
+        var firstXml = _writer.Write(first);
+        var second = Read(firstXml);
+        var secondXml = _writer.Write(second);
+
+        MultiInstanceMarkersOn(firstXml, "Batch").ShouldBe(1);
+        MultiInstanceMarkersOn(secondXml, "Batch").ShouldBe(1);
+        secondXml.ShouldBe(firstXml);
+
+        var firstLoop = Process(first).Elements.Single(element => element.ElementId == "Batch").LoopCharacteristics.ShouldNotBeNull();
+        var secondLoop = Process(second).Elements.Single(element => element.ElementId == "Batch").LoopCharacteristics.ShouldNotBeNull();
+        secondLoop.ShouldBe(firstLoop);
+
+        first.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+        second.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+    }
+
+    [Fact]
+    public void A_degraded_subprocess_marker_is_retained_once()
+    {
+        var first = Read(DegradedMultiInstanceSubProcess);
+
+        Process(first).Elements.Single(element => element.ElementId == "Batch").LoopCharacteristics.ShouldBeNull();
+        first.Analysis.Issues.ShouldContain(issue =>
+            issue.Severity == BpmnImportIssueSeverity.Degraded
+            && issue.ElementId == "Batch"
+            && issue.Message.Contains("http://camunda.org/schema/1.0/bpmn", StringComparison.Ordinal));
+        first.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+
+        var retained = NestedBody(first, "Batch").Extensions.ForeignChildren
+            .Where(child => child.Element.Name.LocalName == "multiInstanceLoopCharacteristics")
+            .ShouldHaveSingleItem();
+        retained.Element.Attributes.ShouldContain(attribute =>
+            attribute.Name.LocalName == "collection"
+            && attribute.Name.Namespace == "http://camunda.org/schema/1.0/bpmn"
+            && attribute.Value == "items");
+
+        var firstXml = _writer.Write(first);
+        var secondXml = _writer.Write(Read(firstXml));
+
+        MultiInstanceMarkersOn(firstXml, "Batch").ShouldBe(1);
+        MultiInstanceMarkersOn(secondXml, "Batch").ShouldBe(1);
+        secondXml.ShouldBe(firstXml);
+    }
 }
