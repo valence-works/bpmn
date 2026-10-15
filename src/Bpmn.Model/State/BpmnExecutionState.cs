@@ -97,7 +97,8 @@ public sealed record BpmnExecutionState
     /// <see cref="BpmnTokenStatus.Canceled"/> tokens are <b>never</b> pruned. Stopping work strips it from
     /// <see cref="ActiveWork"/> while it may still report back, and the Canceled token's
     /// <see cref="BpmnToken.StoppedHandle"/> is what recognizes that late callback; prune the token and the
-    /// callback is refused as unknown work instead. Cancelled counts are bounded by graph structure.
+    /// callback is refused as unknown work instead. Nothing bounds how many accumulate: an element a loop
+    /// revisits leaves one per interrupted pass, so a long-running loop grows the state.
     /// </para>
     /// <para>
     /// Pruning shapes only what is written: the schema is unchanged and <see cref="Sequence"/> is not bumped,

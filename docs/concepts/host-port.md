@@ -230,7 +230,9 @@ completed normally, a binding no element binds, and work the interpreter withdre
 started it, which has no handle to match. A report the snapshot contradicts throws even when a
 record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
 its slot under another handle, that slot belongs to other work. A state an earlier version persisted
-records no handles, so a late callback against it is refused rather than absorbed.
+records no handles, so a late callback against it is never absorbed. A late completion throws. A
+late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
+lists its slot under another handle.
 
 ## The one callback
 
@@ -280,6 +282,8 @@ There is deliberately no async path here.
    them that way even where a compiler would let you cheat.
 7. Declare capabilities honestly, and declare the same set to `Build` and to every snapshot. See
    [Host capabilities](capabilities.md).
+8. Never reuse a handle within a scope. A late report for work the scope tore down is recognized by
+   its handle alone.
 
 ## Related
 

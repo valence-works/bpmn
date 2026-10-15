@@ -456,9 +456,10 @@ public static class ProcessFixtures
     /// <summary>
     /// A task retried by its own interrupting timer boundary, beside a second branch that keeps the scope running.
     /// The boundary routes back to a merge ahead of the task, so every timeout tears one pass's unit down and starts
-    /// the next pass on the very same (binding ref, iteration id) slot under a new handle.
+    /// the next pass on the very same (binding ref, iteration id) slot under a new handle. With
+    /// <paramref name="otherTerminates"/> the second branch ends in a terminate end event.
     /// </summary>
-    public static BpmnProcessDefinition RetriedOnTimeout() =>
+    public static BpmnProcessDefinition RetriedOnTimeout(bool otherTerminates = false) =>
         new BpmnProcessBuilder("retried-on-timeout")
             .StartEvent("Start")
             .ParallelGateway("Split")
@@ -467,7 +468,7 @@ public static class ProcessFixtures
             .EndEvent("EndLong")
             .BoundaryEvent("Timeout", "Long", Timer("PT1M"), interrupting: true, bindingRef: "timeout")
             .Task("Other", bindingRef: "other")
-            .EndEvent("EndOther")
+            .EndEvent("EndOther", null, otherTerminates ? [Terminate()] : [])
             .Connect("Start", "Split")
             .Connect("Split", "Retry")
             .Connect("Split", "Other")

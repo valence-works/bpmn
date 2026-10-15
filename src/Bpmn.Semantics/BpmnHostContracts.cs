@@ -66,7 +66,9 @@ public sealed record BpmnHostSnapshot(
 /// </param>
 /// <param name="Handle">
 /// An opaque host handle for this running unit. The interpreter echoes it back in
-/// <see cref="BpmnHostCommand.CancelWorkSubtree"/> and never parses it.
+/// <see cref="BpmnHostCommand.CancelWorkSubtree"/> and never parses it. A handle must name one unit for the
+/// scope's lifetime: never reuse one, because a late report for work the scope tore down is recognized by its
+/// handle alone.
 /// </param>
 public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string Handle);
 

@@ -190,6 +190,38 @@ public sealed class LateCallbackTests
     }
 
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void A_late_report_into_a_terminated_scope_is_absorbed_whether_or_not_the_host_still_lists_what_it_is_tearing_down(
+        bool asFault,
+        bool secondPassStillListed)
+    {
+        // The other branch terminates while the second pass runs. The terminated scope is checked before anything
+        // else, so the second pass still sitting on the first pass's slot in the snapshot cannot turn the report
+        // into a refusal; the scope only repeats the teardowns the snapshot still lists.
+        var graph = BuildGraph(ProcessFixtures.RetriedOnTimeout(otherTerminates: true));
+        var retried = Complete(graph, Start(graph), "timeout", "h-timeout-1", [FirstPass, OtherUnit]);
+        var terminated = Complete(graph, retried, "other", OtherUnit.Handle, [SecondPass, SecondTimer]);
+        terminated.State.Terminated.ShouldBeTrue();
+        BpmnLiveWork[] live = secondPassStillListed ? [SecondPass, SecondTimer] : [];
+
+        var late = asFault
+            ? Fault(graph, terminated, "long", FirstPass.Handle, live)
+            : Complete(graph, terminated, "long", FirstPass.Handle, live);
+
+        late.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        late.Commands.ShouldBe(secondPassStillListed
+            ?
+            [
+                new BpmnHostCommand.CancelWorkSubtree(SecondPass.Handle, "Long", BpmnInterpreter.TerminateStopReason),
+                new BpmnHostCommand.CancelWorkSubtree(SecondTimer.Handle, "Timeout", BpmnInterpreter.TerminateStopReason)
+            ]
+            : []);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void A_report_on_a_slot_the_host_still_runs_under_another_handle_throws(bool asFault)

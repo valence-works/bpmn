@@ -469,6 +469,14 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var context = new BpmnEvaluationContext(request.Graph, request.Host);
+
+        // A scope that already holds its verdict absorbs the fault before anything else looks at it, exactly as a
+        // completion is absorbed: the snapshot of a terminated scope can still list work it is tearing down, and
+        // checking the fault against that would refuse a report the completion path accepts.
+        if (AbsorbIntoEndedScope(context, request.Graph, request.PriorState ?? new BpmnExecutionState(), request.FaultedBindingRef,
+                $"fault of work '{request.FaultedBindingRef}'") is { } absorbed)
+            return new BpmnFaultEvaluation(absorbed.State, absorbed.Continuation, absorbed.Commands, BpmnErrorDisposition.Propagated.Instance);
+
         var result = EvaluateWorkFaulted(context, request);
         var evaluation = FinishEvaluation(context, result);
 
@@ -488,7 +496,7 @@ public sealed class BpmnInterpreter
         var state = request.PriorState ?? new BpmnExecutionState();
 
         var faultedBindingRef = request.FaultedBindingRef;
-        if (!state.Terminated && AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
+        if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
             return lateFault;
 
         ThrowIfAnotherUnitHoldsTheSlot(context, faultedBindingRef, iterationId: null, request.FaultedHandle, "faulted work");
@@ -501,18 +509,18 @@ public sealed class BpmnInterpreter
             : state.ActiveWork.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.NodeId, faultedBindingRef));
 
         // A late fault of work whose token was already cancelled — a sibling multi-instance instance torn down
-        // by a catcher or a boundary interrupt, say — or a fault after the process ended, is absorbed by the
-        // token-status guard: the teardown already rode the interrupting evaluation, so the process must not
-        // fault a second time. This mirrors the completion path's cancelled-token guard.
+        // by a catcher or a boundary interrupt, say — is absorbed by the token-status guard: the teardown already
+        // rode the interrupting evaluation, so the process must not fault a second time. This mirrors the
+        // completion path's cancelled-token guard. A fault after the process ended was absorbed on entry.
         var faultedToken = faultedTokenId is not null
             ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedTokenId))
             : null;
-        if (state.Terminated || faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
+        if (faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
         {
             if (faultedWork is not null)
                 state = RemoveActiveWork(state, faultedWork.TokenId);
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, faultedWork?.ElementId, null, faultedToken?.TokenId,
-                $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled or the process ended.");
+                $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled.");
             return new EvaluationResult(state);
         }
 
