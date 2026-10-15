@@ -499,6 +499,9 @@ public sealed class BpmnInterpreter
         if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
             return lateFault;
 
+        // A fault report carries no iteration id here (BpmnWorkFaultedRequest has none), so this checks only the
+        // binding's slot without an iteration: a multi-instance sibling's slot is not checked on the fault path.
+        // #32 adds FaultedIterationId and checks the resolved record's own slot instead, which closes this.
         ThrowIfAnotherUnitHoldsTheSlot(context, faultedBindingRef, iterationId: null, request.FaultedHandle, "faulted work");
 
         var faultedTokenId = context.Host.InvocationCorrelation.TryGetValue(TokenIdCorrelationKey, out var correlatedTokenId) && !string.IsNullOrWhiteSpace(correlatedTokenId)

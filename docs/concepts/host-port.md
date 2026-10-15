@@ -229,7 +229,9 @@ Any other callback is a broken contract rather than a race, and stays loud: a co
 completed normally, a binding no element binds, and work the interpreter withdrew before you ever
 started it, which has no handle to match. A report the snapshot contradicts throws even when a
 record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
-its slot under another handle, that slot belongs to other work. A state an earlier version persisted
+its slot under another handle, that slot belongs to other work. A fault report carries no iteration
+id, so for a fault this check covers only a slot without one: a multi-instance sibling's slot is not
+checked on the fault path. A state an earlier version persisted
 records no handles, so a late callback against it is never absorbed. A late completion throws. A
 late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
 lists its slot under another handle.
