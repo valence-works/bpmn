@@ -148,9 +148,12 @@ public sealed class VendorNamespaceTests
 
         ShouldHaveReadEveryVendorFact(read);
         read.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
-        // Interpreted content is not also retained, at any of the three levels that could hold it.
+        // Interpreted vendor names are not also retained. The synthesized conditionExpression the writer
+        // emitted for a code-built outcome is BPMN content and is retained so a later write keeps it.
         Process(read).Extensions.IsEmpty.ShouldBeTrue();
-        Flow(read, "f1").Extensions.IsEmpty.ShouldBeTrue();
+        Flow(read, "f1").Extensions.ForeignAttributes.ShouldBeEmpty();
+        Flow(read, "f1").Extensions.ExtensionElements.ShouldBeEmpty();
+        Flow(read, "f1").Extensions.ForeignChildren.ShouldHaveSingleItem().Element.Name.LocalName.ShouldBe("conditionExpression");
         Element(read, "call").Extensions.IsEmpty.ShouldBeTrue();
 
         // And the second generation is the first, byte for byte.

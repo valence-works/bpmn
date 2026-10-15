@@ -652,4 +652,147 @@ public sealed class RoundTripTests
         MultiInstanceMarkersOn(secondXml, "Batch").ShouldBe(1);
         secondXml.ShouldBe(firstXml);
     }
+
+    // -----------------------------------------------------------------------------------------------
+    // conditionExpression retention (#30)
+    // -----------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A document authored in another tool: one flow carries only a <c>conditionExpression</c>, the
+    /// other carries both that and <c>vw:conditionOutcome</c>. The writer used to drop the first and
+    /// replace the second with <c>outcome == '...'</c>.
+    /// </summary>
+    private const string ConditionalDocument = """
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                          xmlns:vw="https://bpmn.valenceworks.io/schema/bpmn"
+                          xmlns:triso="http://www.trisotech.com/2015/triso"
+                          id="Defs" targetNamespace="http://example.test/orders">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:exclusiveGateway id="Decide" />
+            <bpmn:userTask id="Approve" />
+            <bpmn:userTask id="Reject" />
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="toApprove" sourceRef="Decide" targetRef="Approve" vw:conditionOutcome="Approved">
+              <bpmn:conditionExpression language="http://www.w3.org/1999/XPath"
+                                        xsi:type="tFormalExpression"
+                                        triso:unparsed="false">amount &lt; 1000</bpmn:conditionExpression>
+            </bpmn:sequenceFlow>
+            <bpmn:sequenceFlow id="toReject" sourceRef="Decide" targetRef="Reject">
+              <bpmn:conditionExpression language="https://www.omg.org/spec/DMN/20191111/FEEL/"
+                                        xsi:type="tFormalExpression">amount &gt;= 1000</bpmn:conditionExpression>
+            </bpmn:sequenceFlow>
+            <bpmn:sequenceFlow id="fromApprove" sourceRef="Approve" targetRef="Done" />
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
+    private static readonly XNamespace Xsi = "http://www.w3.org/2001/XMLSchema-instance";
+    private static readonly XNamespace Triso = "http://www.trisotech.com/2015/triso";
+
+    private static XElement WrittenExpression(string xml, string flowId)
+    {
+        var flow = XDocument.Parse(xml).Descendants()
+            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == flowId);
+        var expressions = flow.Elements().Where(element => element.Name.LocalName == "conditionExpression").ToArray();
+        expressions.Length.ShouldBe(1, customMessage: $"{flowId} must write exactly one conditionExpression");
+        return expressions[0];
+    }
+
+    private static BpmnExtensionElement RetainedExpression(BpmnImportResult result, string flowId)
+    {
+        var child = Process(result).SequenceFlows.Single(flow => flow.FlowId == flowId)
+            .Extensions.ForeignChildren
+            .Single(foreign => foreign.Element.Name.LocalName == "conditionExpression");
+        child.Element.Name.Namespace.ShouldBe(BpmnXmlNames.Model.NamespaceName);
+        return child.Element;
+    }
+
+    private static string? Attribute(BpmnExtensionElement element, string? ns, string localName) =>
+        element.Attributes.SingleOrDefault(attribute =>
+            string.Equals(attribute.Name.LocalName, localName, StringComparison.Ordinal)
+            && string.Equals(attribute.Name.Namespace, ns, StringComparison.Ordinal))?.Value;
+
+    [Fact]
+    public void An_expression_only_flow_round_trips_the_authors_conditionExpression()
+    {
+        var (first, firstXml, second, secondXml) = RoundTrip(ConditionalDocument);
+
+        Process(first).SequenceFlows.Single(flow => flow.FlowId == "toReject").ConditionOutcome.ShouldBeNull();
+        first.Analysis.Issues.ShouldContain(issue =>
+            issue.Severity == BpmnImportIssueSeverity.Degraded
+            && issue.ElementId == "toReject"
+            && issue.Message.Contains("amount >= 1000", StringComparison.Ordinal));
+
+        foreach (var generation in new[] { first, second })
+        {
+            var expression = RetainedExpression(generation, "toReject");
+            expression.Value.ShouldBe("amount >= 1000");
+            Attribute(expression, null, "language").ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
+            Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
+        }
+
+        var written = WrittenExpression(firstXml, "toReject");
+        written.Value.ShouldBe("amount >= 1000");
+        ((string?)written.Attribute("language")).ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
+        ((string?)written.Attribute(Xsi + "type")).ShouldBe("tFormalExpression");
+        written.Value.ShouldNotContain("outcome ==");
+
+        secondXml.ShouldBe(firstXml);
+    }
+
+    [Fact]
+    public void A_flow_with_an_outcome_and_an_expression_keeps_the_original_expression()
+    {
+        var (first, firstXml, second, _) = RoundTrip(ConditionalDocument);
+
+        foreach (var generation in new[] { first, second })
+        {
+            var flow = Process(generation).SequenceFlows.Single(candidate => candidate.FlowId == "toApprove");
+            flow.ConditionOutcome.ShouldBe("Approved");
+
+            var expression = RetainedExpression(generation, "toApprove");
+            expression.Value.ShouldBe("amount < 1000");
+            Attribute(expression, null, "language").ShouldBe("http://www.w3.org/1999/XPath");
+            Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
+            Attribute(expression, Triso.NamespaceName, "unparsed").ShouldBe("false");
+        }
+
+        var written = WrittenExpression(firstXml, "toApprove");
+        written.Value.ShouldBe("amount < 1000");
+        ((string?)written.Attribute("language")).ShouldBe("http://www.w3.org/1999/XPath");
+        ((string?)written.Attribute(Xsi + "type")).ShouldBe("tFormalExpression");
+        ((string?)written.Attribute(Triso + "unparsed")).ShouldBe("false");
+        written.Value.ShouldNotBe("outcome == 'Approved'");
+
+        ((string?)XDocument.Parse(firstXml).Descendants()
+            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == "toApprove")
+            .Attribute(XNamespace.Get(BpmnXmlNames.VendorNamespaceName) + "conditionOutcome"))
+            .ShouldBe("Approved");
+    }
+
+    [Fact]
+    public void A_code_built_outcome_still_gets_a_generated_expression_when_none_was_retained()
+    {
+        var definitions = new BpmnDefinitions(
+            Id: "built",
+            Processes:
+            [
+                new BpmnProcessDefinition("p", Elements:
+                [
+                    new BpmnElement("start", BpmnElementTypes.StartEvent),
+                    new BpmnElement("done", BpmnElementTypes.EndEvent)
+                ], SequenceFlows:
+                [
+                    new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: "approved")
+                ])
+            ]);
+
+        var xml = _writer.Write(definitions);
+        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'approved'");
+
+        var read = Read(xml);
+        read.Definitions.Processes.Single().SequenceFlows.Single().ConditionOutcome.ShouldBe("approved");
+        RetainedExpression(read, "f1").Value.ShouldBe("outcome == 'approved'");
+    }
 }

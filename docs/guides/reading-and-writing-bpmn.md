@@ -353,6 +353,11 @@ sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints
 synthesized from the endpoint boxes when the source carried none. A flow that runs backwards is
 routed as an elbow below the row, so a cyclic graph does not render as a pile of overlapping lines.
 
+A sequence flow's `<conditionExpression>` is part of that retained content. The library does not
+evaluate it, but a read then write keeps the author's body, `language`, `xsi:type`, and vendor
+attributes. A generated `outcome == '…'` expression is written only when the model has a
+`conditionOutcome` and no original expression — typically a process built in code.
+
 What the writer does not do is reproduce the source byte for byte.
 
 **Lossless for content, lossy for formatting.** Preserved: element structure, names, values, document

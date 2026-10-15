@@ -235,10 +235,13 @@ public sealed class BpmnXmlWriter
             if (flow.Name is not null) flowElement.SetAttributeValue("name", flow.Name);
             if (flow.ConditionOutcome is not null)
             {
-                // BPMN has no outcome-matched condition, so the match rides a vendor attribute and the flow
-                // also carries a readable conditionExpression other modelers can display.
+                // BPMN has no outcome-matched condition, so the match rides a vendor attribute. A
+                // synthesized conditionExpression is only for models that never had one — typically a
+                // process built in code — so other modelers still see a readable predicate. An author's
+                // original expression is retained as a foreign child and restored below.
                 flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
-                flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
+                if (!HasRetainedConditionExpression(flow.Extensions))
+                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
             }
 
             ApplyExtensions(flowElement, flow.Extensions, context.Vendor);
@@ -700,6 +703,17 @@ public sealed class BpmnXmlWriter
     // Helpers
     // ---------------------------------------------------------------------------------------------------
 
+    /// <summary>
+    /// Whether the flow already carries the author's <c>conditionExpression</c>, so the writer must not
+    /// invent a second one. The element lives in BPMN's own namespace and is retained rather than
+    /// interpreted, because this library never evaluates it.
+    /// </summary>
+    private static bool HasRetainedConditionExpression(BpmnExtensions? extensions) =>
+        extensions is not null
+        && extensions.ForeignChildren.Any(child =>
+            StringComparer.Ordinal.Equals(child.Element.Name.LocalName, "conditionExpression")
+            && StringComparer.Ordinal.Equals(child.Element.Name.Namespace, BpmnXmlNames.Model.NamespaceName));
+
     /// <summary>Adds a child at the position its name takes in the canonical order, rather than at the end.</summary>
     private static void InsertByRank(XElement parent, XElement child)
     {
@@ -749,6 +763,8 @@ public sealed class BpmnXmlWriter
 
     private static string? SuggestPrefix(string ns)
     {
+        if (StringComparer.Ordinal.Equals(ns, BpmnXmlNames.SchemaInstance.NamespaceName))
+            return "xsi";
         if (!Uri.TryCreate(ns, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host)) return null;
         var label = uri.Host.Split('.').FirstOrDefault(part => part.Length > 0 && !StringComparer.OrdinalIgnoreCase.Equals(part, "www"));
         if (label is null || label.Length == 0 || !char.IsLetter(label[0])) return null;
