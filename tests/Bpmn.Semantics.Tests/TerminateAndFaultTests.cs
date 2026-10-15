@@ -230,6 +230,8 @@ public sealed class TerminateAndFaultTests
         return terminated.State;
     }
 
+    /// <summary>Verifies teardown signals cannot activate a catcher or bubble an escalation out of a terminated scope.</summary>
+    /// <param name="code">An escalation code that a live scope would bubble or catch.</param>
     [Theory]
     [InlineData("late")]
     [InlineData("forward")]
