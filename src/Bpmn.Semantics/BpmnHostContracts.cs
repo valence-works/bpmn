@@ -132,9 +132,9 @@ public abstract record BpmnHostCommand
     /// <param name="TokenId">The token parked while the work runs.</param>
     /// <param name="SchedulingCause">Why the work is being started, for the host's own reporting.</param>
     /// <param name="Correlation">
-    /// Opaque interpreter state the host must carry with the work and hand back on the resulting callback,
-    /// and — when the work is a nested BPMN process — supply as that process's
-    /// <see cref="BpmnHostSnapshot.InvocationCorrelation"/>.
+    /// Opaque interpreter state with exactly one use: when the work is a nested BPMN process, the host supplies
+    /// it as that process's <see cref="BpmnHostSnapshot.InvocationCorrelation"/>. It is never handed back on a
+    /// callback; a completion, fault or signal is matched by binding ref, iteration id and handle alone.
     /// </param>
     /// <param name="IterationScope">The per-instance scope for a multi-instance instance; <c>null</c> otherwise.</param>
     /// <param name="StartElementHint">

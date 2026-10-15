@@ -558,7 +558,9 @@ public sealed class BpmnInterpreter
 
         // A record whose token is no longer live is absorbed, defensively: the process must not fault a second
         // time. A fault after the process ended was absorbed on entry, and a late fault of work the scope tore
-        // down was absorbed above, by its handle; any other fault no record matches propagates below.
+        // down was absorbed above, by its handle. Any other fault no record matches propagates below and faults the
+        // scope: a unit failed that the scope cannot account for. That differs on purpose from an ambiguous fault,
+        // which threw in ResolveLiveWork: there the failure is the host's, for leaving out the iteration id.
         if (faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
         {
             if (faultedWork is not null)
@@ -2659,10 +2661,11 @@ public sealed class BpmnInterpreter
         ?? throw UnresolvedWork("completed work", completedBindingRef, completedIterationId);
 
     /// <summary>
-    /// The live work record a completion or a fault reports, from its binding ref and iteration id alone: the
-    /// binding's record under that iteration id, else the binding's only record, as completion has always done, so
-    /// a host that reports no iteration id still resolves single-run and sequential work; <c>null</c> when the
-    /// binding has no record. Several records the iteration id does not tell apart throw, because picking one
+    /// The live work record a completion or a fault reports, from its binding ref and iteration id alone. A
+    /// reported iteration id matches exactly or not at all: falling back to the binding's only record would hand an
+    /// earlier pass's report to a later pass's instance on the same element. Without an iteration id the binding's
+    /// only record answers, so a host that reports none still resolves single-run and sequential work. <c>null</c>
+    /// when nothing matches; several records and no iteration id to tell them apart throw, because picking one
     /// would resume, or tear down, the wrong instance.
     /// <para>
     /// The scope's invocation correlation plays no part. It belongs to the work that started this scope, so in a
@@ -2676,9 +2679,8 @@ public sealed class BpmnInterpreter
             .Where(work => StringComparer.Ordinal.Equals(work.NodeId, bindingRef))
             .ToArray();
 
-        if (iterationId is not null &&
-            candidates.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.IterationId, iterationId)) is { } iterationMatch)
-            return iterationMatch;
+        if (iterationId is not null)
+            return candidates.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.IterationId, iterationId));
 
         return candidates.Length switch
         {

@@ -552,6 +552,33 @@ public static class ProcessFixtures
             .Build();
 
     /// <summary>
+    /// <see cref="RetriedOnTimeout"/> with a parallel multi-instance task in place of the single one, and an error
+    /// boundary on it as well. Every timeout tears one pass's instances down and starts the next pass's; the error
+    /// boundary makes a fault attributed to the wrong pass visible, because it would be caught there.
+    /// </summary>
+    public static BpmnProcessDefinition MultiInstanceRetriedOnTimeout(int cardinality) =>
+        new BpmnProcessBuilder("multi-instance-retried-on-timeout")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .ExclusiveGateway("Retry")
+            .Task(BpmnElementTypes.Task, "Review", bindingRef: "review",
+                loopCharacteristics: new BpmnLoopCharacteristics(isSequential: false, cardinality: cardinality))
+            .EndEvent("EndReview")
+            .BoundaryEvent("Timeout", "Review", Timer("PT1M"), interrupting: true, bindingRef: "timeout")
+            .BoundaryEvent("Failed", "Review", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))
+            .EndEvent("EndFailed")
+            .Task("Other", bindingRef: "other")
+            .EndEvent("EndOther")
+            .Connect("Start", "Split")
+            .Connect("Split", "Retry")
+            .Connect("Split", "Other")
+            .ConnectSequence("Retry", "Review", "EndReview")
+            .Connect("Timeout", "Retry")
+            .Connect("Failed", "EndFailed")
+            .Connect("Other", "EndOther")
+            .Build();
+
+    /// <summary>
     /// A parallel multi-instance task under an interrupting message boundary, which tears every live instance down
     /// when it fires. The boundary path waits on a cleanup task, so the scope is still running afterwards.
     /// </summary>

@@ -28,8 +28,12 @@ opaque identifier, which the interpreter stores and echoes and never parses. Eve
 both, and multi-instance work additionally carries the iteration id it ran under. A completion and a
 signal take it as a trailing parameter; a fault takes it as the init-only
 `BpmnWorkFaultedRequest.FaultedIterationId`. The interpreter finds the unit a completion or a fault
-reports from the binding ref and iteration id alone, so a report for one of several concurrent
-instances that leaves the iteration id out throws `BpmnExecutionException` rather than guess which.
+reports from the binding ref and iteration id alone. A reported iteration id must match exactly; only
+a report without one falls back to the binding's single outstanding unit. So a report for one of
+several concurrent instances that leaves the iteration id out throws `BpmnExecutionException`
+rather than guess which. That is deliberately not what a fault for work nothing matches does: such a
+fault faults the scope, because a unit failed that the scope cannot account for, whereas an
+ambiguous report is the host leaving out what it must report.
 
 ## Inputs
 
@@ -95,7 +99,7 @@ described under [the continuation](#the-continuation) stops a run on which they 
 | Field | Holds |
 | --- | --- |
 | `Tokens` | Every token, live and historical, with status and position. |
-| `ActiveChildren` | The units of host work currently outstanding. |
+| `ActiveWork` | The units of host work currently outstanding. |
 | `Diagnostics` | An ordered record of what was decided. |
 | `Sequence` | The counter every generated id is a pure function of. |
 | `Races` | Open and resolved event-based-gateway races. |
@@ -197,8 +201,9 @@ it.
 
 It carries the `BindingRef` naming the work, the `ElementId` and `SchedulingCause` for your own
 reporting, the `TokenId` parked while the work runs, and a `Correlation` dictionary of opaque
-interpreter state you must carry with the work and hand back on the resulting callback — and, when
-the work is a nested BPMN process, supply as that process's `InvocationCorrelation`.
+interpreter state. The dictionary has exactly one use: when the work is a nested BPMN process,
+supply it as that process's `InvocationCorrelation`. Nothing hands it back. A completion, fault or
+signal is matched by its binding ref, iteration id and handle alone.
 
 Two optional fields appear on specific constructs. `IterationScope` carries the per-instance values a
 multi-instance instance must be seeded with: always the zero-based `loopIndex`, plus the current item
@@ -343,7 +348,8 @@ There is deliberately no async path here.
 2. Apply commands in order.
 3. Report a callback with the binding ref and handle the work was started under, and with its
    iteration id when it is a multi-instance instance.
-4. Carry `StartWork.Correlation` with the work and hand it back.
+4. Pass `StartWork.Correlation` to a nested process as its `InvocationCorrelation`, and write nothing
+   else into that dictionary.
 5. Make `CancelWorkSubtree` recursive.
 6. Do not mutate anything you were handed. The model and the state are immutable by design; treat
    them that way even where a compiler would let you cheat.
