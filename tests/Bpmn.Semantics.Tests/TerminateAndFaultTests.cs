@@ -237,7 +237,7 @@ public sealed class TerminateAndFaultTests
     {
         // 'late' matches nothing here, so a live scope would bubble it to the parent. 'forward' fires the
         // child's non-interrupting boundary, whose path throws an escalation outward.
-        var payload = JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal) { ["code"] = code });
+        var payload = BpmnInterpreter.EscalationPayload(code);
 
         var evaluation = Interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
             SignallingChildGraph, TerminateBesideASignallingChild(), NestedScope(LiveChild, LiveOther),

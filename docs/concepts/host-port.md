@@ -182,6 +182,9 @@ It carries a `Code` and an optional JSON `Payload`. There is exactly one code fo
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity
 travelling in the payload. A host multiplexing several kinds of scope signal therefore reserves one
 code rather than tracking a growing namespace.
+Build that payload with `BpmnInterpreter.EscalationPayload` and read it with
+`BpmnInterpreter.TryReadEscalationCode` rather than reproducing its shape; see
+[Errors and escalation](errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 
 If `HasEnclosingScope` is false, the interpreter will not emit this command. It asks nothing of a
 host it knows cannot answer.

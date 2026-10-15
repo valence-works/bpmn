@@ -175,17 +175,10 @@ public sealed class InMemoryProcessInstance
     /// <summary>
     /// Raises a BPMN escalation from a running unit of work, which is the common case of
     /// <see cref="SignalWork(string, string, JsonElement?)"/>: it uses the interpreter's escalation code and
-    /// wraps <paramref name="escalationCode"/> in the payload shape the interpreter reads.
+    /// wraps <paramref name="escalationCode"/> in <see cref="BpmnInterpreter.EscalationPayload"/>.
     /// </summary>
-    public void EscalateWork(string handleOrBindingRef, string escalationCode)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(escalationCode);
-
-        using var payload = JsonDocument.Parse(
-            JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.Ordinal) { ["code"] = escalationCode }));
-
-        SignalWork(handleOrBindingRef, BpmnInterpreter.EscalationSignalCode, payload.RootElement.Clone());
-    }
+    public void EscalateWork(string handleOrBindingRef, string escalationCode) =>
+        SignalWork(handleOrBindingRef, BpmnInterpreter.EscalationSignalCode, BpmnInterpreter.EscalationPayload(escalationCode));
 
     /// <summary>The live work with this handle, or <c>null</c>.</summary>
     public InMemoryWorkItem? FindWork(string handle) =>

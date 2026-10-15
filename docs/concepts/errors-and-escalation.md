@@ -130,6 +130,12 @@ There is exactly one signal code for this — `BpmnInterpreter.EscalationSignalC
 `bpmn.escalation` — with the escalation's identity travelling in the payload. A host multiplexing
 several kinds of scope signal reserves one code rather than tracking a growing namespace.
 
+The payload shape is part of the contract. `BpmnInterpreter.EscalationPayload(code, name?)` builds it,
+and `BpmnInterpreter.TryReadEscalationCode(payload, out code)` reads it the way the interpreter matches
+it. A host that originates an escalation from outside the process, such as an operator action or an
+external system, delivers `EscalationSignalCode` with a payload from `EscalationPayload` through
+`OnWorkSignalled`, as if the work had escalated. A payload with no readable code matches no catcher.
+
 This is what the `ScopeSignalling` capability promises, and a host that does not declare it will be
 refused a definition that needs it — see [Host capabilities](capabilities.md).
 
