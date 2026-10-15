@@ -349,9 +349,11 @@ public sealed class BpmnInterpreter
         if (AbsorbStoppedWork(state, completionContext.CompletedHandle, $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
             return FinishEvaluation(context, lateCompletion);
 
-        ThrowIfAnotherUnitHoldsTheSlot(context, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, completionContext.CompletedHandle, "completed work");
+        var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, "completed work")
+            ?? throw UnresolvedWork("completed work", completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
+        ThrowIfAnotherUnitHoldsTheSlot(context, completedWork, completionContext.CompletedHandle, "completed work");
 
-        var tokenId = ResolveTokenId(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
+        var tokenId = completedWork.TokenId;
         state = RemoveActiveWork(state, tokenId);
         var token = GetRequiredToken(state, tokenId);
 
@@ -549,9 +551,9 @@ public sealed class BpmnInterpreter
         if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
             return lateFault;
 
-        ThrowIfAnotherUnitHoldsTheSlot(context, faultedBindingRef, request.FaultedIterationId, request.FaultedHandle, "faulted work");
-
         var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, "faulted work");
+        if (faultedWork is not null)
+            ThrowIfAnotherUnitHoldsTheSlot(context, faultedWork, request.FaultedHandle, "faulted work");
         var faultedToken = faultedWork is not null
             ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedWork.TokenId))
             : null;
@@ -2568,19 +2570,21 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// Throws when the snapshot lists the reported (binding ref, iteration id) slot under a different handle. The
-    /// reported unit has already left the snapshot, as the port requires, so a slot still held means another unit
-    /// owns it: resolving the report to that slot's record would resume or fail work that is still running. A
-    /// late report for work this scope tore down never gets here; it is absorbed first.
+    /// Throws when the snapshot lists the slot of the record a report resolved to, its (binding ref, iteration id),
+    /// under a different handle than the report's. The reported unit has already left the snapshot, as the port
+    /// requires, so a slot still held means another unit owns that record: acting on it would resume or fail work
+    /// that is still running. Checking the resolved record rather than the reported slot also catches a report
+    /// with no iteration id that fell back to the binding's only record. A late report for work this scope tore
+    /// down never gets here; it is absorbed first.
     /// </summary>
-    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, string bindingRef, string? iterationId, string handle, string callback)
+    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, BpmnActiveWork resolved, string handle, string callback)
     {
         if (context.Host.LiveWork.FirstOrDefault(live =>
-                StringComparer.Ordinal.Equals(live.BindingRef, bindingRef)
-                && StringComparer.Ordinal.Equals(live.IterationId, iterationId)
+                StringComparer.Ordinal.Equals(live.BindingRef, resolved.NodeId)
+                && StringComparer.Ordinal.Equals(live.IterationId, resolved.IterationId)
                 && !StringComparer.Ordinal.Equals(live.Handle, handle)) is { } holder)
             throw new BpmnExecutionException(
-                $"BPMN {callback} '{bindingRef}' (iteration '{iterationId ?? "none"}') was reported under handle '{handle}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
+                $"BPMN {callback} '{resolved.NodeId}' was reported under handle '{handle}' and resolves to the unit on iteration '{resolved.IterationId ?? "none"}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
     }
 
     /// <summary>
@@ -2655,10 +2659,6 @@ public sealed class BpmnInterpreter
 
         return state with { ActiveWork = [], Sequence = state.Sequence + 1 };
     }
-
-    private static string ResolveTokenId(BpmnExecutionState state, string completedBindingRef, string? completedIterationId) =>
-        ResolveLiveWork(state, completedBindingRef, completedIterationId, "completed work")?.TokenId
-        ?? throw UnresolvedWork("completed work", completedBindingRef, completedIterationId);
 
     /// <summary>
     /// The live work record a completion or a fault reports, from its binding ref and iteration id alone. A

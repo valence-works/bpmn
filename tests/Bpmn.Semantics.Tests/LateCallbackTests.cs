@@ -303,6 +303,22 @@ public sealed class LateCallbackTests
         evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.work.faulted");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_report_with_no_iteration_id_is_not_handed_to_the_only_instance_the_host_runs_under_another_handle(bool asFault)
+    {
+        // Without an iteration id the binding's only record answers, and that record is the second pass's
+        // instance, which the snapshot lists under its own handle. Acting on it would catch a fault on it, or
+        // finish its loop, for a report it never made.
+        var (graph, retried, _, live) = RetriedInstancesOnce(cardinality: 1);
+
+        Should.Throw<BpmnExecutionException>(() => asFault
+                ? Fault(graph, retried, "review", "h-never-started", live)
+                : Complete(graph, retried, "review", "h-never-started", live))
+            .Message.ShouldContain(live[0].Handle);
+    }
+
     [Fact]
     public void A_fault_under_an_unknown_handle_for_a_running_instances_iteration_id_throws_instead_of_failing_that_instance()
     {
