@@ -334,19 +334,31 @@ var writer = new BpmnXmlWriter();
 // Round-trip: writes back exactly what a read produced.
 var xml = writer.Write(result);
 
-// Or write a model you assembled or edited yourself.
-var edited = writer.Write(definitions, bindings, elementExtensions, new BpmnExportOptions
+// Write a full document model you assembled or edited yourself.
+var edited = writer.Write(definitions, bindings, new BpmnExportOptions
 {
     Exporter = "my-tool",
     ExporterVersion = "1.4.0"
 });
+
+// A host holding just one process can write it directly.
+var singleProcessXml = writer.Write(process, bindings);
 ```
 
-Prefer the first overload whenever you have a `BpmnImportResult`. The second takes the pieces
-separately: `bindings` supplies the nested process behind each subprocess element — without it,
-subprocesses are written empty — and `elementExtensions` supplies the per-element retained content.
-`BpmnExportOptions` can also override the target namespace, set the
+Prefer `Write(result)` whenever you have a `BpmnImportResult`. For models assembled or edited in code,
+both `Write(definitions, bindings, options)` and `Write(process, bindings, options)` accept optional
+bindings and export options. `bindings` supplies nested subprocess bodies and event binding data;
+without it, subprocesses are written empty. Retained foreign content lives on the model itself.
+`BpmnExportOptions` can override the target namespace, set the
 [vendor namespace](#the-vendor-namespace), and omit the XML declaration.
+
+The single-process overload wraps the process in minimal definitions and uses the same writer. It
+synthesizes message and signal declarations from known names (including event bindings), and escalation
+declarations from known event-definition codes. A recorded `errorRef` gets a matching error
+declaration, but its original name and error code cannot be recovered from that reference alone.
+Use the definitions overload when you need explicit root declaration metadata, document metadata,
+collaboration, or retained diagrams. The single-process overload generates layout instead of retaining
+document-level diagrams.
 
 Layout in the output is always complete. Every element, pool and lane gets a `BPMNShape`, and every
 sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints BPMN DI demands,
