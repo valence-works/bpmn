@@ -13,9 +13,9 @@ This page is the contract. For a working implementation, see
 ```
 
 Every entry point is synchronous, takes a request record carrying those four inputs, and returns a
-`BpmnEvaluation`. Its nullable `ErrorDisposition` is populated when a host-reported failure goes
-through BPMN error routing; otherwise it is `null`. The interpreter never calls the host, with one
-narrow exception described below.
+`BpmnEvaluation`. Its nullable `ErrorDisposition` is populated when a host-reported failure is
+routed or absorbed; otherwise it is `null`. The interpreter never calls the host, with one narrow
+exception described below.
 
 | Entry point | The event it carries | Returns |
 | --- | --- | --- |
@@ -276,13 +276,13 @@ host-reported failure without making the host adopt an incident or retry policy:
   scope's problem, or at the root, yours.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-The disposition is present when a reported failure goes through error routing in either of two ways:
-`OnWorkFaulted` reports failed work, and `OnWorkCompleted` reports a call-activity completion with
+The disposition is present for failed work reported by `OnWorkFaulted`, and for a call-activity
+completion reported by `OnWorkCompleted` with
 the outcome `Faulted`, `DispatchFailed`, or `Cancelled`. Those call-activity outcomes use the same
 error-catcher routing as a fault report. A late failure for work or a scope that was already stopped
 is reported as `Absorbed`.
 
-The property is `null` when no host-reported failure went through error routing. That includes normal
+The property is `null` when no host-reported failure was routed or absorbed. That includes normal
 starts, completions and signals, transaction cancellation, and an event subprocess activated on an
 unrelated path. In particular, a transaction's `Cancelled` completion is distinct from a call
 activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a separate transcript

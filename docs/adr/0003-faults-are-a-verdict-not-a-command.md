@@ -15,10 +15,10 @@ public BpmnErrorDisposition? ErrorDisposition { get; init; }
 ```
 
 `BpmnFaultEvaluation` is removed. `ErrorDisposition` is populated whenever a host-reported failure
-passes through BPMN error routing, including call-activity `Faulted`, `DispatchFailed`, and
-`Cancelled` outcomes routed by `RouteCallActivityFailureOutcome`. It remains `null` when no such
-failure was routed, including transaction cancellation and an event subprocess activated on another
-path.
+is routed or absorbed. Routing includes call-activity `Faulted`, `DispatchFailed`, and `Cancelled`
+outcomes handled by `RouteCallActivityFailureOutcome`; absorption covers late failures of stopped
+work or scopes. It remains `null` when no failure was routed or absorbed, including transaction
+cancellation and an event subprocess activated on another path.
 
 The disposition is a closed set:
 

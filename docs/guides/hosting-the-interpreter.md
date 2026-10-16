@@ -216,8 +216,8 @@ entirely about how you run them.
 ### The error disposition
 
 `BpmnEvaluation.ErrorDisposition` is nullable. `OnWorkFaulted` sets it when the reported failure
-passes through BPMN error routing, and call-activity completions can do the same when their outcome
-is `Faulted`, `DispatchFailed`, or `Cancelled`:
+is routed or absorbed, and call-activity completions do the same for the failure outcomes `Faulted`,
+`DispatchFailed`, or `Cancelled`:
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
@@ -229,7 +229,7 @@ var summary = evaluation.ErrorDisposition switch
     BpmnErrorDisposition.Caught caught => $"caught at {caught.CatchingElementId} ({caught.ErrorCode ?? "any"})",
     BpmnErrorDisposition.Propagated    => "the error was not handled; the continuation is a Fault",
     BpmnErrorDisposition.Absorbed      => "the work or scope had already stopped",
-    null                               => "no failure went through BPMN error routing",
+    null                               => "no failure was routed or absorbed",
     _                                  => "unknown"
 };
 ```
@@ -320,7 +320,7 @@ public sealed class MinimalHost : IBpmnVariableReader
         var work = Take(handle);
 
         Apply(_interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
-            _graph, _state, Snapshot(), work.BindingRef, handle, outcomeNames, work.IterationId)));
+            _graph, _state, Snapshot(), work.BindingRef, handle, outcomeNames, work.IterationId)), work);
     }
 
     public void FaultWork(string handle, string message)
@@ -330,12 +330,7 @@ public sealed class MinimalHost : IBpmnVariableReader
         var evaluation = _interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
             _graph, _state, Snapshot(), work.BindingRef, handle, message) { FaultedIterationId = work.IterationId });
 
-        // BPMN has no incidents. Recording one is this host's decision, and the
-        // error disposition is what makes it an informed decision.
-        if (evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated)
-            _faults.Add(new FaultRecord(work.BindingRef, message));
-
-        Apply(evaluation);
+        Apply(evaluation, work, message);
     }
 
     /// A nested scope signalled outward; this scope is where it lands.
@@ -349,10 +344,16 @@ public sealed class MinimalHost : IBpmnVariableReader
 
     // --- Applying what came back --------------------------------------------------------
 
-    private void Apply(BpmnEvaluation evaluation)
+    private void Apply(BpmnEvaluation evaluation, BpmnLiveWork? reportedWork = null, string? reportedMessage = null)
     {
         // Persist this before acting on the commands, if you persist at all.
         _state = evaluation.State.Prune();
+
+        // This host records only unhandled reported failures, from fault callbacks or call completions.
+        if (reportedWork is not null
+            && evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated
+            && evaluation.Continuation is BpmnContinuation.Fault failure)
+            _faults.Add(new FaultRecord(reportedWork.BindingRef, reportedMessage ?? failure.Message));
 
         foreach (var command in evaluation.Commands)   // order matters
         {

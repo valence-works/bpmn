@@ -241,7 +241,7 @@ var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
 if (evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated)
     _incidents.Record(work, message);   // your model, your policy
 // Caught: the process modeled this failure. Absorbed: this work or scope had already stopped.
-// Null: this evaluation did not report a failure through BPMN error routing.
+// Null: no host-reported failure was routed or absorbed in this evaluation.
 ```
 
 Recording an incident for every fault buries the real ones under the modeled ones — an error boundary
