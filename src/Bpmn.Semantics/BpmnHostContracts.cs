@@ -132,9 +132,9 @@ public abstract record BpmnHostCommand
     /// <param name="TokenId">The token parked while the work runs.</param>
     /// <param name="SchedulingCause">Why the work is being started, for the host's own reporting.</param>
     /// <param name="Correlation">
-    /// Opaque interpreter state the host must carry with the work and hand back on the resulting callback,
-    /// and — when the work is a nested BPMN process — supply as that process's
-    /// <see cref="BpmnHostSnapshot.InvocationCorrelation"/>.
+    /// Opaque interpreter state with exactly one use: when the work is a nested BPMN process, the host supplies
+    /// it as that process's <see cref="BpmnHostSnapshot.InvocationCorrelation"/>. It is never handed back on a
+    /// callback; a completion, fault or signal is matched by binding ref, iteration id and handle alone.
     /// </param>
     /// <param name="IterationScope">The per-instance scope for a multi-instance instance; <c>null</c> otherwise.</param>
     /// <param name="StartElementHint">
@@ -312,7 +312,20 @@ public sealed record BpmnWorkFaultedRequest(
     BpmnHostSnapshot Host,
     string FaultedBindingRef,
     string FaultedHandle,
-    string? FaultMessage = null);
+    string? FaultMessage = null)
+{
+    /// <summary>
+    /// The iteration id the failed work ran under, for a multi-instance instance; <c>null</c> for ordinary
+    /// single-run work. The faulted unit is found from this and <see cref="FaultedBindingRef"/>, exactly as a
+    /// completion is, so a fault of one of several concurrent instances must carry it: without it the
+    /// interpreter cannot tell the instances apart and throws <see cref="BpmnExecutionException"/>.
+    /// <para>
+    /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+    /// nor the deconstruction a host compiled against an earlier version uses.
+    /// </para>
+    /// </summary>
+    public string? FaultedIterationId { get; init; }
+}
 
 /// <summary>
 /// Reports a signal raised by a nested process this scope invoked — the receiving half of

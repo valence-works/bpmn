@@ -31,7 +31,7 @@ var evaluation = interpreter.Start(new BpmnStartRequest(graph, priorState: null,
 | --- | --- | --- |
 | `Start` | `BpmnStartRequest(Graph, PriorState, Host, StartSignal?)` | `BpmnEvaluation` |
 | `OnWorkCompleted` | `BpmnWorkCompletedRequest(Graph, PriorState, Host, CompletedBindingRef, CompletedHandle, OutcomeNames, CompletedIterationId?)` | `BpmnEvaluation` |
-| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?)` | `BpmnFaultEvaluation` |
+| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?) { FaultedIterationId }` | `BpmnFaultEvaluation` |
 | `OnWorkSignalled` | `BpmnWorkSignalledRequest(Graph, PriorState, Host, SignallingBindingRef, SignallingHandle, Code, Payload?, SignallingIterationId?)` | `BpmnEvaluation` |
 
 Work is identified by two values together: the **binding ref**, which the interpreter assigned and
@@ -207,7 +207,7 @@ scope's lifetime, and the event-subprocess start-element hint is read from it. O
 corrupts event subprocess activation in a way no test of yours will obviously catch.
 
 `IterationScope` carries the per-instance values to seed: always the zero-based `loopIndex`, plus the
-current item in collection mode. Report the completion back under the same `IterationId`.
+current item in collection mode. Report the completion, or the fault, back under the same `IterationId`.
 
 Timers, human tasks, HTTP calls, message subscriptions, nested processes and long-lived scope
 listeners are all `StartWork`. The interpreter does not distinguish them, because the difference is
@@ -219,7 +219,8 @@ entirely about how you run them.
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-    graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded"));
+    graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
+    { FaultedIterationId = work.IterationId });
 
 var summary = evaluation.Disposition switch
 {
@@ -318,7 +319,7 @@ public sealed class MinimalHost : IBpmnVariableReader
         var work = Take(handle);
 
         var evaluation = _interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-            _graph, _state, Snapshot(), work.BindingRef, handle, message));
+            _graph, _state, Snapshot(), work.BindingRef, handle, message) { FaultedIterationId = work.IterationId });
 
         // BPMN has no incidents. Recording one is this host's decision, and the
         // disposition is what makes it an informed decision.
@@ -466,7 +467,8 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Declare capabilities honestly. `Full` is a claim, not a default.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
-- [ ] Report a callback with the same binding ref and handle the work was started under.
+- [ ] Report a callback with the same binding ref and handle the work was started under, and with
+      its iteration id for a multi-instance instance, faults included.
 - [ ] Never reuse a handle within a scope. A late report for torn-down work is recognized by its
       handle alone.
 - [ ] Keep at most one live unit of work per `(BindingRef, IterationId)` in a scope, once each

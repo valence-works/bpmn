@@ -25,7 +25,15 @@ value. The interpreter never calls the host, with one narrow exception described
 Work is named by two values together. The **binding ref** is the interpreter's name for it, taken
 from `BpmnElement.BindingRef` or `BpmnElement.ListenerBindingRef`. The **handle** is the host's own
 opaque identifier, which the interpreter stores and echoes and never parses. Every callback carries
-both, and multi-instance work additionally carries the iteration id it ran under.
+both, and multi-instance work additionally carries the iteration id it ran under. A completion and a
+signal take it as a trailing parameter; a fault takes it as the init-only
+`BpmnWorkFaultedRequest.FaultedIterationId`. The interpreter finds the unit a completion or a fault
+reports from the binding ref and iteration id alone. A reported iteration id must match exactly; only
+a report without one falls back to the binding's single outstanding unit. So a report for one of
+several concurrent instances that leaves the iteration id out throws `BpmnExecutionException`
+rather than guess which. That is deliberately not what a fault for work nothing matches does: such a
+fault faults the scope, because a unit failed that the scope cannot account for, whereas an
+ambiguous report is the host leaving out what it must report.
 
 ## Inputs
 
@@ -91,7 +99,7 @@ described under [the continuation](#the-continuation) stops a run on which they 
 | Field | Holds |
 | --- | --- |
 | `Tokens` | Every token, live and historical, with status and position. |
-| `ActiveChildren` | The units of host work currently outstanding. |
+| `ActiveWork` | The units of host work currently outstanding. |
 | `Diagnostics` | An ordered record of what was decided. |
 | `Sequence` | The counter every generated id is a pure function of. |
 | `Races` | Open and resolved event-based-gateway races. |
@@ -125,7 +133,7 @@ call. It is a value, built fresh per evaluation, never held.
 | `ScopeInstanceId` | An opaque host-chosen identity for this scope. | Echoed onto tokens for provenance. Never parsed. |
 | `HasEnclosingScope` | Whether a parent exists to receive a signal. | A root process has none, so an unhandled escalation is a documented no-op rather than a fault. |
 | `LiveWork` | `BpmnLiveWork(BindingRef, IterationId, Handle)` per outstanding unit. | Deciding what an interruption must tear down, and whether a scope can complete. |
-| `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. |
+| `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. Never used to find the work a callback reports: in a nested scope the token id it carries belongs to the enclosing scope. |
 | `Variables` | An `IBpmnVariableReader`. | Reading a named value mid-evaluation. |
 | `Capabilities` | What this host can do. | Consistency with the graph it was built against. |
 
@@ -193,8 +201,9 @@ it.
 
 It carries the `BindingRef` naming the work, the `ElementId` and `SchedulingCause` for your own
 reporting, the `TokenId` parked while the work runs, and a `Correlation` dictionary of opaque
-interpreter state you must carry with the work and hand back on the resulting callback — and, when
-the work is a nested BPMN process, supply as that process's `InvocationCorrelation`.
+interpreter state. The dictionary has exactly one use: when the work is a nested BPMN process,
+supply it as that process's `InvocationCorrelation`. Nothing hands it back. A completion, fault or
+signal is matched by its binding ref, iteration id and handle alone.
 
 Two optional fields appear on specific constructs. `IterationScope` carries the per-instance values a
 multi-instance instance must be seeded with: always the zero-based `loopIndex`, plus the current item
@@ -289,9 +298,8 @@ Any other callback is a broken contract rather than a race, and stays loud: a co
 completed normally, a binding no element binds, and work the interpreter withdrew before you ever
 started it, which has no handle to match. A report the snapshot contradicts throws even when a
 record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
-its slot under another handle, that slot belongs to other work. A fault report carries no iteration
-id, so for a fault this check covers only a slot without one: a multi-instance sibling's slot is not
-checked on the fault path. A state an earlier version persisted
+the slot of the record the report resolves to under another handle, that record belongs to other
+work. That includes a report with no iteration id that would fall back to the binding's only record. A state an earlier version persisted
 records no handles, so a late callback against it is never absorbed. A late completion throws. A
 late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
 lists its slot under another handle.
@@ -337,8 +345,10 @@ There is deliberately no async path here.
 
 1. Pass back the state you were last given, for that scope instance — pruned, if you like.
 2. Apply commands in order.
-3. Report a callback with the binding ref and handle the work was started under.
-4. Carry `StartWork.Correlation` with the work and hand it back.
+3. Report a callback with the binding ref and handle the work was started under, and with its
+   iteration id when it is a multi-instance instance.
+4. Pass `StartWork.Correlation` to a nested process as its `InvocationCorrelation`, and write nothing
+   else into that dictionary.
 5. Make `CancelWorkSubtree` recursive.
 6. Do not mutate anything you were handed. The model and the state are immutable by design; treat
    them that way even where a compiler would let you cheat.

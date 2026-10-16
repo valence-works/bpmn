@@ -33,8 +33,8 @@ public sealed class LateCallbackTests
     private static BpmnEvaluation Complete(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
         Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, [], iterationId));
 
-    private static BpmnFaultEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork) =>
-        Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, "boom"));
+    private static BpmnFaultEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
+        Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, "boom") { FaultedIterationId = iterationId });
 
     /// <summary>
     /// Asserts that <paramref name="late"/> asked the host for nothing and moved no token, and that it spent the
@@ -233,6 +233,100 @@ public sealed class LateCallbackTests
                 ? Fault(graph, retried, "long", "h-never-started", live)
                 : Complete(graph, retried, "long", "h-never-started", live))
             .Message.ShouldContain(SecondPass.Handle, customMessage: "resolving it to the live record would finish the current pass with someone else's result");
+    }
+
+    // --- A multi-instance slot re-used by a retry loop ------------------------------------------------
+
+    private static BpmnLiveWork[] InstancesOf(BpmnEvaluation evaluation, string pass) =>
+        evaluation.Commands.OfType<BpmnHostCommand.StartWork>().Where(start => start.BindingRef == "review")
+            .Select((start, index) => new BpmnLiveWork("review", start.IterationScope!.IterationId, $"h-review-{pass}-{index}"))
+            .ToArray();
+
+    /// <summary>
+    /// <see cref="ProcessFixtures.MultiInstanceRetriedOnTimeout"/> after its first timeout: the first pass's
+    /// instances torn down, the second pass's started under new iteration ids, and everything the host now runs.
+    /// </summary>
+    private static (BpmnGraph Graph, BpmnEvaluation Retried, BpmnLiveWork[] FirstPass, BpmnLiveWork[] Live) RetriedInstancesOnce(int cardinality)
+    {
+        var graph = BuildGraph(ProcessFixtures.MultiInstanceRetriedOnTimeout(cardinality));
+        var started = Start(graph);
+        var firstPass = InstancesOf(started, "1");
+
+        var retried = Complete(graph, started, "timeout", "h-timeout-1", [.. firstPass, OtherUnit]);
+        retried.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().Select(teardown => teardown.Handle)
+            .ShouldBe(firstPass.Select(instance => instance.Handle));
+        var secondPass = InstancesOf(retried, "2");
+        secondPass.Length.ShouldBe(cardinality);
+
+        return (graph, retried, firstPass, [.. secondPass, SecondTimer, OtherUnit]);
+    }
+
+    [Fact]
+    public void A_late_completion_of_an_earlier_passes_instance_is_absorbed_while_several_later_instances_run()
+    {
+        var (graph, retried, firstPass, live) = RetriedInstancesOnce(cardinality: 2);
+
+        var late = Complete(graph, retried, "review", firstPass[0].Handle, live, firstPass[0].IterationId);
+
+        ShouldHaveBeenAbsorbed(late, retried, firstPass[0].Handle);
+    }
+
+    [Fact]
+    public void A_late_fault_of_an_earlier_passes_instance_is_absorbed_while_several_later_instances_run()
+    {
+        var (graph, retried, firstPass, live) = RetriedInstancesOnce(cardinality: 2);
+
+        var late = Fault(graph, retried, "review", firstPass[0].Handle, live, firstPass[0].IterationId);
+
+        ShouldHaveBeenAbsorbed(late, retried, firstPass[0].Handle);
+        ((BpmnFaultEvaluation)late).Disposition.ShouldNotBeOfType<BpmnErrorDisposition.Caught>("no later instance failed");
+    }
+
+    [Fact]
+    public void A_completion_with_an_earlier_passes_iteration_id_is_not_handed_to_the_later_passes_only_instance()
+    {
+        // No teardown named this handle, so it is not late. The iteration id names no live instance, and the
+        // binding's only record belongs to the second pass: resolving to it would complete that pass's loop.
+        var (graph, retried, firstPass, live) = RetriedInstancesOnce(cardinality: 1);
+
+        Should.Throw<BpmnExecutionException>(() => Complete(graph, retried, "review", "h-never-started", live, firstPass[0].IterationId));
+    }
+
+    [Fact]
+    public void A_fault_with_an_earlier_passes_iteration_id_is_not_caught_on_the_later_passes_only_instance()
+    {
+        var (graph, retried, firstPass, live) = RetriedInstancesOnce(cardinality: 1);
+
+        var evaluation = Fault(graph, retried, "review", "h-never-started", live, firstPass[0].IterationId);
+
+        evaluation.Disposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance, "the second pass did not fail, so its error boundary must not fire");
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.work.faulted");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_report_with_no_iteration_id_is_not_handed_to_the_only_instance_the_host_runs_under_another_handle(bool asFault)
+    {
+        // Without an iteration id the binding's only record answers, and that record is the second pass's
+        // instance, which the snapshot lists under its own handle. Acting on it would catch a fault on it, or
+        // finish its loop, for a report it never made.
+        var (graph, retried, _, live) = RetriedInstancesOnce(cardinality: 1);
+
+        Should.Throw<BpmnExecutionException>(() => asFault
+                ? Fault(graph, retried, "review", "h-never-started", live)
+                : Complete(graph, retried, "review", "h-never-started", live))
+            .Message.ShouldContain(live[0].Handle);
+    }
+
+    [Fact]
+    public void A_fault_under_an_unknown_handle_for_a_running_instances_iteration_id_throws_instead_of_failing_that_instance()
+    {
+        var (graph, retried, _, live) = RetriedInstancesOnce(cardinality: 2);
+        var running = live[0];
+
+        Should.Throw<BpmnExecutionException>(() => Fault(graph, retried, "review", "h-never-started", live, running.IterationId))
+            .Message.ShouldContain(running.Handle);
     }
 
     // --- Still loud: no teardown names the handle -----------------------------------------------------

@@ -349,9 +349,11 @@ public sealed class BpmnInterpreter
         if (AbsorbStoppedWork(state, completionContext.CompletedHandle, $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
             return FinishEvaluation(context, lateCompletion);
 
-        ThrowIfAnotherUnitHoldsTheSlot(context, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, completionContext.CompletedHandle, "completed work");
+        var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, "completed work")
+            ?? throw UnresolvedWork("completed work", completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
+        ThrowIfAnotherUnitHoldsTheSlot(context, completedWork, completionContext.CompletedHandle, "completed work");
 
-        var tokenId = ResolveTokenId(context, state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
+        var tokenId = completedWork.TokenId;
         state = RemoveActiveWork(state, tokenId);
         var token = GetRequiredToken(state, tokenId);
 
@@ -540,29 +542,27 @@ public sealed class BpmnInterpreter
         var graph = request.Graph;
         var state = request.PriorState ?? new BpmnExecutionState();
 
+        // The failed unit is found from the binding and iteration the host reports, exactly as a completion is.
+        // Never from the invocation correlation: that belongs to the work that started THIS scope, so in a
+        // nested scope its token id names a token of the enclosing scope, and token ids are scope-local. A
+        // catcher in a nested scope then caught only when the two ids happened to coincide, and a coincidence
+        // with a consumed token absorbed the fault as late.
         var faultedBindingRef = request.FaultedBindingRef;
         if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
             return lateFault;
 
-        // A fault report carries no iteration id here (BpmnWorkFaultedRequest has none), so this checks only the
-        // binding's slot without an iteration: a multi-instance sibling's slot is not checked on the fault path.
-        // #32 adds FaultedIterationId and checks the resolved record's own slot instead, which closes this.
-        ThrowIfAnotherUnitHoldsTheSlot(context, faultedBindingRef, iterationId: null, request.FaultedHandle, "faulted work");
-
-        var faultedTokenId = context.Host.InvocationCorrelation.TryGetValue(TokenIdCorrelationKey, out var correlatedTokenId) && !string.IsNullOrWhiteSpace(correlatedTokenId)
-            ? correlatedTokenId
+        var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, "faulted work");
+        if (faultedWork is not null)
+            ThrowIfAnotherUnitHoldsTheSlot(context, faultedWork, request.FaultedHandle, "faulted work");
+        var faultedToken = faultedWork is not null
+            ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedWork.TokenId))
             : null;
-        var faultedWork = faultedTokenId is not null
-            ? state.ActiveWork.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.TokenId, faultedTokenId))
-            : state.ActiveWork.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.NodeId, faultedBindingRef));
 
-        // A late fault of work whose token was already cancelled — a sibling multi-instance instance torn down
-        // by a catcher or a boundary interrupt, say — is absorbed by the token-status guard: the teardown already
-        // rode the interrupting evaluation, so the process must not fault a second time. This mirrors the
-        // completion path's cancelled-token guard. A fault after the process ended was absorbed on entry.
-        var faultedToken = faultedTokenId is not null
-            ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedTokenId))
-            : null;
+        // A record whose token is no longer live is absorbed, defensively: the process must not fault a second
+        // time. A fault after the process ended was absorbed on entry, and a late fault of work the scope tore
+        // down was absorbed above, by its handle. Any other fault no record matches propagates below and faults the
+        // scope: a unit failed that the scope cannot account for. That differs on purpose from an ambiguous fault,
+        // which threw in ResolveLiveWork: there the failure is the host's, for leaving out the iteration id.
         if (faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
         {
             if (faultedWork is not null)
@@ -2570,19 +2570,21 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// Throws when the snapshot lists the reported (binding ref, iteration id) slot under a different handle. The
-    /// reported unit has already left the snapshot, as the port requires, so a slot still held means another unit
-    /// owns it: resolving the report to that slot's record would resume or fail work that is still running. A
-    /// late report for work this scope tore down never gets here; it is absorbed first.
+    /// Throws when the snapshot lists the slot of the record a report resolved to, its (binding ref, iteration id),
+    /// under a different handle than the report's. The reported unit has already left the snapshot, as the port
+    /// requires, so a slot still held means another unit owns that record: acting on it would resume or fail work
+    /// that is still running. Checking the resolved record rather than the reported slot also catches a report
+    /// with no iteration id that fell back to the binding's only record. A late report for work this scope tore
+    /// down never gets here; it is absorbed first.
     /// </summary>
-    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, string bindingRef, string? iterationId, string handle, string callback)
+    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, BpmnActiveWork resolved, string handle, string callback)
     {
         if (context.Host.LiveWork.FirstOrDefault(live =>
-                StringComparer.Ordinal.Equals(live.BindingRef, bindingRef)
-                && StringComparer.Ordinal.Equals(live.IterationId, iterationId)
+                StringComparer.Ordinal.Equals(live.BindingRef, resolved.NodeId)
+                && StringComparer.Ordinal.Equals(live.IterationId, resolved.IterationId)
                 && !StringComparer.Ordinal.Equals(live.Handle, handle)) is { } holder)
             throw new BpmnExecutionException(
-                $"BPMN {callback} '{bindingRef}' (iteration '{iterationId ?? "none"}') was reported under handle '{handle}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
+                $"BPMN {callback} '{resolved.NodeId}' was reported under handle '{handle}' and resolves to the unit on iteration '{resolved.IterationId ?? "none"}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
     }
 
     /// <summary>
@@ -2658,32 +2660,36 @@ public sealed class BpmnInterpreter
         return state with { ActiveWork = [], Sequence = state.Sequence + 1 };
     }
 
-    private static string ResolveTokenId(BpmnEvaluationContext context, BpmnExecutionState state, string completedBindingRef, string? completedIterationId)
+    /// <summary>
+    /// The live work record a completion or a fault reports, from its binding ref and iteration id alone. A
+    /// reported iteration id matches exactly or not at all: falling back to the binding's only record would hand an
+    /// earlier pass's report to a later pass's instance on the same element. Without an iteration id the binding's
+    /// only record answers, so a host that reports none still resolves single-run and sequential work. <c>null</c>
+    /// when nothing matches; several records and no iteration id to tell them apart throw, because picking one
+    /// would resume, or tear down, the wrong instance.
+    /// <para>
+    /// The scope's invocation correlation plays no part. It belongs to the work that started this scope, so in a
+    /// nested scope the token id it carries names a token of the enclosing scope; matching it against this
+    /// scope's scope-local token ids only ever finds a coincidence.
+    /// </para>
+    /// </summary>
+    private static BpmnActiveWork? ResolveLiveWork(BpmnExecutionState state, string bindingRef, string? iterationId, string callback)
     {
         var candidates = state.ActiveWork
-            .Where(work => StringComparer.Ordinal.Equals(work.NodeId, completedBindingRef))
+            .Where(work => StringComparer.Ordinal.Equals(work.NodeId, bindingRef))
             .ToArray();
 
-        // The primary path: the host hands back the correlation the interpreter issued with the start command, so
-        // the token id it carries is authoritative — when the completing binding has NO live work (its work was
-        // already torn down by a terminate or a cancel, the late-completion case absorbed by the cancelled-token
-        // guard), or when the id names one of that binding's live work records. But when the binding HAS live work
-        // and the correlated id names none of it, the correlation belongs to a nested process's own internal token
-        // rather than to this scope's, so the by-binding resolution below owns it.
-        if (context.Host.InvocationCorrelation.TryGetValue(TokenIdCorrelationKey, out var correlatedTokenId)
-            && !string.IsNullOrWhiteSpace(correlatedTokenId)
-            && (candidates.Length == 0 || candidates.Any(work => StringComparer.Ordinal.Equals(work.TokenId, correlatedTokenId))))
-            return correlatedTokenId;
+        if (iterationId is not null)
+            return candidates.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.IterationId, iterationId));
 
-        // Resumed work may complete without the correlation. For N concurrent instances of the same binding the
-        // completing iteration id disambiguates them; a single candidate resolves unambiguously.
-        if (completedIterationId is not null &&
-            candidates.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.IterationId, completedIterationId)) is { } iterationMatch)
-            return iterationMatch.TokenId;
-
-        if (candidates.Length == 1)
-            return candidates[0].TokenId;
-
-        throw new BpmnExecutionException($"Unable to resolve the BPMN token for completed work '{completedBindingRef}' (iteration '{completedIterationId ?? "none"}').");
+        return candidates.Length switch
+        {
+            0 => null,
+            1 => candidates[0],
+            _ => throw UnresolvedWork(callback, bindingRef, iterationId)
+        };
     }
+
+    private static BpmnExecutionException UnresolvedWork(string callback, string bindingRef, string? iterationId) =>
+        new($"Unable to resolve the BPMN token for {callback} '{bindingRef}' (iteration '{iterationId ?? "none"}').");
 }
