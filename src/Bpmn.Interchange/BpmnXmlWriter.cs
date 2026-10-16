@@ -34,6 +34,21 @@ public sealed class BpmnXmlWriter
     }
 
     /// <summary>
+    /// Writes a single process in a minimal document, using the document writer's declaration and layout
+    /// synthesis. <paramref name="bindings"/> supplies nested processes and event bindings. Use the
+    /// <see cref="BpmnDefinitions"/> overload to retain document metadata, explicit root declarations,
+    /// collaboration, or imported diagrams.
+    /// </summary>
+    public string Write(
+        BpmnProcessDefinition process,
+        IReadOnlyList<BpmnWorkBinding>? bindings = null,
+        BpmnExportOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(process);
+        return Write(new BpmnDefinitions(Processes: [process]), bindings, options);
+    }
+
+    /// <summary>
     /// Writes a document. <paramref name="bindings"/> supplies the nested process behind each subprocess
     /// element; without it, subprocesses are written as empty. Retained foreign content rides on the model
     /// itself, so nothing else has to be threaded through alongside it.
