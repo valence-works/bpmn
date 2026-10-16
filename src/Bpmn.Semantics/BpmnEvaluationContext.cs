@@ -6,9 +6,9 @@ namespace Bpmn.Semantics;
 /// One running unit of work to tear down: a losing event-based-gateway branch, an interrupted boundary
 /// host, a retired listener, the work a cancelled transaction abandons. Carried — on the evaluation result,
 /// or on the evaluation context when the result cannot reach the caller — and issued only on a non-fault
-/// continuation.
+/// continuation, which is also when <paramref name="TokenId"/>'s token records the handle as stopped.
 /// </summary>
-internal sealed record PendingTeardown(string Handle, string ElementId, string Reason);
+internal sealed record PendingTeardown(string Handle, string ElementId, string Reason, string TokenId);
 
 /// <summary>
 /// The mutable scratch space of one interpreter evaluation: the graph and host snapshot it reads, and the
@@ -57,11 +57,31 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     }
 
     /// <summary>
+    /// Withdraws the <see cref="BpmnHostCommand.StartWork"/> this evaluation issued for <paramref name="tokenId"/>,
+    /// if it issued one, keeps every other command where it was, and returns what was withdrawn. A token is started
+    /// at most once, so there is at most one. Called when the same evaluation cancels that token: the host has not
+    /// seen the command yet, so the work is never started rather than started with no token waiting for it.
+    /// </summary>
+    public BpmnHostCommand.StartWork? WithdrawStartedWorkFor(string tokenId)
+    {
+        var index = _commands.FindIndex(command =>
+            command is BpmnHostCommand.StartWork start && StringComparer.Ordinal.Equals(start.TokenId, tokenId));
+        if (index < 0)
+            return null;
+
+        var withdrawn = (BpmnHostCommand.StartWork)_commands[index];
+        _commands.RemoveAt(index);
+        StartedWork = _commands.Exists(command => command is BpmnHostCommand.StartWork);
+        return withdrawn;
+    }
+
+    /// <summary>
     /// Asks the host to tear running work down, or to signal the enclosing scope. A teardown is only ever added
     /// on a non-fault continuation: one that has been carried but not staged is discarded when the process
     /// faults, because the whole scope is going away and a premature teardown would race the fault. The one
     /// command added mid-propagation is the signal an escalation throw raises, which happened before any
-    /// verdict and so rides whichever continuation follows.
+    /// verdict and so rides whichever continuation follows, except a fault at the propagation limit, which
+    /// withdraws it.
     /// </summary>
     public void AddCommand(BpmnHostCommand command) => _commands.Add(command);
 
@@ -75,4 +95,28 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
 
     /// <summary>Carries a teardown to the clean exit, for a step whose result never reaches the caller.</summary>
     public void CarryTeardown(PendingTeardown teardown) => _carriedTeardowns.Add(teardown);
+
+    /// <summary>
+    /// How many tokens this evaluation has dispatched to an element behavior on arrival. Counted here rather
+    /// than in the propagation loop so the limit holds for the evaluation as a whole, however many times it
+    /// enters that loop.
+    /// </summary>
+    public int PropagationSteps { get; private set; }
+
+    /// <summary>The element of the token most recently dispatched, or <c>null</c> before the first.</summary>
+    public string? LastPropagatedElementId { get; private set; }
+
+    /// <summary>
+    /// Withdraws every <see cref="BpmnHostCommand.SignalEnclosingScope"/> on the command list and returns how many
+    /// there were. Only the propagation limit does this; every other continuation keeps the signals an
+    /// escalation throw raised.
+    /// </summary>
+    public int WithdrawScopeSignals() => _commands.RemoveAll(command => command is BpmnHostCommand.SignalEnclosingScope);
+
+    /// <summary>Records one token dispatched to the behavior of <paramref name="elementId"/>.</summary>
+    public void CountPropagationStep(string elementId)
+    {
+        PropagationSteps++;
+        LastPropagatedElementId = elementId;
+    }
 }

@@ -45,6 +45,45 @@ characteristics, a binding supplied twice. Those throw `BpmnExecutionException`;
 an undeclared capability throws `BpmnCapabilityException`. A graph that builds is a graph the
 interpreter is willing to run.
 
+#### A cycle must be able to wait
+
+Cycles are executable, but one structural problem is specific to them. If every element on a cycle
+passes a token straight on, a token that enters it is routed around the cycle forever within one
+evaluation, and the evaluation never returns to the host. `Build` refuses such a definition with a
+`BpmnExecutionException` that names the cycle's element ids in flow order, starting where the loop-back
+flow lands.
+
+A cycle can wait when at least one element on it can hold a token:
+
+- any element that binds work, because the token waits for the host: every kind of task, including a
+  call activity, plus a subprocess, a catch event, a message throw event, and an exclusive or inclusive
+  gateway bound to a decision;
+- a join, meaning a parallel or inclusive gateway with more than one incoming flow;
+- a compensate throw event, which holds the token while compensation handlers run;
+- an escalation throw event that an interrupting event subprocess of the same scope catches, because
+  the activation stops every other token in the scope.
+
+Everything else passes the token on: an unbound task, an unbound exclusive or inclusive split, a
+parallel split, and an escalation throw that nothing interrupting catches. That includes one a
+non-interrupting event subprocess catches, which starts the handler on every pass while the throw's own
+token carries on. The check follows only the flows these elements actually take when a token arrives.
+An arriving token reports no outcome, so a conditional flow out of an unbound element is never taken,
+and a cycle closed only by such a flow is not a cycle the token can follow. When a refused cycle has
+such a flow, the refusal names it, because it is usually the way out the modeler meant.
+
+The check reads the built-in behaviors. An interpreter given a registry that replaces one of them
+behaves as that registry says, but `Build` still answers for the built-in behavior, and a host whose
+registry routes differently has no way to override the check yet. The check also judges the cycle on
+its own: it does not credit another branch that might end the scope first, such as a parallel path
+into a terminate end event, and it does not ask whether any token can reach the cycle, so a cycle no
+token can get to is refused too.
+
+The rule refuses only what is certain to circulate. A join, a compensate throw and a multi-instance
+activity hold a token on some runs and not on others: a join the cycle satisfies by itself fires at
+once, a compensate throw with nothing registered completes at once, and a multi-instance activity
+whose collection is empty routes on at once. Cycles through those build, and the propagation limit
+described under [the continuation](#the-continuation) stops a run on which they did not wait.
+
 ### The prior state
 
 `BpmnExecutionState` is the interpreter's entire memory of an instance:
@@ -68,8 +107,9 @@ you last got out for that scope instance.
 Call `Prune()` before persisting. It removes the records that can never influence a future decision —
 consumed tokens no longer referenced by active work, and diagnostics beyond `DiagnosticsCap` (200) —
 so a long-running process does not re-serialize an ever-growing blob. Canceled tokens are never
-pruned: a terminate strips in-flight work while that work may still complete, and the late completion
-is absorbed by the token lookup that the pruned record would have broken.
+pruned: tearing work down drops its record while the work may still report back, and the cancelled
+token carries the torn-down handle that recognizes that late callback (see
+[Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
 against the same starting state and you get byte-identical state, not merely equivalent state.
@@ -121,6 +161,26 @@ What the scope itself should do now.
 left to decide. What you do during that gap — suspend, poll, park a message subscription, hold a
 thread, do nothing — is invisible to it.
 
+One `Fault` comes from the interpreter rather than from the process. A single evaluation dispatches at
+most `BpmnInterpreter.PropagationStepLimit` tokens to element behaviors, which is 10,000; a dispatch is
+one token arriving at one element. An evaluation that reaches the limit without coming to rest answers
+`Fault` with the code `bpmn.propagation.limit` (`BpmnInterpreter.PropagationLimitFaultCode`), and the
+message names the element dispatched last. In practice it means a cycle that could have waited did not
+on this run; see [A cycle must be able to wait](#a-cycle-must-be-able-to-wait). An evaluation that
+comes to rest crosses each sequence flow roughly once per token, so no ordinary process gets near the
+limit.
+
+The limit is a count, not a clock, so where a run stops is deterministic. It is not configurable.
+Reaching it is expensive: every dispatch grows the state the next one copies, so hitting the limit takes
+seconds and returns a state of several megabytes. Read it as a defect report about the definition, not
+as a way to bound a loop.
+
+This `Fault` carries no commands at all. Like every fault it carries no `StartWork`, and unlike every
+other fault it also drops the `SignalEnclosingScope` commands the evaluation raised, recording how many
+in a diagnostic. An escalation throw on the cycle raised one on every pass, so the parent would
+otherwise hear thousands of escalations, and a non-interrupting escalation boundary there would fire
+once per pass.
+
 ### The commands
 
 Exactly three, applied **in the order returned**. Ordering carries meaning: a teardown emitted before
@@ -147,6 +207,11 @@ Every asynchronous thing BPMN can express is this command. A two-hour timer, a h
 message subscription that may never fire, a scope listener armed for the life of a subprocess: all
 `StartWork`. The interpreter does not distinguish them, because the difference is only in how they
 run.
+
+Every `StartWork` you receive is for a token that is still waiting on it when the evaluation returns.
+When the same evaluation stops that token again, the command is withdrawn rather than returned: an
+interrupting event subprocess or a cancel end event reached in the same propagation as a sibling
+branch's task, say. No teardown is issued for withdrawn work either, because you never had it.
 
 #### `CancelWorkSubtree`
 
@@ -176,7 +241,8 @@ boundary. Route it to the immediate parent scope, not the root, and deliver it t
 
 It is the one command a `Fault` continuation may carry. An escalation throw issues its signal as it
 is raised, before the evaluation reaches any verdict, so when the same evaluation then faults, the
-parent still hears the escalation. A scope that has already ended forwards nothing.
+parent still hears the escalation. A scope that has already ended forwards nothing, and a fault at the
+propagation limit drops what it raised; see [the continuation](#the-continuation).
 
 It carries a `Code` and an optional JSON `Payload`. There is exactly one code for escalation —
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity
@@ -204,6 +270,31 @@ This is the only place the library says anything about failure policy, and it sa
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
 is not modeled here, because BPMN does not model it. See
 [Errors and escalation](errors-and-escalation.md).
+
+### Callbacks for work already stopped
+
+A callback can still reach a running scope for work it already tore down: a completion that raced
+the teardown an interruption issued. The scope recognizes it by its handle. Each `CancelWorkSubtree`
+that goes out on a non-fault continuation records its handle on the token it cancelled
+(`BpmnToken.StoppedHandle`, added in payload format 1.1.0). A completion or fault reporting one of
+those handles is absorbed once: it changes nothing in the scope, nothing is issued, and a `Canceled`
+diagnostic records it. The record is then spent, so a second report for the same handle is not
+absorbed. Matching is on the handle alone, never on the binding or the element, because a loop that
+re-enters an element starts a new unit on the same `(binding ref, iteration id)` slot, and an earlier
+pass's late report must neither pass for the later pass's nor stop a later pass's duplicate from
+being caught. That requires a handle to name one unit for the scope's lifetime: never reuse one.
+
+Any other callback is a broken contract rather than a race, and stays loud: a completion throws
+`BpmnExecutionException`, and a fault faults the scope. That covers a second report for work that
+completed normally, a binding no element binds, and work the interpreter withdrew before you ever
+started it, which has no handle to match. A report the snapshot contradicts throws even when a
+record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
+its slot under another handle, that slot belongs to other work. A fault report carries no iteration
+id, so for a fault this check covers only a slot without one: a multi-instance sibling's slot is not
+checked on the fault path. A state an earlier version persisted
+records no handles, so a late callback against it is never absorbed. A late completion throws. A
+late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
+lists its slot under another handle.
 
 ## The one callback
 
@@ -253,6 +344,8 @@ There is deliberately no async path here.
    them that way even where a compiler would let you cheat.
 7. Declare capabilities honestly, and declare the same set to `Build` and to every snapshot. See
    [Host capabilities](capabilities.md).
+8. Never reuse a handle within a scope. A late report for work the scope tore down is recognized by
+   its handle alone.
 
 ## Related
 

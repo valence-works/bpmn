@@ -112,7 +112,8 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Default flow | Supported | Taken only when no conditional flow matched. Declared on both sides: `defaultFlowId` on the element, `isDefault` on the flow. |
 | Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. |
 | Conditional flow, **expression-based** | Degraded | A `<conditionExpression>` is not evaluated; the flow reads as unconditional and the finding quotes the expression. This is a permanent design position, not a gap — see [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). |
-| Cyclic flow (loop-backs) | Supported | A token traversing a backward flow mints a fresh iteration key; join accounting groups arrivals by element *and* iteration, so a revisited join never conflates one pass with the next. |
+| Cyclic flow (loop-backs) | Supported | A token traversing a backward flow mints a fresh iteration key; join accounting groups arrivals by element *and* iteration, so a revisited join never conflates one pass with the next. A cycle through a join, a compensate throw or a multi-instance activity can go around without waiting on some runs, with an empty collection for example; one evaluation stops after 10,000 dispatches and faults with `bpmn.propagation.limit`. |
+| Cyclic flow on which nothing can wait | Not supported | A cycle made only of elements that pass a token straight on (unbound tasks and splits, parallel splits, escalation throws nothing interrupting catches) would circulate forever within one evaluation, so the graph build throws and names the cycle. See [A cycle must be able to wait](../concepts/host-port.md#a-cycle-must-be-able-to-wait). |
 | `association` | Supported | Read to associate a compensation boundary event with its handler. |
 | `textAnnotation`, `group` | Dropped | Reported and dropped; they carry no executable meaning. |
 
@@ -140,7 +141,7 @@ graph-build time.
 | Compensation registration | Supported | A successful completion of an activity carrying a compensation boundary is logged. |
 | Reverse-order replay | Supported | Last registered, first compensated. Entries are never pruned; a claimed entry whose run is torn down before it ran is released back to registered. |
 | Targeted compensation (`activityRef`) | Supported | Compensates only that element's registrations; absent means everything registered in the process. |
-| Transaction subprocess | Supported | Cancel from within stops and tears down other live work, replays compensations, and completes with the `Cancelled` outcome. A transaction that completes `Cancelled` with no cancel boundary attached raises a fault. |
+| Transaction subprocess | Supported | Cancel from within stops other live work, tearing down what is running and withdrawing what the same evaluation was about to start, replays compensations, and completes with the `Cancelled` outcome. A transaction that completes `Cancelled` with no cancel boundary attached raises a fault. |
 
 ## Collaboration
 

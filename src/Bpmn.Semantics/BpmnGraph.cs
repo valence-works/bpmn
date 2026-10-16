@@ -1,4 +1,5 @@
 using Bpmn.Model;
+using Bpmn.Semantics.Behaviors;
 
 namespace Bpmn.Semantics;
 
@@ -8,7 +9,8 @@ namespace Bpmn.Semantics;
 /// event, event and gateway binding rules, a single default flow per element) so the interpreter can navigate
 /// without re-checking, and precomputes the backward (loop-back) flow set so the interpreter can mint
 /// loop-iteration keys. Cyclic graphs are executable; the structural rules still forbid a loop-back into a
-/// start event, a boundary event, or an event-gateway-armed catch.
+/// start event, a boundary event, or an event-gateway-armed catch, and a cycle on which nothing can hold a token
+/// is refused, because a token that entered it would circulate forever without the evaluation returning.
 /// </summary>
 public sealed class BpmnGraph
 {
@@ -82,9 +84,9 @@ public sealed class BpmnGraph
 
     /// <summary>
     /// Validates <paramref name="definition"/> against <paramref name="boundWork"/> and returns the executable
-    /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, and
-    /// <see cref="BpmnCapabilityException"/> when the definition needs a host capability
-    /// <paramref name="capabilities"/> does not declare.
+    /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, including one with
+    /// a cycle that can never wait, and <see cref="BpmnCapabilityException"/> when the definition needs a host
+    /// capability <paramref name="capabilities"/> does not declare.
     /// </summary>
     /// <param name="definition">The process to execute.</param>
     /// <param name="boundWork">
@@ -116,7 +118,9 @@ public sealed class BpmnGraph
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
 
-        return new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
+        var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
+        graph.RefuseCyclesThatCannotWait();
+        return graph;
     }
 
     /// <summary>The element with this id, or throws when the process has none.</summary>
@@ -314,6 +318,173 @@ public sealed class BpmnGraph
         }
     }
 
+    /// <summary>
+    /// Refuses a cycle on which no element can hold a token. A token that enters such a cycle is routed around
+    /// it within one evaluation forever: the interpreter never returns to the host. The refusal names the cycle's
+    /// element ids in flow order, opening at the target of its loop-back flow, the element where each pass
+    /// mints its iteration key.
+    /// <para>
+    /// The rule is deliberately one-sided. A cycle is refused only when every element on it passes the token
+    /// straight on (see <see cref="FlowsTakenWithoutWaiting"/>) along flows it is certain to take. Anything that
+    /// might hold the token, depending on data or on other branches, counts as able to wait, so the cycle builds
+    /// and <see cref="BpmnInterpreter.PropagationStepLimit"/> stops a run on which it did not wait. Refusing a
+    /// definition that would have run is not recoverable by the host; a run stopped by the limit faults loudly.
+    /// </para>
+    /// <para>
+    /// The cycle is judged on its own. Another branch that ends the scope first, such as a parallel path into a
+    /// terminate end event, can cut such a cycle short within the same evaluation, but nothing that happens off
+    /// the cycle makes the cycle itself able to wait, and a model whose termination rests on that race is refused.
+    /// Nor does the check ask whether a token can reach the cycle at all: one no token can get to is refused too.
+    /// </para>
+    /// <para>
+    /// The search runs over the pass-through elements only. Searching the whole graph and testing each cycle it
+    /// happened to close would miss a pass-through cycle whose elements the search first reached through an
+    /// element that waits.
+    /// </para>
+    /// </summary>
+    private void RefuseCyclesThatCannotWait()
+    {
+        var passThrough = new Dictionary<string, IReadOnlyCollection<BpmnSequenceFlow>>(StringComparer.Ordinal);
+        foreach (var element in Elements)
+        {
+            if (FlowsTakenWithoutWaiting(element) is { } taken)
+                passThrough[element.ElementId] = taken;
+        }
+
+        const int gray = 1;
+        const int black = 2;
+        var color = new Dictionary<string, int>(StringComparer.Ordinal);
+        var pathElementIds = new List<string>();
+        var pathFlows = new List<BpmnSequenceFlow>();
+
+        foreach (var root in passThrough.Keys.OrderBy(id => id, StringComparer.Ordinal))
+        {
+            if (!color.ContainsKey(root))
+                Visit(root);
+        }
+
+        void Visit(string elementId)
+        {
+            color[elementId] = gray;
+            pathElementIds.Add(elementId);
+
+            foreach (var flow in passThrough[elementId].OrderBy(flow => flow.FlowId, StringComparer.Ordinal))
+            {
+                // A target that can hold the token ends this path: the cycle through it waits there.
+                if (!passThrough.ContainsKey(flow.TargetRef))
+                    continue;
+
+                var known = color.TryGetValue(flow.TargetRef, out var state) ? state : 0;
+                if (known == gray)
+                    throw CycleThatCannotWait(pathFlows.Skip(pathElementIds.IndexOf(flow.TargetRef)).Append(flow).ToList(), passThrough);
+
+                if (known != black)
+                {
+                    pathFlows.Add(flow);
+                    Visit(flow.TargetRef);
+                    pathFlows.RemoveAt(pathFlows.Count - 1);
+                }
+            }
+
+            pathElementIds.RemoveAt(pathElementIds.Count - 1);
+            color[elementId] = black;
+        }
+    }
+
+    /// <summary>
+    /// The refusal for a cycle, given its flows in order: each flow's target is the next flow's source, and the last
+    /// closes back on the first. It also names every conditional flow an element on the cycle never takes. That flow
+    /// is usually the way out the modeler meant, and it is not taken because the element binds nothing that could
+    /// report the outcome it waits for.
+    /// </summary>
+    private BpmnExecutionException CycleThatCannotWait(List<BpmnSequenceFlow> cycle, IReadOnlyDictionary<string, IReadOnlyCollection<BpmnSequenceFlow>> passThrough)
+    {
+        // Open at the loop entry, so the message reads from where the modeler drew the loop back to. Every cycle
+        // contains a backward flow; the fallback only keeps a defect in that reasoning from hiding the refusal.
+        var backward = cycle.FindIndex(flow => _backwardFlowIds.Contains(flow.FlowId));
+        if (backward >= 0)
+            cycle = cycle.Skip(backward + 1).Concat(cycle.Take(backward + 1)).ToList();
+
+        var elementIds = cycle.Select(flow => flow.SourceRef).ToList();
+        var ignored = elementIds.Select(id => IgnoredConditionalFlows(GetRequiredElement(id), passThrough[id])).Where(clause => clause is not null);
+
+        return new BpmnExecutionException(
+            $"BPMN process '{ProcessId}' has a cycle that can never wait: {string.Join(" -> ", elementIds.Append(elementIds[0]).Select(id => $"'{id}'"))}. "
+            + "Every element on it passes a token straight on in the same evaluation, so a token that enters it circulates forever and the evaluation never returns. "
+            + string.Concat(ignored.Select(clause => clause + " "))
+            + "Put something on the cycle that waits, such as an element that binds work (a task, a catch event, a decision gateway), or route out of it.");
+    }
+
+    /// <summary>The sentence naming the conditional flows <paramref name="element"/> never takes, or <c>null</c> when it takes every one it has.</summary>
+    private string? IgnoredConditionalFlows(BpmnElement element, IReadOnlyCollection<BpmnSequenceFlow> taken)
+    {
+        var ignored = OutboundFlows(element.ElementId)
+            .Where(flow => flow.ConditionOutcome is not null && !taken.Any(candidate => StringComparer.Ordinal.Equals(candidate.FlowId, flow.FlowId)))
+            .Select(flow => $"'{flow.FlowId}'")
+            .ToArray();
+        if (ignored.Length == 0)
+            return null;
+
+        var binds = BpmnElementFamilies.Resolve(element) is BpmnElementFamilies.ExclusiveGateway or BpmnElementFamilies.InclusiveGateway
+            ? "binds no decision"
+            : "binds no work";
+        return ignored.Length == 1
+            ? $"'{element.ElementId}' {binds}, so its conditional flow {ignored[0]} is never taken."
+            : $"'{element.ElementId}' {binds}, so its conditional flows {string.Join(", ", ignored)} are never taken.";
+    }
+
+    /// <summary>
+    /// The sequence flows a token arriving at <paramref name="element"/> is certain to leave on in the same
+    /// evaluation, or <c>null</c> when the element can hold the token. Read from the built-in behaviors and the
+    /// interpreter's dispatch: a registry that replaces a built-in behavior changes what the interpreter does, but
+    /// not this answer. A host whose registry routes differently has no way to override the check yet; the
+    /// propagation limit still covers what the check lets through.
+    /// <list type="bullet">
+    /// <item>An element that binds work starts it, and the token waits for the host: every task including call
+    /// activities, subprocesses, catch events, message throw events, and an exclusive or inclusive gateway bound
+    /// to a decision. A multi-instance activity counts too, although an empty collection routes it on at once:
+    /// that depends on data.</item>
+    /// <item>A join, a parallel or inclusive gateway with more than one inbound flow, parks the token until it is
+    /// ready. Whether a cycle through a join satisfies the join by itself is not worked out here; every join
+    /// counts as able to wait.</item>
+    /// <item>A compensate throw event parks the token while handlers run, whenever anything is registered for it
+    /// to compensate.</item>
+    /// <item>An escalation throw event caught by an interrupting event subprocess of this scope stops every other
+    /// token in the scope, its own successor included.</item>
+    /// </list>
+    /// Everything else passes the token on. An unbound task, an unbound inclusive split, and any other escalation
+    /// throw take their unconditional flows, else the default flow; an arriving token reports no outcome, so a
+    /// conditional flow is never taken. An unbound exclusive gateway takes its only flow, else its default. A
+    /// parallel split and an event-based gateway take every flow, and the event-based gateway's targets are catch
+    /// events, which wait. An element left with no flow to take ends the token or faults, so it is on no cycle.
+    /// </summary>
+    private IReadOnlyCollection<BpmnSequenceFlow>? FlowsTakenWithoutWaiting(BpmnElement element)
+    {
+        if (element.BindingRef is not null || BpmnTokenCoordinator.ShouldWaitAtJoin(this, element.ElementId))
+            return null;
+
+        var outbound = OutboundFlows(element.ElementId);
+        switch (BpmnElementFamilies.Resolve(element))
+        {
+            case BpmnElementFamilies.ParallelGateway:
+            case BpmnElementFamilies.EventBasedGateway:
+                return outbound;
+            case BpmnElementFamilies.ExclusiveGateway:
+                return outbound.Count == 1 ? outbound : BpmnFlowSelector.ResolveDefaultFlow(element, outbound) is { } defaultFlow ? [defaultFlow] : [];
+            case BpmnElementFamilies.Task:
+            case BpmnElementFamilies.InclusiveGateway:
+                return BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
+            case BpmnElementFamilies.IntermediateThrowEventEscalation:
+                // Validation already refused a throw without a code; without one, nothing in the scope could catch it.
+                return ReadEscalationCode(element) is { } code && EscalationEventSubprocess(code) is { Interrupting: true }
+                    ? null
+                    : BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
+            default:
+                // Start, end and boundary events, which are on no cycle, and the compensate throw event.
+                return null;
+        }
+    }
+
     private static IReadOnlyList<BpmnEventSubprocessCatcher> Validate(
         IReadOnlyCollection<BpmnElement> elements,
         IReadOnlyCollection<BpmnSequenceFlow> flows,
@@ -450,7 +621,8 @@ public sealed class BpmnGraph
         // Cyclic sequence flows are executable: loop-back edges become loop-iteration keys. The
         // structural rules above still constrain where a loop-back may land — a loop-back into a start event
         // (no inbound), a boundary event (no inbound), or an event-gateway-armed catch (exactly-one-inbound)
-        // is rejected by those rules — so no acyclicity check remains.
+        // is rejected by those rules — so no acyclicity check remains. What a cycle must still be able to do is
+        // wait, and that needs the built graph: see RefuseCyclesThatCannotWait.
 
         return eventSubprocesses;
     }
