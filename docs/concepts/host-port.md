@@ -107,8 +107,9 @@ you last got out for that scope instance.
 Call `Prune()` before persisting. It removes the records that can never influence a future decision —
 consumed tokens no longer referenced by active work, and diagnostics beyond `DiagnosticsCap` (200) —
 so a long-running process does not re-serialize an ever-growing blob. Canceled tokens are never
-pruned: a terminate strips in-flight work while that work may still complete, and the late completion
-is absorbed by the token lookup that the pruned record would have broken.
+pruned: tearing work down drops its record while the work may still report back, and the cancelled
+token carries the torn-down handle that recognizes that late callback (see
+[Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
 against the same starting state and you get byte-identical state, not merely equivalent state.
@@ -207,6 +208,11 @@ message subscription that may never fire, a scope listener armed for the life of
 `StartWork`. The interpreter does not distinguish them, because the difference is only in how they
 run.
 
+Every `StartWork` you receive is for a token that is still waiting on it when the evaluation returns.
+When the same evaluation stops that token again, the command is withdrawn rather than returned: an
+interrupting event subprocess or a cancel end event reached in the same propagation as a sibling
+branch's task, say. No teardown is issued for withdrawn work either, because you never had it.
+
 #### `CancelWorkSubtree`
 
 Stop a unit of work **and everything started underneath it**. The name is exact. An interrupting
@@ -265,6 +271,31 @@ BPMN did. Whether a propagated fault is an incident, whether it is retried, whet
 is not modeled here, because BPMN does not model it. See
 [Errors and escalation](errors-and-escalation.md).
 
+### Callbacks for work already stopped
+
+A callback can still reach a running scope for work it already tore down: a completion that raced
+the teardown an interruption issued. The scope recognizes it by its handle. Each `CancelWorkSubtree`
+that goes out on a non-fault continuation records its handle on the token it cancelled
+(`BpmnToken.StoppedHandle`, added in payload format 1.1.0). A completion or fault reporting one of
+those handles is absorbed once: it changes nothing in the scope, nothing is issued, and a `Canceled`
+diagnostic records it. The record is then spent, so a second report for the same handle is not
+absorbed. Matching is on the handle alone, never on the binding or the element, because a loop that
+re-enters an element starts a new unit on the same `(binding ref, iteration id)` slot, and an earlier
+pass's late report must neither pass for the later pass's nor stop a later pass's duplicate from
+being caught. That requires a handle to name one unit for the scope's lifetime: never reuse one.
+
+Any other callback is a broken contract rather than a race, and stays loud: a completion throws
+`BpmnExecutionException`, and a fault faults the scope. That covers a second report for work that
+completed normally, a binding no element binds, and work the interpreter withdrew before you ever
+started it, which has no handle to match. A report the snapshot contradicts throws even when a
+record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
+its slot under another handle, that slot belongs to other work. A fault report carries no iteration
+id, so for a fault this check covers only a slot without one: a multi-instance sibling's slot is not
+checked on the fault path. A state an earlier version persisted
+records no handles, so a late callback against it is never absorbed. A late completion throws. A
+late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
+lists its slot under another handle.
+
 ## The one callback
 
 `IBpmnVariableReader` lets the interpreter pull a named variable mid-evaluation.
@@ -313,6 +344,8 @@ There is deliberately no async path here.
    them that way even where a compiler would let you cheat.
 7. Declare capabilities honestly, and declare the same set to `Build` and to every snapshot. See
    [Host capabilities](capabilities.md).
+8. Never reuse a handle within a scope. A late report for work the scope tore down is recognized by
+   its handle alone.
 
 ## Related
 

@@ -6,9 +6,9 @@ namespace Bpmn.Semantics;
 /// One running unit of work to tear down: a losing event-based-gateway branch, an interrupted boundary
 /// host, a retired listener, the work a cancelled transaction abandons. Carried — on the evaluation result,
 /// or on the evaluation context when the result cannot reach the caller — and issued only on a non-fault
-/// continuation.
+/// continuation, which is also when <paramref name="TokenId"/>'s token records the handle as stopped.
 /// </summary>
-internal sealed record PendingTeardown(string Handle, string ElementId, string Reason);
+internal sealed record PendingTeardown(string Handle, string ElementId, string Reason, string TokenId);
 
 /// <summary>
 /// The mutable scratch space of one interpreter evaluation: the graph and host snapshot it reads, and the
@@ -53,6 +53,25 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
         var withdrawn = _commands.OfType<BpmnHostCommand.StartWork>().ToArray();
         _commands.RemoveAll(command => command is BpmnHostCommand.StartWork);
         StartedWork = false;
+        return withdrawn;
+    }
+
+    /// <summary>
+    /// Withdraws the <see cref="BpmnHostCommand.StartWork"/> this evaluation issued for <paramref name="tokenId"/>,
+    /// if it issued one, keeps every other command where it was, and returns what was withdrawn. A token is started
+    /// at most once, so there is at most one. Called when the same evaluation cancels that token: the host has not
+    /// seen the command yet, so the work is never started rather than started with no token waiting for it.
+    /// </summary>
+    public BpmnHostCommand.StartWork? WithdrawStartedWorkFor(string tokenId)
+    {
+        var index = _commands.FindIndex(command =>
+            command is BpmnHostCommand.StartWork start && StringComparer.Ordinal.Equals(start.TokenId, tokenId));
+        if (index < 0)
+            return null;
+
+        var withdrawn = (BpmnHostCommand.StartWork)_commands[index];
+        _commands.RemoveAt(index);
+        StartedWork = _commands.Exists(command => command is BpmnHostCommand.StartWork);
         return withdrawn;
     }
 

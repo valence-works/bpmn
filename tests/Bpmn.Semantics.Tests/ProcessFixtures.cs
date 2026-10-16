@@ -352,6 +352,149 @@ public static class ProcessFixtures
     }
 
     /// <summary>
+    /// A parallel split into a long-running task and an escalation throw that the scope's own event subprocess
+    /// catches. The split emits the task first, so its work is activated earlier in the same evaluation in which
+    /// the escalation is caught. An <paramref name="interrupting"/> catcher stops that task again before the host
+    /// has seen it; a non-interrupting one leaves it running alongside the handler.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) SplitIntoWorkAndOwnScopeEscalation(
+        bool interrupting = true,
+        string code = "overdue")
+    {
+        var body = new BpmnProcessBuilder("on-overdue")
+            .Element(new BpmnElement("HandlerStart", BpmnElementTypes.StartEvent, cancelActivity: interrupting, eventDefinitions: [Escalation(code)]))
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("HandlerEnd")
+            .ConnectSequence("HandlerStart", "Handle", "HandlerEnd")
+            .Build();
+
+        var parent = new BpmnProcessBuilder("split-escalate")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .Task("LongRunning", bindingRef: "long-running")
+            .EndEvent("EndWorked")
+            .IntermediateThrowEvent("Escalate", Escalation(code))
+            .EndEvent("EndEscalated")
+            .SubProcess("OnOverdue", bindingRef: "on-overdue", triggeredByEvent: true)
+            .Connect("Start", "Split")
+            .Connect("Split", "LongRunning")
+            .Connect("Split", "Escalate")
+            .ConnectSequence("LongRunning", "EndWorked")
+            .ConnectSequence("Escalate", "EndEscalated")
+            .Build();
+
+        return (parent, body);
+    }
+
+    /// <summary>
+    /// A transaction whose body splits into an audit task and a cancel end event, emitted in that order, so the
+    /// cancel end event is reached in the same evaluation that activated the audit's work. With
+    /// <paramref name="compensateFirst"/> the body first runs <c>Reserve</c>, which registers for compensation, so
+    /// the cancel also starts a replay in that evaluation; without it there is nothing to replay and the
+    /// transaction ends at once.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) TransactionCancelledBesideWorkItJustStarted(bool compensateFirst)
+    {
+        var body = new BpmnProcessBuilder("booking")
+            .Transaction()
+            .StartEvent("BodyStart")
+            .ParallelGateway("Split")
+            .Task("Audit", bindingRef: "audit")
+            .EndEvent("EndAudited")
+            .EndEvent("CancelEnd", null, new BpmnEventDefinition(BpmnEventDefinitionTypes.Cancel))
+            .Connect("Split", "Audit")
+            .Connect("Split", "CancelEnd")
+            .Connect("Audit", "EndAudited");
+
+        if (compensateFirst)
+        {
+            body.Task("Reserve", bindingRef: "reserve").ConnectSequence("BodyStart", "Reserve", "Split");
+            CompensateReserve(body);
+        }
+        else
+        {
+            body.Connect("BodyStart", "Split");
+        }
+
+        return (CancellableTransactionParent(), body.Build());
+    }
+
+    /// <summary>
+    /// A task whose interrupting message boundary forks back into the same task and into an escalation throw that
+    /// the scope's own interrupting event subprocess catches. Firing the boundary tears the running task down and
+    /// re-enters it, starting new work on the very (binding ref, iteration id) slot the torn-down unit still holds
+    /// in the host's snapshot; the escalation, caught in the same propagation, then stops that new work again.
+    /// </summary>
+    public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) InterruptedTaskReenteredAndEscalated(string code = "overdue")
+    {
+        var body = new BpmnProcessBuilder("on-overdue")
+            .StartEvent("HandlerStart", null, Escalation(code))
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("HandlerEnd")
+            .ConnectSequence("HandlerStart", "Handle", "HandlerEnd")
+            .Build();
+
+        var parent = new BpmnProcessBuilder("reenter-escalate")
+            .StartEvent("Start")
+            .Task("Work", bindingRef: "work")
+            .EndEvent("End")
+            .BoundaryEvent("Interrupt", "Work", Message("interrupt"), interrupting: true, bindingRef: "interrupt")
+            .ParallelGateway("Fork")
+            .IntermediateThrowEvent("Escalate", Escalation(code))
+            .EndEvent("EndEscalated")
+            .SubProcess("OnOverdue", bindingRef: "on-overdue", triggeredByEvent: true)
+            .ConnectSequence("Start", "Work", "End")
+            .Connect("Interrupt", "Fork")
+            .Connect("Fork", "Work")
+            .Connect("Fork", "Escalate")
+            .Connect("Escalate", "EndEscalated")
+            .Build();
+
+        return (parent, body);
+    }
+
+    /// <summary>
+    /// A task retried by its own interrupting timer boundary, beside a second branch that keeps the scope running.
+    /// The boundary routes back to a merge ahead of the task, so every timeout tears one pass's unit down and starts
+    /// the next pass on the very same (binding ref, iteration id) slot under a new handle. With
+    /// <paramref name="otherTerminates"/> the second branch ends in a terminate end event.
+    /// </summary>
+    public static BpmnProcessDefinition RetriedOnTimeout(bool otherTerminates = false) =>
+        new BpmnProcessBuilder("retried-on-timeout")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .ExclusiveGateway("Retry")
+            .Task("Long", bindingRef: "long")
+            .EndEvent("EndLong")
+            .BoundaryEvent("Timeout", "Long", Timer("PT1M"), interrupting: true, bindingRef: "timeout")
+            .Task("Other", bindingRef: "other")
+            .EndEvent("EndOther", null, otherTerminates ? [Terminate()] : [])
+            .Connect("Start", "Split")
+            .Connect("Split", "Retry")
+            .Connect("Split", "Other")
+            .ConnectSequence("Retry", "Long", "EndLong")
+            .Connect("Timeout", "Retry")
+            .Connect("Other", "EndOther")
+            .Build();
+
+    /// <summary>
+    /// A parallel multi-instance task under an interrupting message boundary, which tears every live instance down
+    /// when it fires. The boundary path waits on a cleanup task, so the scope is still running afterwards.
+    /// </summary>
+    public static BpmnProcessDefinition InterruptibleParallelMultiInstance(int cardinality = 2) =>
+        new BpmnProcessBuilder("interruptible-multi-instance")
+            .StartEvent("Start")
+            .Task(BpmnElementTypes.Task, "Review", bindingRef: "review",
+                loopCharacteristics: new BpmnLoopCharacteristics(isSequential: false, cardinality: cardinality))
+            .EndEvent("End")
+            .BoundaryEvent("Stop", "Review", Message("stop"), interrupting: true, bindingRef: "stop")
+            .Task("Cleanup", bindingRef: "cleanup")
+            .EndEvent("EndStopped")
+            .ConnectSequence("Start", "Review", "End")
+            .ConnectSequence("Stop", "Cleanup", "EndStopped")
+            .Build();
+
+    /// <summary>
     /// A parallel split into two waiting tasks and a terminate end event. The order the split emits its branches
     /// decides whether the tasks' work is activated earlier in the same evaluation that then terminates
     /// (<paramref name="workFirst"/>), or whether the terminate cancels their tokens before they reach a task.

@@ -326,6 +326,12 @@ public sealed class BpmnInterpreter
     /// interception ladder (multi-instance instance, compensation handler, cancelled transaction, event
     /// subprocess, call activity failure, event-based-gateway race, boundary-event teardown), then dispatches
     /// the element's behavior and propagates.
+    /// <para>
+    /// A completion whose handle names work this scope already tore down is a late callback, absorbed once with a
+    /// <see cref="BpmnDiagnosticKind.Canceled"/> diagnostic. A completion the snapshot contradicts, because it
+    /// still lists the same (binding ref, iteration id) under another handle, or one no work record matches,
+    /// throws <see cref="BpmnExecutionException"/>.
+    /// </para>
     /// </summary>
     public BpmnEvaluation OnWorkCompleted(BpmnWorkCompletedRequest request)
     {
@@ -339,6 +345,11 @@ public sealed class BpmnInterpreter
         if (AbsorbIntoEndedScope(context, graph, state, completionContext.CompletedBindingRef,
                 $"completion of work '{completionContext.CompletedBindingRef}'") is { } absorbedCompletion)
             return absorbedCompletion;
+
+        if (AbsorbStoppedWork(state, completionContext.CompletedHandle, $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
+            return FinishEvaluation(context, lateCompletion);
+
+        ThrowIfAnotherUnitHoldsTheSlot(context, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, completionContext.CompletedHandle, "completed work");
 
         var tokenId = ResolveTokenId(context, state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
         state = RemoveActiveWork(state, tokenId);
@@ -432,7 +443,7 @@ public sealed class BpmnInterpreter
         var race = state.Races.FirstOrDefault(candidate => !candidate.Resolved && candidate.MemberTokenIds.Contains(token.TokenId, StringComparer.Ordinal));
         if (race is not null)
         {
-            state = ResolveEventRace(state, race, token.TokenId, liveWorkHandles, pendingCancellations);
+            state = ResolveEventRace(context, state, race, token.TokenId, liveWorkHandles, pendingCancellations);
             token = GetRequiredToken(state, token.TokenId);
         }
 
@@ -440,7 +451,7 @@ public sealed class BpmnInterpreter
         // behavior — a host completion tears down its live listeners, an interrupting listener tears down its
         // host and sibling listeners, a non-interrupting listener leaves both untouched. Purely logical here;
         // the teardowns are carried and issued only on a non-fault continuation.
-        state = ApplyBoundaryCompletionSemantics(graph, state, token, liveWorkHandles, pendingCancellations);
+        state = ApplyBoundaryCompletionSemantics(context, graph, state, token, liveWorkHandles, pendingCancellations);
 
         var element = graph.GetRequiredElement(token.AtElementId);
         var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
@@ -493,12 +504,24 @@ public sealed class BpmnInterpreter
     /// — and any downstream join that requires it — can no longer proceed, and the process faults
     /// deterministically.
     /// </para>
+    /// <para>
+    /// A fault whose handle names work this scope already tore down is absorbed instead, as a late completion is:
+    /// stopping that work was already decided. One the snapshot contradicts throws, as a completion does.
+    /// </para>
     /// </summary>
     public BpmnFaultEvaluation OnWorkFaulted(BpmnWorkFaultedRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var context = new BpmnEvaluationContext(request.Graph, request.Host);
+
+        // A scope that already holds its verdict absorbs the fault before anything else looks at it, exactly as a
+        // completion is absorbed: the snapshot of a terminated scope can still list work it is tearing down, and
+        // checking the fault against that would refuse a report the completion path accepts.
+        if (AbsorbIntoEndedScope(context, request.Graph, request.PriorState ?? new BpmnExecutionState(), request.FaultedBindingRef,
+                $"fault of work '{request.FaultedBindingRef}'") is { } absorbed)
+            return new BpmnFaultEvaluation(absorbed.State, absorbed.Continuation, absorbed.Commands, BpmnErrorDisposition.Propagated.Instance);
+
         var result = EvaluateWorkFaulted(context, request);
         var evaluation = FinishEvaluation(context, result);
 
@@ -518,6 +541,14 @@ public sealed class BpmnInterpreter
         var state = request.PriorState ?? new BpmnExecutionState();
 
         var faultedBindingRef = request.FaultedBindingRef;
+        if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
+            return lateFault;
+
+        // A fault report carries no iteration id here (BpmnWorkFaultedRequest has none), so this checks only the
+        // binding's slot without an iteration: a multi-instance sibling's slot is not checked on the fault path.
+        // #32 adds FaultedIterationId and checks the resolved record's own slot instead, which closes this.
+        ThrowIfAnotherUnitHoldsTheSlot(context, faultedBindingRef, iterationId: null, request.FaultedHandle, "faulted work");
+
         var faultedTokenId = context.Host.InvocationCorrelation.TryGetValue(TokenIdCorrelationKey, out var correlatedTokenId) && !string.IsNullOrWhiteSpace(correlatedTokenId)
             ? correlatedTokenId
             : null;
@@ -526,18 +557,18 @@ public sealed class BpmnInterpreter
             : state.ActiveWork.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.NodeId, faultedBindingRef));
 
         // A late fault of work whose token was already cancelled — a sibling multi-instance instance torn down
-        // by a catcher or a boundary interrupt, say — or a fault after the process ended, is absorbed by the
-        // token-status guard: the teardown already rode the interrupting evaluation, so the process must not
-        // fault a second time. This mirrors the completion path's cancelled-token guard.
+        // by a catcher or a boundary interrupt, say — is absorbed by the token-status guard: the teardown already
+        // rode the interrupting evaluation, so the process must not fault a second time. This mirrors the
+        // completion path's cancelled-token guard. A fault after the process ended was absorbed on entry.
         var faultedToken = faultedTokenId is not null
             ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedTokenId))
             : null;
-        if (state.Terminated || faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
+        if (faultedToken is { Status: BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled })
         {
             if (faultedWork is not null)
                 state = RemoveActiveWork(state, faultedWork.TokenId);
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, faultedWork?.ElementId, null, faultedToken?.TokenId,
-                $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled or the process ended.");
+                $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled.");
             return new EvaluationResult(state);
         }
 
@@ -603,9 +634,9 @@ public sealed class BpmnInterpreter
 
         // Cancel the interrupt target (a coordinator cascades to all live instances; a plain host token is a
         // pure token flip, its work record having just been dropped) and its still-armed sibling catch listeners.
-        state = CancelTokenAndWork(state, interruptTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
+        state = CancelTokenAndWork(context, state, interruptTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
             (token, reason) => $"BPMN error boundary '{errorBoundary.ElementId}' caught a work fault of host '{faultedToken.AtElementId}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-        state = CancelHostListeners(graph, state, interruptTokenId, listenerTokenToSkip: null, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
 
         // Mint an active token at the error boundary so its behavior routes the error path; it inherits the
         // interrupt target's loop-iteration key.
@@ -718,9 +749,9 @@ public sealed class BpmnInterpreter
         // Ladder tier 1: a host-attached error boundary fires — mint a token to route its outbound flows.
         if (graph.AttachedErrorBoundary(element.ElementId) is { } errorBoundary)
         {
-            state = CancelTokenAndWork(state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
                 (token, reason) => $"BPMN error boundary '{errorBoundary.ElementId}' routed a call-activity '{failureOutcome}' outcome of host '{element.ElementId}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-            state = CancelHostListeners(graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
+            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
 
             var errorToken = NewToken(state, errorBoundary.ElementId, flowId: null, parentTokenId: interruptTokenId, BpmnTokenStatus.Active, producingWorkHandle: completedHandle, iterationKey: interruptIterationKey);
             state = AddToken(state, errorToken);
@@ -745,9 +776,9 @@ public sealed class BpmnInterpreter
         // Ladder tier 3: no catcher — the process faults deterministically with the per-outcome fault code.
         // Consume the interrupt target (coordinator cascade or host token) and its listeners; a fault continuation
         // discards the carried teardowns, because the whole process is going down.
-        state = CancelTokenAndWork(state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
+        state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
             (token, reason) => $"BPMN call activity '{element.ElementId}' faulted and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-        state = CancelHostListeners(graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
 
         var faultCode = failureOutcome switch
         {
@@ -831,7 +862,7 @@ public sealed class BpmnInterpreter
 
         // Interrupting: stop all OTHER live work in the scope, keeping the activation token alive as the scope's work.
         if (catcher.Interrupting)
-            state = StopOtherLiveWork(state, activationToken.TokenId, EventSubprocessScopeInterruptedReason, liveWorkHandles, pendingCancellations,
+            state = StopOtherLiveWork(context, state, activationToken.TokenId, EventSubprocessScopeInterruptedReason, liveWorkHandles, pendingCancellations,
                 (stoppedToken, reason) => $"BPMN event subprocess '{catcher.ElementId}' interrupted the scope and cancelled token '{stoppedToken.TokenId}' at '{stoppedToken.AtElementId}' ({reason}).").State;
 
         state = StartWork(context, state, catcher.BindingRef, catcher.ElementId, activationToken.TokenId,
@@ -1137,9 +1168,9 @@ public sealed class BpmnInterpreter
         if (interruptTokenId is not null)
         {
             var liveWorkHandles = BuildLiveWorkHandles(context);
-            state = CancelTokenAndWork(state, interruptTokenId, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, interruptTokenId, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations,
                 (token, reason) => $"BPMN interrupting escalation boundary '{boundary.ElementId}' matched code '{escalationCode}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-            state = CancelHostListeners(graph, state, interruptTokenId, listenerTokenToSkip: null, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations);
+            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations);
         }
 
         var iterationKey = hostToken?.IterationKey;
@@ -1243,7 +1274,7 @@ public sealed class BpmnInterpreter
 
         // Retire the host's still-armed catch listeners (the host-completion teardown, reused), then consume the
         // host token: no compensable is registered (the nested scope compensated itself) and nothing is routed.
-        state = CancelHostListeners(graph, state, hostToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, hostToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
         state = UpdateToken(state, hostToken with { Status = BpmnTokenStatus.Consumed });
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.TransactionCancelled, hostElement.ElementId, null, hostToken.TokenId,
             $"BPMN transaction '{hostElement.ElementId}' completed with the '{CancelledOutcomeName}' outcome; routing the cancellation path.");
@@ -1474,7 +1505,7 @@ public sealed class BpmnInterpreter
         // Last instance: the loop is done — the coordinator "completes" and routes.
         state = RemoveLoop(state, loop.LoopId);
         var coordinator = GetRequiredToken(state, loop.TokenId);
-        state = ApplyBoundaryCompletionSemantics(graph, state, coordinator, liveWorkHandles, pendingCancellations);
+        state = ApplyBoundaryCompletionSemantics(context, graph, state, coordinator, liveWorkHandles, pendingCancellations);
 
         var result = RouteMultiInstanceCoordinatorOutbound(context, graph, state, graph.GetRequiredElement(loop.ElementId), coordinator, completedHandle);
         return result with { PendingTeardowns = pendingCancellations };
@@ -1753,7 +1784,8 @@ public sealed class BpmnInterpreter
         // Activate the own-scope event subprocess now that the throw's routing command has run. An interrupting
         // activation stops all OTHER live work in the scope and tears it down on the host: the interruption is
         // real, and work nothing will ever complete on its own — a human task, a message subscription — would
-        // otherwise be held by the host for the rest of the scope's life.
+        // otherwise be held by the host for the rest of the scope's life. Work this same propagation started
+        // earlier, a sibling branch's task say, has not reached the host yet and is withdrawn instead.
         if (ownScopeActivation is { } catcher)
         {
             var ownScopeCancellations = new List<PendingTeardown>();
@@ -1892,12 +1924,13 @@ public sealed class BpmnInterpreter
     {
         // Step 1: stop all OTHER live work. The cancel-end token stays live as the coming replay's coordinator;
         // every other live token is cancelled, cascading loop, race, and compensation-run teardown, and the work
-        // behind it is torn down on the host. The teardown is not optional here: step 2 re-claims the compensables
-        // an in-flight run just released and restarts its head handler on the same (binding ref, iteration id)
-        // slot, so leaving the old unit live would put two of them in one slot. The stop-others loop is shared
-        // with an interrupting event-subprocess activation.
+        // behind it is torn down on the host. Work this same propagation started, on a branch a split emitted
+        // ahead of the cancel end event, has not reached the host and is withdrawn instead. The teardown is not
+        // optional here: step 2 re-claims the compensables an in-flight run just released and restarts its head
+        // handler on the same (binding ref, iteration id) slot, so leaving the old unit live would put two of them
+        // in one slot. The stop-others loop is shared with an interrupting event-subprocess activation.
         var pendingCancellations = new List<PendingTeardown>();
-        var (stoppedState, stoppedCount) = StopOtherLiveWork(state, cancelEndToken.TokenId, TransactionCancelledStopReason, BuildLiveWorkHandles(context), pendingCancellations,
+        var (stoppedState, stoppedCount) = StopOtherLiveWork(context, state, cancelEndToken.TokenId, TransactionCancelledStopReason, BuildLiveWorkHandles(context), pendingCancellations,
             (token, reason) => $"BPMN cancel end event '{cancelEndElement.ElementId}' stopped live token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
         state = stoppedState;
 
@@ -2074,6 +2107,12 @@ public sealed class BpmnInterpreter
     /// verdict is then answered at once.
     /// </para>
     /// <para>
+    /// A stop that leaves the scope running withdraws the same way, one token at a time, as
+    /// <see cref="CancelTokenAndWork"/> cancels each token whose work this evaluation started. So no continuation
+    /// ever carries a StartWork for a token that is no longer waiting on it, and a clean completion reached because
+    /// a cancel end event stopped everything carries none at all.
+    /// </para>
+    /// <para>
     /// A terminate also tears down every unit of work the host still reports live in the scope. A fault does
     /// not: it is a verdict, not a command (ADR 0003), and stopping the work a faulted scope leaves running is
     /// the host's half of the fault.
@@ -2150,7 +2189,7 @@ public sealed class BpmnInterpreter
                 foreach (var listenerTokenId in liveListenerTokenIds)
                 {
                     var listenerElementId = GetRequiredToken(state, listenerTokenId).AtElementId;
-                    state = CancelTokenAndWork(state, listenerTokenId, EventSubprocessListenerSupersededByCompletionReason, liveWorkHandles, pending,
+                    state = CancelTokenAndWork(context, state, listenerTokenId, EventSubprocessListenerSupersededByCompletionReason, liveWorkHandles, pending,
                         (token, reason) => $"BPMN scope listener token '{token.TokenId}' at '{token.AtElementId}' was retired because the scope completed ({reason}).");
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ScopeListenerRetired, listenerElementId, null, listenerTokenId,
                         $"BPMN event subprocess '{listenerElementId}' scope listener '{listenerTokenId}' was retired when the scope completed.");
@@ -2159,7 +2198,7 @@ public sealed class BpmnInterpreter
             }
 
             // Clean completion: the carried teardowns may now be issued.
-            IssueCarriedCommands(context, result);
+            state = RecordStoppedWork(state, IssueCarriedCommands(context, result));
             // a cancelled transaction completes with the distinguishable Cancelled outcome (parent maps it
             // to the cancel boundary event) rather than Done.
             var outcomeName = state.Cancelling ? CancelledOutcomeName : DoneOutcomeName;
@@ -2184,7 +2223,7 @@ public sealed class BpmnInterpreter
         }
 
         // Clean deferral: the carried teardowns may now be issued.
-        IssueCarriedCommands(context, result);
+        state = RecordStoppedWork(state, IssueCarriedCommands(context, result));
         return Evaluated(context, state, BpmnContinuation.Defer.Instance);
     }
 
@@ -2196,6 +2235,7 @@ public sealed class BpmnInterpreter
     /// its late completion. Purely logical — no command is issued here.
     /// </summary>
     private static BpmnExecutionState ResolveEventRace(
+        BpmnEvaluationContext context,
         BpmnExecutionState state,
         BpmnEventRace race,
         string winnerTokenId,
@@ -2203,7 +2243,7 @@ public sealed class BpmnInterpreter
         List<PendingTeardown> pendingCancellations)
     {
         foreach (var loserTokenId in race.MemberTokenIds.Where(id => !StringComparer.Ordinal.Equals(id, winnerTokenId)))
-            state = CancelTokenAndWork(state, loserTokenId, EventGatewayRaceCancellationReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, loserTokenId, EventGatewayRaceCancellationReason, liveWorkHandles, pendingCancellations,
                 (token, reason) => $"BPMN event-based gateway '{race.GatewayElementId}' cancelled losing race member token '{token.TokenId}' at '{token.AtElementId}' after the first catch won.");
 
         return MarkRaceResolved(state, race.RaceId);
@@ -2217,6 +2257,7 @@ public sealed class BpmnInterpreter
     /// to <paramref name="pendingCancellations"/> for issuing on a non-fault continuation.
     /// </summary>
     private static BpmnExecutionState ApplyBoundaryCompletionSemantics(
+        BpmnEvaluationContext context,
         BpmnGraph graph,
         BpmnExecutionState state,
         BpmnToken completingToken,
@@ -2236,9 +2277,9 @@ public sealed class BpmnInterpreter
                 return state; // the host already routed/was cancelled — nothing to interrupt.
 
             // Cancel the host token and its bound work, then the host's other listeners (skip the firing one).
-            state = CancelTokenAndWork(state, hostTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, hostTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
                 (token, reason) => $"BPMN interrupting boundary '{completingElement.ElementId}' cancelled host token '{token.TokenId}' at '{token.AtElementId}'.");
-            return CancelHostListeners(graph, state, hostTokenId, listenerTokenToSkip: completingToken.TokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
+            return CancelHostListeners(context, graph, state, hostTokenId, listenerTokenToSkip: completingToken.TokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
         }
 
         // Case B — the completing token is a boundary host.
@@ -2257,7 +2298,7 @@ public sealed class BpmnInterpreter
         if (graph.AttachedCatchBoundaries(completingElement.ElementId).Count == 0)
             return state;
 
-        return CancelHostListeners(graph, state, completingToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
+        return CancelHostListeners(context, graph, state, completingToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
     }
 
     /// <summary>Arms the host's catch boundaries: one <c>AwaitingChild</c> listener token per catch boundary, parented to the host token, each starting its listener work. Error boundaries arm nothing.</summary>
@@ -2289,6 +2330,7 @@ public sealed class BpmnInterpreter
 
     /// <summary>Cancels the still-armed catch listeners parented to <paramref name="hostTokenId"/> (optionally skipping the one that just fired), carrying each live listener's teardown.</summary>
     private static BpmnExecutionState CancelHostListeners(
+        BpmnEvaluationContext context,
         BpmnGraph graph,
         BpmnExecutionState state,
         string hostTokenId,
@@ -2306,7 +2348,7 @@ public sealed class BpmnInterpreter
             .ToArray();
 
         foreach (var listenerTokenId in listenerTokenIds)
-            state = CancelTokenAndWork(state, listenerTokenId, reason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, listenerTokenId, reason, liveWorkHandles, pendingCancellations,
                 (token, cancellationReason) => $"BPMN boundary listener token '{token.TokenId}' at '{token.AtElementId}' was cancelled ({cancellationReason}).");
 
         return state;
@@ -2318,9 +2360,21 @@ public sealed class BpmnInterpreter
     /// A token that is already terminal, or whose work is not live, is a benign skip. When the token is a
     /// multi-instance loop coordinator, its live instance sub-tokens cascade-cancel first (their work resolved
     /// by binding ref and iteration id) and the loop record is dropped, so cancelling a multi-instance host
-    /// cancels all of its live instances. Shared by the event-based-gateway race and the boundary teardown.
+    /// cancels all of its live instances. Every path that stops individual tokens comes through here: an
+    /// event-based-gateway race, a boundary or error catch interrupting its host, an interrupting event
+    /// subprocess, a cancel end event, a completing scope retiring its listeners.
+    /// <para>
+    /// When this same evaluation issued the token's <see cref="BpmnHostCommand.StartWork"/>, the work is
+    /// withdrawn instead of torn down. The host has not seen the command, so withdrawing it means the work is
+    /// never started; leaving it would start work no token waits for, whose completion could then resolve to
+    /// nothing. Such work has no handle yet, so no teardown is carried for it either: the snapshot can only hold
+    /// a <i>different</i> unit on the same (binding ref, iteration id) slot — an older one the same evaluation
+    /// already tore down when it re-entered the element, say — and naming that one again would tear it down a
+    /// second time, under the wrong reason.
+    /// </para>
     /// </summary>
     private static BpmnExecutionState CancelTokenAndWork(
+        BpmnEvaluationContext context,
         BpmnExecutionState state,
         string tokenId,
         string reason,
@@ -2336,7 +2390,7 @@ public sealed class BpmnInterpreter
         if (FindLoopByCoordinator(state, tokenId) is { } loop)
         {
             foreach (var instanceTokenId in InstanceTokenIds(state, loop))
-                state = CancelTokenAndWork(state, instanceTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+                state = CancelTokenAndWork(context, state, instanceTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
             state = RemoveLoop(state, loop.LoopId);
             token = GetRequiredToken(state, tokenId);
         }
@@ -2347,7 +2401,7 @@ public sealed class BpmnInterpreter
         if (FindCompensationRun(state, tokenId) is { } compensationRun)
         {
             foreach (var handlerTokenId in CompensationHandlerTokenIds(state, tokenId))
-                state = CancelTokenAndWork(state, handlerTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+                state = CancelTokenAndWork(context, state, handlerTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
 
             foreach (var compensableId in compensationRun.PendingCompensableIds)
                 if (state.Compensables.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.CompensableId, compensableId)) is { Status: BpmnCompensableStatus.Claimed } claimed)
@@ -2358,15 +2412,20 @@ public sealed class BpmnInterpreter
         }
 
         var work = state.ActiveWork.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, tokenId));
+        var withdrawn = context.WithdrawStartedWorkFor(tokenId);
         state = UpdateToken(state, token with { Status = BpmnTokenStatus.Canceled });
         if (work is not null)
         {
             state = RemoveActiveWork(state, tokenId);
-            if (liveWorkHandles.TryGetValue((work.NodeId, work.IterationId), out var handle))
-                pendingCancellations.Add(new PendingTeardown(handle, token.AtElementId, reason));
+            if (withdrawn is null && liveWorkHandles.TryGetValue((work.NodeId, work.IterationId), out var handle))
+                pendingCancellations.Add(new PendingTeardown(handle, token.AtElementId, reason, token.TokenId));
         }
 
-        return BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, diagnosticMessage(token, reason));
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, diagnosticMessage(token, reason));
+        return withdrawn is null
+            ? state
+            : BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, withdrawn.ElementId, null, withdrawn.TokenId,
+                $"BPMN withdrew work '{withdrawn.BindingRef}' for token '{withdrawn.TokenId}' before the host started it: the same evaluation cancelled the token ({reason}).");
     }
 
     /// <summary>
@@ -2379,6 +2438,7 @@ public sealed class BpmnInterpreter
     /// Returns the count of stopped tokens for the caller's diagnostic.
     /// </summary>
     private static (BpmnExecutionState State, int StoppedCount) StopOtherLiveWork(
+        BpmnEvaluationContext context,
         BpmnExecutionState state,
         string keepTokenId,
         string reason,
@@ -2392,7 +2452,7 @@ public sealed class BpmnInterpreter
             .Select(candidate => candidate.TokenId)
             .ToArray();
         foreach (var liveTokenId in otherLiveTokenIds)
-            state = CancelTokenAndWork(state, liveTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+            state = CancelTokenAndWork(context, state, liveTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
         return (state, otherLiveTokenIds.Length);
     }
 
@@ -2465,15 +2525,64 @@ public sealed class BpmnInterpreter
     /// Issues each carried teardown and the re-signalled escalation, if any. Only called from a non-fault
     /// continuation. Teardowns arrive on two channels — the result, for a step whose result reaches the caller,
     /// and the context, for one inside the propagation loop whose result does not — and both drain here, so the
-    /// non-fault rule holds for either.
+    /// non-fault rule holds for either. Returns the teardowns it issued.
     /// </summary>
-    private static void IssueCarriedCommands(BpmnEvaluationContext context, EvaluationResult result)
+    private static IReadOnlyList<PendingTeardown> IssueCarriedCommands(BpmnEvaluationContext context, EvaluationResult result)
     {
-        foreach (var teardown in (result.PendingTeardowns ?? []).Concat(context.CarriedTeardowns))
+        var teardowns = (result.PendingTeardowns ?? []).Concat(context.CarriedTeardowns).ToArray();
+        foreach (var teardown in teardowns)
             context.AddCommand(new BpmnHostCommand.CancelWorkSubtree(teardown.Handle, teardown.ElementId, teardown.Reason));
 
         if (result.PendingScopeSignal is { } signal)
             context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(signal.Code, signal.Payload));
+
+        return teardowns;
+    }
+
+    /// <summary>
+    /// Records each issued teardown's handle on the Canceled token whose work it stops (see
+    /// <see cref="BpmnToken.StoppedHandle"/>), so a callback that still arrives for that handle is recognized as
+    /// late rather than refused. Only a scope that keeps running records them: a terminated one absorbs every
+    /// callback before reading them.
+    /// </summary>
+    private static BpmnExecutionState RecordStoppedWork(BpmnExecutionState state, IReadOnlyList<PendingTeardown> issued)
+    {
+        foreach (var teardown in issued)
+            state = UpdateToken(state, GetRequiredToken(state, teardown.TokenId) with { StoppedHandle = teardown.Handle });
+        return state;
+    }
+
+    /// <summary>
+    /// Absorbs a completion or fault for <paramref name="handle"/> when it names work this scope tore down, and
+    /// clears the record so a second report is not absorbed too; <c>null</c> for any other handle. The match is
+    /// on the host's handle, which names one unit for the scope's lifetime, so a later pass over the same element,
+    /// or another instance on the same slot, can never be mistaken for it.
+    /// </summary>
+    private static EvaluationResult? AbsorbStoppedWork(BpmnExecutionState state, string handle, string callback)
+    {
+        if (state.Tokens.FirstOrDefault(token => StringComparer.Ordinal.Equals(token.StoppedHandle, handle)) is not { } stopped)
+            return null;
+
+        state = UpdateToken(state, stopped with { StoppedHandle = null });
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, stopped.AtElementId, stopped.FlowId, stopped.TokenId,
+            $"BPMN ignored a late {callback} (handle '{handle}'): the scope had already torn that work down when it cancelled token '{stopped.TokenId}'.");
+        return new EvaluationResult(state);
+    }
+
+    /// <summary>
+    /// Throws when the snapshot lists the reported (binding ref, iteration id) slot under a different handle. The
+    /// reported unit has already left the snapshot, as the port requires, so a slot still held means another unit
+    /// owns it: resolving the report to that slot's record would resume or fail work that is still running. A
+    /// late report for work this scope tore down never gets here; it is absorbed first.
+    /// </summary>
+    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, string bindingRef, string? iterationId, string handle, string callback)
+    {
+        if (context.Host.LiveWork.FirstOrDefault(live =>
+                StringComparer.Ordinal.Equals(live.BindingRef, bindingRef)
+                && StringComparer.Ordinal.Equals(live.IterationId, iterationId)
+                && !StringComparer.Ordinal.Equals(live.Handle, handle)) is { } holder)
+            throw new BpmnExecutionException(
+                $"BPMN {callback} '{bindingRef}' (iteration '{iterationId ?? "none"}') was reported under handle '{handle}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
     }
 
     /// <summary>
