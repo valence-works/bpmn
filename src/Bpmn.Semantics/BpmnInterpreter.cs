@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
@@ -822,7 +823,7 @@ public sealed class BpmnInterpreter
 
         if (context.Host.HasEnclosingScope)
         {
-            context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(EscalationSignalCode, BuildEscalationPayload(code, name)));
+            context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(EscalationSignalCode, EscalationPayload(code, name)));
             return (BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.EscalationRaised, element.ElementId, null, token.TokenId,
                 $"BPMN escalation event '{element.ElementId}' raised escalation code '{code}' to its enclosing scope."), null);
         }
@@ -1049,7 +1050,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnWorkSignalledRequest signal)
     {
-        var escalationCode = ReadPayloadCode(signal.Payload);
+        TryReadEscalationCode(signal.Payload, out var escalationCode);
 
         // Resolve the host element from the signalling work's binding ref. This is robust to the late case: the
         // host element is graph-derived, so it resolves even after the signalling work stopped being live.
@@ -1230,18 +1231,41 @@ public sealed class BpmnInterpreter
             ? code.Trim()
             : null;
 
-    /// <summary>Builds the escalation payload <c>{ code, name? }</c>; the escalation identity travels here, keeping the signal code namespace clean. <c>name</c> is omitted when absent.</summary>
-    private static JsonElement BuildEscalationPayload(string code, string? name) =>
-        JsonSerializer.SerializeToElement(new EscalationPayload(code, name), EscalationPayloadOptions);
+    /// <summary>
+    /// Builds the payload of an escalation signal: <c>{ "code": ..., "name": ... }</c>, with <c>name</c> omitted when
+    /// absent. Pair it with <see cref="EscalationSignalCode"/> to originate an escalation from outside the process,
+    /// for example by delivering it through <see cref="OnWorkSignalled"/> as if the work had escalated. The escalation
+    /// identity travels here, keeping the signal code namespace clean.
+    /// </summary>
+    /// <param name="code">The escalation code a catcher matches on. Surrounding whitespace is trimmed.</param>
+    /// <param name="name">An optional display name, carried for reporting and never matched on.</param>
+    /// <exception cref="ArgumentException"><paramref name="code"/> is null, empty or whitespace.</exception>
+    public static JsonElement EscalationPayload(string code, string? name = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        return JsonSerializer.SerializeToElement(
+            new EscalationPayloadShape(code.Trim(), string.IsNullOrWhiteSpace(name) ? null : name.Trim()),
+            EscalationPayloadOptions);
+    }
 
-    /// <summary>Reads the escalation code from an escalation payload; <c>null</c> when absent or malformed (defensive — the interpreter builds the payload, so unreachable in practice).</summary>
-    private static string? ReadPayloadCode(JsonElement? payload) =>
-        payload is { ValueKind: JsonValueKind.Object } element
-        && element.TryGetProperty("code", out var code)
-        && code.ValueKind == JsonValueKind.String
-        && code.GetString() is { Length: > 0 } value
-            ? value
+    /// <summary>
+    /// Reads the escalation code from an escalation signal payload, the way the interpreter matches it against
+    /// catchers. Returns <c>false</c> when the payload is absent, not an object, or carries no non-blank string
+    /// <c>code</c> property; such a signal matches no catcher, not even a catch-all.
+    /// </summary>
+    /// <param name="payload">The signal payload, as carried by <see cref="BpmnHostCommand.SignalEnclosingScope"/>.</param>
+    /// <param name="code">The escalation code with surrounding whitespace trimmed, as catcher codes are, when one was read.</param>
+    public static bool TryReadEscalationCode(JsonElement? payload, [NotNullWhen(true)] out string? code)
+    {
+        code = payload is { ValueKind: JsonValueKind.Object } element
+               && element.TryGetProperty("code", out var codeProperty)
+               && codeProperty.ValueKind == JsonValueKind.String
+               && codeProperty.GetString() is { } value
+               && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
             : null;
+        return code is not null;
+    }
 
     private static readonly JsonSerializerOptions EscalationPayloadOptions = new(JsonSerializerDefaults.Web)
     {
@@ -1249,7 +1273,7 @@ public sealed class BpmnInterpreter
     };
 
     /// <summary>The escalation payload shape: the required matching <c>code</c> and an optional display <c>name</c>.</summary>
-    private sealed record EscalationPayload(string Code, string? Name = null);
+    private sealed record EscalationPayloadShape(string Code, string? Name = null);
 
     /// <summary>
     /// Handles a transaction that completed with the <c>Cancelled</c> outcome, in the enclosing
