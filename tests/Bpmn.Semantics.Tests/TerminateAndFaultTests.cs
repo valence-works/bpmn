@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Bpmn.Runtime.InMemory;
