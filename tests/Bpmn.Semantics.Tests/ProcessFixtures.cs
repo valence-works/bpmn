@@ -162,9 +162,12 @@ public static class ProcessFixtures
         return (parent, body);
     }
 
-    /// <summary>A subprocess with an escalation boundary on the parent, and a body that escalates nothing by itself.</summary>
+    /// <summary>
+    /// A subprocess with an escalation boundary on the parent, and a body that escalates nothing by itself. A null
+    /// <paramref name="code"/> makes the boundary the code-less catch-all.
+    /// </summary>
     public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) SubProcessWithEscalationBoundary(
-        string code = "overdue",
+        string? code = "overdue",
         bool interrupting = true)
     {
         var body = new BpmnProcessBuilder("body")
@@ -178,7 +181,7 @@ public static class ProcessFixtures
             .StartEvent("Start")
             .SubProcess("Sub", bindingRef: "sub")
             .EndEvent("End")
-            .BoundaryEvent("Escalated", "Sub", Escalation(code), interrupting)
+            .BoundaryEvent("Escalated", "Sub", code is null ? CatchAllEscalation() : Escalation(code), interrupting)
             .EndEvent("EndEscalated")
             .ConnectSequence("Start", "Sub", "End")
             .ConnectSequence("Escalated", "EndEscalated")
@@ -620,6 +623,9 @@ public static class ProcessFixtures
     public static BpmnEventDefinition Escalation(string code) =>
         new(BpmnEventDefinitionTypes.Escalation,
             new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Code] = code });
+
+    public static BpmnEventDefinition CatchAllEscalation() =>
+        new(BpmnEventDefinitionTypes.Escalation, new Dictionary<string, string>(StringComparer.Ordinal));
 
     public static BpmnEventDefinition Message(string name) =>
         new(BpmnEventDefinitionTypes.Message,

@@ -46,6 +46,16 @@ public sealed class EscalationPayloadTests
         code.ShouldBe("overdue");
     }
 
+    /// <summary>Verifies a hand-built payload's code is trimmed the way catcher codes are.</summary>
+    [Fact]
+    public void A_padded_code_reads_back_trimmed()
+    {
+        using var document = JsonDocument.Parse("""{"code":" overdue "}""");
+
+        BpmnInterpreter.TryReadEscalationCode(document.RootElement, out var code).ShouldBeTrue();
+        code.ShouldBe("overdue");
+    }
+
     /// <summary>Verifies absent or malformed payloads return false and leave no escalation code to match.</summary>
     /// <param name="json">A payload without a readable code, or null for an absent payload.</param>
     [Theory]
@@ -55,6 +65,7 @@ public sealed class EscalationPayloadTests
     [InlineData("""{"Code":"overdue"}""")]
     [InlineData("""{"code":42}""")]
     [InlineData("""{"code":""}""")]
+    [InlineData("""{"code":"   "}""")]
     public void A_payload_without_a_readable_code_reads_as_none(string? json)
     {
         JsonElement? payload = json is null ? null : JsonDocument.Parse(json).RootElement;

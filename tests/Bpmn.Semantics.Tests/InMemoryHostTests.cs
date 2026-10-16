@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Bpmn.Runtime.InMemory;
@@ -305,6 +306,37 @@ public sealed class InMemoryHostTests
         instance.IsCompleted.ShouldBeFalse();
         instance.State.Diagnostics.ShouldContain(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.EscalationUnhandled);
         instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeFalse("nothing matched, so nothing was torn down");
+    }
+
+    [Fact]
+    public void A_hand_built_escalation_with_a_blank_code_fires_no_catch_all()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary(code: null);
+        var instance = HostWithNested(("sub", body)).Start(parent);
+
+        instance.SignalWork("sub", BpmnInterpreter.EscalationSignalCode, Payload("""{"code":"   "}"""));
+
+        instance.IsCompleted.ShouldBeFalse(instance.Transcript.ToString());
+        VisitedElements(instance).ShouldNotContain("EndEscalated", "a payload with no readable code matches no catcher, not even a catch-all");
+        instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void A_hand_built_escalation_with_a_padded_code_matches_its_exact_catcher()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary("overdue");
+        var instance = HostWithNested(("sub", body)).Start(parent);
+
+        instance.SignalWork("sub", BpmnInterpreter.EscalationSignalCode, Payload("""{"code":" overdue "}"""));
+
+        instance.IsCompleted.ShouldBeTrue(instance.Transcript.ToString());
+        VisitedElements(instance).ShouldContain("EndEscalated");
+    }
+
+    private static JsonElement Payload(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 
     // --- Building the graph once -------------------------------------------------------------------------

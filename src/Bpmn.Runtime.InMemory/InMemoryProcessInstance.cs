@@ -177,8 +177,11 @@ public sealed class InMemoryProcessInstance
     /// <see cref="SignalWork(string, string, JsonElement?)"/>: it uses the interpreter's escalation code and
     /// wraps <paramref name="escalationCode"/> in <see cref="BpmnInterpreter.EscalationPayload"/>.
     /// </summary>
-    public void EscalateWork(string handleOrBindingRef, string escalationCode) =>
+    public void EscalateWork(string handleOrBindingRef, string escalationCode)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(escalationCode);
         SignalWork(handleOrBindingRef, BpmnInterpreter.EscalationSignalCode, BpmnInterpreter.EscalationPayload(escalationCode));
+    }
 
     /// <summary>The live work with this handle, or <c>null</c>.</summary>
     public InMemoryWorkItem? FindWork(string handle) =>

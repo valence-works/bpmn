@@ -1173,18 +1173,19 @@ public sealed class BpmnInterpreter
 
     /// <summary>
     /// Reads the escalation code from an escalation signal payload, the way the interpreter matches it against
-    /// catchers. Returns <c>false</c> when the payload is absent, not an object, or carries no non-empty string
-    /// <c>code</c> property; such a signal matches no catcher.
+    /// catchers. Returns <c>false</c> when the payload is absent, not an object, or carries no non-blank string
+    /// <c>code</c> property; such a signal matches no catcher, not even a catch-all.
     /// </summary>
     /// <param name="payload">The signal payload, as carried by <see cref="BpmnHostCommand.SignalEnclosingScope"/>.</param>
-    /// <param name="code">The escalation code, when one was read.</param>
+    /// <param name="code">The escalation code with surrounding whitespace trimmed, as catcher codes are, when one was read.</param>
     public static bool TryReadEscalationCode(JsonElement? payload, [NotNullWhen(true)] out string? code)
     {
         code = payload is { ValueKind: JsonValueKind.Object } element
                && element.TryGetProperty("code", out var codeProperty)
                && codeProperty.ValueKind == JsonValueKind.String
-               && codeProperty.GetString() is { Length: > 0 } value
-            ? value
+               && codeProperty.GetString() is { } value
+               && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
             : null;
         return code is not null;
     }
