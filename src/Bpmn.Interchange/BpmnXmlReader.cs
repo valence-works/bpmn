@@ -272,7 +272,8 @@ public sealed class BpmnXmlReader
         IReadOnlyDictionary<string, EscalationDeclaration> escalationDeclarations,
         ReadContext context,
         bool isTransaction = false,
-        bool isEventSubprocessBody = false)
+        bool isEventSubprocessBody = false,
+        bool consumeInterpretedLoopCharacteristics = false)
     {
         var previousProcessId = context.CurrentProcessId;
         context.CurrentProcessId = processId;
@@ -475,9 +476,16 @@ public sealed class BpmnXmlReader
                     if (id is null) break;
                     var isTransactionHost = localName == "transaction";
                     var isEventSubprocess = !isTransactionHost && (bool?)child.Attribute("triggeredByEvent") == true;
+                    // Resolve the marker before the nested body is captured. The collection variable is
+                    // declared on this (parent) process, not on the body, so only this call can tell
+                    // Capture whether the marker was interpreted and must not also be retained.
+                    var loopCharacteristics = isEventSubprocess
+                        ? null
+                        : ResolveLoopCharacteristics(child, id, isActivity: true, declaredVariableNames, context);
                     var bindingMark = context.Bindings.Count;
                     var nested = BuildProcess(child, id, isExecutable, messageSignalNames, escalationDeclarations, context,
-                        isTransaction: isTransactionHost, isEventSubprocessBody: isEventSubprocess);
+                        isTransaction: isTransactionHost, isEventSubprocessBody: isEventSubprocess,
+                        consumeInterpretedLoopCharacteristics: loopCharacteristics is not null);
                     context.CurrentProcessId = processId;
 
                     // An event subprocess is validated before its element is emitted, so a shape no
@@ -499,7 +507,7 @@ public sealed class BpmnXmlReader
 
                     var nestedRef = context.Bind(new BpmnWorkBinding.NestedProcess(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, nested));
                     elements.Add(new BpmnElement(id, BpmnElementTypes.SubProcess, name: NameOf(child), bindingRef: nestedRef, defaultFlowId: DefaultOf(child),
-                        loopCharacteristics: ResolveLoopCharacteristics(child, id, isActivity: true, declaredVariableNames, context),
+                        loopCharacteristics: loopCharacteristics,
                         isForCompensation: IsForCompensationOf(child), isTransaction: isTransactionHost));
                     break;
                 }
@@ -589,7 +597,11 @@ public sealed class BpmnXmlReader
                         break;
                     }
 
-                    if (localName is "documentation" or "extensionElements" or "incoming" or "outgoing")
+                    // Loop characteristics on a process or subprocess are the container's own activity
+                    // marker. ResolveLoopCharacteristics already interpreted or degraded them; they are
+                    // not an unknown element to drop.
+                    if (localName is "documentation" or "extensionElements" or "incoming" or "outgoing"
+                        or "multiInstanceLoopCharacteristics" or "standardLoopCharacteristics")
                         break;
 
                     context.Report(BpmnImportIssueSeverity.Dropped, $"BPMN element <{localName}>{(id is null ? "" : $" '{id}'")} is not part of the model this reader builds and was dropped.", id);
@@ -666,7 +678,7 @@ public sealed class BpmnXmlReader
             return connected;
         }).ToArray();
 
-        var extensions = context.Capture(container, IsContainerChildConsumed);
+        var extensions = context.Capture(container, child => IsContainerChildConsumed(child, consumeInterpretedLoopCharacteristics));
         context.CurrentProcessId = previousProcessId;
 
         return new BpmnProcessDefinition(
@@ -1672,11 +1684,19 @@ public sealed class BpmnXmlReader
                 or "multiInstanceLoopCharacteristics" or "standardLoopCharacteristics"
             || IsEventDefinition(child));
 
-    private static bool IsContainerChildConsumed(XElement child) =>
+    /// <summary>
+    /// Children of a process or subprocess the reader itself interprets. A subprocess is also an
+    /// activity, so its <c>multiInstanceLoopCharacteristics</c> are read onto that activity; they
+    /// count as consumed here only when that read succeeded. A degraded marker (a collection authored
+    /// in another vendor namespace, a non-integer cardinality) stays as retained content of the
+    /// nested body, which is the only place left to keep it.
+    /// </summary>
+    private static bool IsContainerChildConsumed(XElement child, bool consumeInterpretedLoopCharacteristics = false) =>
         child.Name.Namespace == BpmnXmlNames.Model
         && (child.Name.LocalName is "startEvent" or "endEvent" or "intermediateCatchEvent" or "intermediateThrowEvent"
                 or "subProcess" or "transaction" or "callActivity" or "boundaryEvent" or "sequenceFlow"
                 or "laneSet" or "association" or "incoming" or "outgoing"
+            || (consumeInterpretedLoopCharacteristics && child.Name.LocalName == "multiInstanceLoopCharacteristics")
             || BpmnXmlNames.TaskLocalNamesToElementTypes.ContainsKey(child.Name.LocalName)
             || BpmnXmlNames.GatewayLocalNamesToElementTypes.ContainsKey(child.Name.LocalName));
 
