@@ -87,7 +87,8 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 
 /// <summary>
 /// One evaluation, recorded. An entry says what provoked the interpreter, what it decided, what it asked the
-/// host to do, which tokens moved, and — for a fault — whether BPMN caught the error or let it out.
+/// host to do, which tokens moved, and whether a host-reported failure was caught, propagated or absorbed,
+/// including a call activity's failure outcome.
 /// <para>
 /// This is the artefact that makes the interpreter's behavior visible. A failing test prints the transcript
 /// and the reason is usually in it; the alternative is inferring token flow from a final state, which is
@@ -105,7 +106,10 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 /// <param name="Continuation">What the interpreter decided the scope should do next.</param>
 /// <param name="Commands">What the interpreter asked the host to do, in the order it must be done.</param>
 /// <param name="TokenMoves">The tokens minted or moved by this evaluation.</param>
-/// <param name="Disposition">For a fault, whether a BPMN catcher took the error or it propagated; otherwise <c>null</c>.</param>
+/// <param name="Disposition">
+/// The evaluation's error-routing or absorption verdict for a host-reported failure; <c>null</c> for other
+/// evaluations. Includes call-activity failure outcomes as well as work faults.
+/// </param>
 public sealed record BpmnTranscriptEntry(
     int Index,
     int Sequence,

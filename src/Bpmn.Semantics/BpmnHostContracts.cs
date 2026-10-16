@@ -223,8 +223,9 @@ public record BpmnEvaluation(
 }
 
 /// <summary>
-/// What became of a faulted unit of work. This is a verdict, not an instruction: the interpreter reports what
-/// BPMN did with the error and the host decides what that means for its own error bookkeeping.
+/// What became of a host-reported failure, including a call activity's failure outcome. This is a verdict,
+/// not an instruction: the interpreter reports how BPMN routed or absorbed it, and the host decides what
+/// that means for its own error bookkeeping.
 /// </summary>
 public abstract record BpmnErrorDisposition
 {
@@ -242,8 +243,8 @@ public abstract record BpmnErrorDisposition
     public sealed record Caught(string CatchingElementId, string? ErrorCode) : BpmnErrorDisposition;
 
     /// <summary>
-    /// No catcher took the error. The continuation is a <see cref="BpmnContinuation.Fault"/> and the failure is
-    /// the host's to surface.
+    /// No catcher handled the error, or the catcher's path itself faulted. The final continuation is always a
+    /// <see cref="BpmnContinuation.Fault"/> and the failure is the host's to surface.
     /// </summary>
     public sealed record Propagated : BpmnErrorDisposition
     {
