@@ -72,12 +72,21 @@ catches it.
    the failing one.
 5. If it reaches the root uncaught, the process fails.
 
-The interpreter reports which of these happened, as a `BpmnErrorDisposition` on the
-`BpmnFaultEvaluation` returned by `OnWorkFaulted`:
+The returned `BpmnEvaluation` reports how BPMN handled a host-reported failure in its nullable
+`ErrorDisposition`:
 
-- `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched. From BPMN's point of
-  view nothing is wrong; the model anticipated this. A null code means the catcher is a catch-all.
-- `Propagated` — nothing here matched. The continuation is a `Fault` and the failure has gone up.
+- `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched and this evaluation
+  returned without fault. Recovery work may still be running. A null code means the catcher is a
+  catch-all.
+- `Propagated` — the final continuation is always a `Fault`. No catcher may have matched, or a
+  catcher's route faulted during this evaluation, so the failure has gone up.
+- `Absorbed` — the failure belonged to work or a scope that had already stopped.
+
+This applies both to `OnWorkFaulted` and to `OnWorkCompleted` when a call activity reports the
+failure outcomes `Faulted`, `DispatchFailed`, or `Cancelled`. Those outcomes enter the same catcher
+routing ladder. An ordinary start, completion, signal, transaction cancellation, or event subprocess
+activation on another path leaves `ErrorDisposition` null. A transaction's `Cancelled` completion
+does not mean the same thing as a call activity's `Cancelled` failure outcome.
 
 Steps 2 and 3 work the same in a nested scope as at the root. The interpreter finds the failing
 activity from the binding ref and iteration id you report, never from the scope's invocation
@@ -229,9 +238,10 @@ What the library gives you instead is the one piece of information you cannot co
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     graph, state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId });
 
-if (evaluation.Disposition is BpmnErrorDisposition.Propagated)
+if (evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated)
     _incidents.Record(work, message);   // your model, your policy
-// Caught: the process modeled this failure. Stay quiet.
+// Caught: the process modeled this failure. Absorbed: this work or scope had already stopped.
+// Null: no host-reported failure was routed or absorbed in this evaluation.
 ```
 
 Recording an incident for every fault buries the real ones under the modeled ones — an error boundary

@@ -144,7 +144,8 @@ See [Reading and writing BPMN XML](../guides/reading-and-writing-bpmn.md).
 - **Requests**: `BpmnStartRequest`, `BpmnWorkCompletedRequest`, `BpmnWorkFaultedRequest`,
   `BpmnWorkSignalledRequest`, `BpmnStartSignal`.
 - **Graph**: `BpmnGraph`, `BpmnBoundWork`.
-- **Results**: `BpmnEvaluation`, `BpmnFaultEvaluation`, `BpmnContinuation`, `BpmnErrorDisposition`.
+- **Results**: `BpmnEvaluation` (including its nullable `ErrorDisposition`), `BpmnContinuation`,
+  `BpmnErrorDisposition`.
 - **Commands**: `BpmnHostCommand.StartWork`, `.CancelWorkSubtree`, `.SignalEnclosingScope`.
 - **Host contract**: `BpmnHostSnapshot`, `BpmnLiveWork`, `BpmnIterationScope`,
   `IBpmnVariableReader`, `BpmnNoVariables`.

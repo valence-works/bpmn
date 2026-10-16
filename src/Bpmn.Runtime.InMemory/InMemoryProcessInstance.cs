@@ -294,7 +294,7 @@ public sealed class InMemoryProcessInstance
             evaluation.Continuation,
             evaluation.Commands,
             moves,
-            (evaluation as BpmnFaultEvaluation)?.Disposition));
+            evaluation.ErrorDisposition));
 
         // In the order returned. A teardown emitted before a start is not interchangeable with the reverse.
         foreach (var command in evaluation.Commands)

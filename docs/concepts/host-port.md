@@ -1,7 +1,7 @@
 # The host port
 
 The port is the entire interface between the interpreter and the world. It is small on purpose: four
-inputs in, three outputs back, three commands, one callback.
+inputs in, three commands, one callback, and an optional error-routing verdict on the evaluation.
 
 This page is the contract. For a working implementation, see
 [Hosting the interpreter](../guides/hosting-the-interpreter.md).
@@ -9,17 +9,19 @@ This page is the contract. For a working implementation, see
 ## The signature
 
 ```text
-(graph, prior state, host snapshot, event) -> (next state, continuation, commands)
+(graph, prior state, host snapshot, event) -> (next state, continuation, commands, error disposition?)
 ```
 
-Every entry point is synchronous, takes a request record carrying those four values, and returns a
-value. The interpreter never calls the host, with one narrow exception described below.
+Every entry point is synchronous, takes a request record carrying those four inputs, and returns a
+`BpmnEvaluation`. Its nullable `ErrorDisposition` is populated when a host-reported failure is
+routed or absorbed; otherwise it is `null`. The interpreter never calls the host, with one narrow
+exception described below.
 
 | Entry point | The event it carries | Returns |
 | --- | --- | --- |
 | `Start` | The scope is beginning, optionally at a start event an external trigger matched. | `BpmnEvaluation` |
 | `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names. | `BpmnEvaluation` |
-| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnFaultEvaluation` |
+| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnEvaluation` |
 | `OnWorkSignalled` | A nested scope this one invoked signalled outward. | `BpmnEvaluation` |
 
 Work is named by two values together. The **binding ref** is the interpreter's name for it, taken
@@ -261,18 +263,33 @@ code rather than tracking a growing namespace.
 If `HasEnclosingScope` is false, the interpreter will not emit this command. It asks nothing of a
 host it knows cannot answer.
 
-### The fault disposition
+### The error disposition
 
-`OnWorkFaulted` returns a `BpmnFaultEvaluation`: an evaluation plus a `BpmnErrorDisposition`.
+`BpmnEvaluation.ErrorDisposition` is a nullable `BpmnErrorDisposition`. It reports how BPMN handled a
+host-reported failure without making the host adopt an incident or retry policy:
 
 - `Caught(CatchingElementId, ErrorCode?)` — an error boundary event or an error event subprocess took
-  the failure. The process continues down that path. From BPMN's point of view nothing went wrong. A
+  the failure and this evaluation returned without fault. Recovery work may still be running. A
   null `ErrorCode` means the catcher is a catch-all.
-- `Propagated` — nothing in this scope matched. The continuation is a `Fault`, and the failure is now
-  the enclosing scope's problem, or at the root, yours.
+- `Propagated` — the final evaluation has a `Fault` continuation. This means no catcher in the scope
+  matched, or a catcher's route faulted during this evaluation; the failure is now the enclosing
+  scope's problem, or at the root, yours.
+- `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-Note what the fault request does not carry: an error code. The host reports that work failed and
-describes why in human terms; which BPMN error a catcher matches is a property of the model, not
+The disposition is present for failed work reported by `OnWorkFaulted`, and for a call-activity
+completion reported by `OnWorkCompleted` with
+the outcome `Faulted`, `DispatchFailed`, or `Cancelled`. Those call-activity outcomes use the same
+error-catcher routing as a fault report. A late failure for work or a scope that was already stopped
+is reported as `Absorbed`.
+
+The property is `null` when no host-reported failure was routed or absorbed. That includes normal
+starts, completions and signals, transaction cancellation, and an event subprocess activated on an
+unrelated path. In particular, a transaction's `Cancelled` completion is distinct from a call
+activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a separate transcript
+field and is unchanged.
+
+Note what `BpmnWorkFaultedRequest` does not carry: an error code. The host reports that work failed
+and describes why in human terms; which BPMN error a catcher matches is a property of the model, not
 something the host names.
 
 This is the only place the library says anything about failure policy, and it says the minimum: what
@@ -301,8 +318,7 @@ record would match it: the reported unit has already left `LiveWork`, so if the 
 the slot of the record the report resolves to under another handle, that record belongs to other
 work. That includes a report with no iteration id that would fall back to the binding's only record. A state an earlier version persisted
 records no handles, so a late callback against it is never absorbed. A late completion throws. A
-late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
-lists its slot under another handle.
+late fault faults the scope, or throws when the snapshot still lists its slot under another handle.
 
 ## The one callback
 

@@ -177,7 +177,7 @@ public sealed class NestedScopeFaultTests
         var evaluation = Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
             graph, prepared.State, NestedScope(enclosingTokenId), "risky", "h-risky", "boom"));
 
-        evaluation.Disposition.ShouldBe(CaughtByBoundary, "the fault belongs to the live risky task, whatever the enclosing scope's ids are");
+        evaluation.ErrorDisposition.ShouldBe(CaughtByBoundary, "the fault belongs to the live risky task, whatever the enclosing scope's ids are");
         evaluation.Commands.OfType<BpmnHostCommand.StartWork>().Select(start => start.BindingRef).ShouldBe(["recover"]);
     }
 
