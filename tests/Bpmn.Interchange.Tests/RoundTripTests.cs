@@ -856,6 +856,39 @@ public sealed class RoundTripTests
         Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBeNull();
     }
 
+    /// <summary>
+    /// A lookalike that does not match the current outcome is kept on read (not the library
+    /// predicate) and dropped on write (it has the generated shape while an outcome is still set).
+    /// </summary>
+    [Fact]
+    public void A_lookalike_author_expression_is_kept_on_read_and_dropped_on_write()
+    {
+        var first = Read(MismatchedLookalike);
+        Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBe("Approved");
+        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+
+        var xml = _writer.Write(first);
+        WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Approved'");
+        xml.ShouldNotContain("outcome == 'Rejected'");
+    }
+
+    /// <summary>
+    /// The same mismatched lookalike survives clearing the outcome: the writer only strips
+    /// generated-shaped expressions while a <c>conditionOutcome</c> is still present.
+    /// </summary>
+    [Fact]
+    public void A_mismatched_lookalike_survives_clearing_the_outcome()
+    {
+        var first = Read(MismatchedLookalike);
+        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+
+        var xml = _writer.Write(WithFlowOutcome(first.Definitions, conditionOutcome: null));
+        WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Rejected'");
+        XDocument.Parse(xml).Descendants()
+            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == "F")
+            .Attributes().ShouldNotContain(attribute => attribute.Name.LocalName == "conditionOutcome");
+    }
+
     [Fact]
     public void A_prefixed_xsi_type_still_resolves_after_a_round_trip()
     {
@@ -873,26 +906,40 @@ public sealed class RoundTripTests
             </bpmn:definitions>
             """;
 
-        var (first, firstXml, second, _) = RoundTrip(prefixed);
+        var (first, firstXml, _, secondXml) = RoundTrip(prefixed);
 
         var retained = RetainedExpression(first, "F");
         retained.Value.ShouldBe("amount < 1000");
-        var capturedType = Attribute(retained, Xsi.NamespaceName, "type");
-        capturedType.ShouldNotBeNull();
-        capturedType.ShouldContain("tFormalExpression");
+        Attribute(retained, Xsi.NamespaceName, "type").ShouldBe("bpmn:tFormalExpression");
 
         var written = WrittenExpression(firstXml, "F");
         written.Value.ShouldBe("amount < 1000");
         var type = written.Attribute(Xsi + "type").ShouldNotBeNull();
+        type.Value.ShouldBe("bpmn:tFormalExpression");
         var expanded = ExpandType(written, type.Value);
         expanded.Namespace.ShouldBe(BpmnXmlNames.Model.NamespaceName);
         expanded.LocalName.ShouldBe("tFormalExpression");
 
-        var secondXml = _writer.Write(second);
-        var secondWritten = WrittenExpression(secondXml, "F");
-        var secondType = secondWritten.Attribute(Xsi + "type").ShouldNotBeNull();
-        ExpandType(secondWritten, secondType.Value).ShouldBe(expanded);
+        secondXml.ShouldBe(firstXml);
     }
+
+    /// <summary>
+    /// An outcome plus a generated-shaped body that names a different outcome: kept on read,
+    /// dropped on write while the outcome remains, kept if the outcome is then cleared.
+    /// </summary>
+    private const string MismatchedLookalike = """
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:vw="https://bpmn.valenceworks.io/schema/bpmn"
+                          id="Defs">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:startEvent id="Start" />
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done" vw:conditionOutcome="Approved">
+              <bpmn:conditionExpression>outcome == 'Rejected'</bpmn:conditionExpression>
+            </bpmn:sequenceFlow>
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
 
     private static BpmnDefinitions OutcomeOnlyDefinitions(string outcome) =>
         new(Id: "built", Processes:

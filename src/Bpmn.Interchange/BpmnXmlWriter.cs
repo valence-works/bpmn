@@ -707,9 +707,16 @@ public sealed class BpmnXmlWriter
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Drops a retained <c>conditionExpression</c> that is this library's generated predicate, so a write
-    /// after the outcome changed or was cleared does not emit a contradictory body. An author's
-    /// expression — anything with attributes, children, or a different body — is left alone.
+    /// Drops a retained <c>conditionExpression</c> that has the library's generated shape, so a write
+    /// after the outcome changed does not emit a contradictory body.
+    /// <para>
+    /// An author expression that only looks like the generated predicate — <c>outcome == '…'</c> with
+    /// no attributes or children, but a body that is not <c>outcome == '&lt;current outcome&gt;'</c> —
+    /// is kept on read and dropped here while the flow still has a <c>conditionOutcome</c>. A
+    /// mismatched expression of that shape survives clearing the outcome, because this method does
+    /// nothing when <paramref name="conditionOutcome"/> is null; an expression-only flow may
+    /// legitimately carry the same text.
+    /// </para>
     /// </summary>
     private static BpmnExtensions WithoutLibraryConditionExpression(BpmnExtensions? extensions, string? conditionOutcome)
     {
@@ -717,8 +724,6 @@ public sealed class BpmnXmlWriter
         if (extensions.ForeignChildren.Count == 0)
             return extensions;
 
-        // Only a flow that still has an outcome can own a generated predicate. An expression-only
-        // flow may legitimately carry the same text as an author's condition.
         if (conditionOutcome is null)
             return extensions;
 

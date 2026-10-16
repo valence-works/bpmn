@@ -39,8 +39,14 @@ internal static class BpmnConditionExpression
 
     /// <summary>
     /// A retained subtree that has the writer's generated shape — <c>outcome == '…'</c>, no attributes,
-    /// no children — regardless of which outcome it names. Used on write so a stale generated predicate
-    /// is not emitted next to a new <c>conditionOutcome</c>.
+    /// no children — regardless of which outcome it names.
+    /// <para>
+    /// Two edges follow. An author expression that only looks like the generated predicate (same
+    /// shape, a body that is not <c>outcome == '&lt;current outcome&gt;'</c>) is kept on read —
+    /// <see cref="IsLibraryGenerated"/> requires an exact match — and then dropped on write while
+    /// the flow still has a <c>conditionOutcome</c>. A mismatched expression of that shape survives
+    /// clearing the outcome: the writer only strips when an outcome is still present.
+    /// </para>
     /// </summary>
     public static bool IsLibraryGeneratedShape(BpmnExtensionElement element)
     {
