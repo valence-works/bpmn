@@ -149,6 +149,7 @@ public sealed record BpmnTranscriptEntry(
     {
         BpmnErrorDisposition.Caught caught => $"Caught by {caught.CatchingElementId} [{caught.ErrorCode ?? "any error"}]",
         BpmnErrorDisposition.Propagated => "Propagated",
+        BpmnErrorDisposition.Absorbed => "Absorbed",
         _ => disposition.ToString()
     };
 

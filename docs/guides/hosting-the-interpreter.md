@@ -12,7 +12,7 @@ If you only want to run a process and do not want to build any of this, use
 Every entry point is synchronous, takes a request record, and returns a value:
 
 ```text
-(graph, prior state, host snapshot, event) -> (next state, continuation, commands)
+(graph, prior state, host snapshot, event) -> (next state, continuation, commands, error disposition?)
 ```
 
 Nothing is called back. Nothing is awaited. The interpreter computes a decision and hands it to you;
@@ -31,7 +31,7 @@ var evaluation = interpreter.Start(new BpmnStartRequest(graph, priorState: null,
 | --- | --- | --- |
 | `Start` | `BpmnStartRequest(Graph, PriorState, Host, StartSignal?)` | `BpmnEvaluation` |
 | `OnWorkCompleted` | `BpmnWorkCompletedRequest(Graph, PriorState, Host, CompletedBindingRef, CompletedHandle, OutcomeNames, CompletedIterationId?)` | `BpmnEvaluation` |
-| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?) { FaultedIterationId }` | `BpmnFaultEvaluation` |
+| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?) { FaultedIterationId }` | `BpmnEvaluation` |
 | `OnWorkSignalled` | `BpmnWorkSignalledRequest(Graph, PriorState, Host, SignallingBindingRef, SignallingHandle, Code, Payload?, SignallingIterationId?)` | `BpmnEvaluation` |
 
 Work is identified by two values together: the **binding ref**, which the interpreter assigned and
@@ -213,19 +213,23 @@ Timers, human tasks, HTTP calls, message subscriptions, nested processes and lon
 listeners are all `StartWork`. The interpreter does not distinguish them, because the difference is
 entirely about how you run them.
 
-### The fault disposition
+### The error disposition
 
-`OnWorkFaulted` returns a `BpmnFaultEvaluation`, which is an evaluation plus a disposition:
+`BpmnEvaluation.ErrorDisposition` is nullable. `OnWorkFaulted` sets it when the reported failure
+passes through BPMN error routing, and call-activity completions can do the same when their outcome
+is `Faulted`, `DispatchFailed`, or `Cancelled`:
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
     { FaultedIterationId = work.IterationId });
 
-var summary = evaluation.Disposition switch
+var summary = evaluation.ErrorDisposition switch
 {
     BpmnErrorDisposition.Caught caught => $"caught at {caught.CatchingElementId} ({caught.ErrorCode ?? "any"})",
-    BpmnErrorDisposition.Propagated    => "nothing here caught it; the continuation is a Fault",
+    BpmnErrorDisposition.Propagated    => "the error was not handled; the continuation is a Fault",
+    BpmnErrorDisposition.Absorbed      => "the work or scope had already stopped",
+    null                               => "no failure went through BPMN error routing",
     _                                  => "unknown"
 };
 ```
@@ -234,9 +238,14 @@ Note what the request does **not** carry: an error code. The host reports that w
 human terms. Which BPMN error a catcher matches is a property of the model — an error boundary event
 declares its code, and a code-less one catches anything — not something the host names.
 
-`Caught` means an error boundary event or an error event subprocess took the failure and the process
-continues along that path. `Propagated` means no catcher matched, the continuation is a
-`BpmnContinuation.Fault`, and the failure is yours to surface.
+`Caught` means an error boundary event or an error event subprocess took the failure and its route
+completed without fault. `Propagated` means the final continuation is always a
+`BpmnContinuation.Fault`: no catcher matched, or a catcher's route itself faulted. `Absorbed` means
+the failure belonged to work or a scope that had already stopped. Ordinary starts, completions and
+signals, transaction cancellation, and an event subprocess activated on another path leave
+`ErrorDisposition` null. The transaction's `Cancelled` completion is different from a call activity's
+`Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` remains an independent transcript
+field.
 
 You need this because **BPMN has no concept of an incident**. Fault records, alerting, retry policy
 and operator dashboards are engine-operations concerns, and the specification says nothing about any
@@ -322,8 +331,8 @@ public sealed class MinimalHost : IBpmnVariableReader
             _graph, _state, Snapshot(), work.BindingRef, handle, message) { FaultedIterationId = work.IterationId });
 
         // BPMN has no incidents. Recording one is this host's decision, and the
-        // disposition is what makes it an informed decision.
-        if (evaluation.Disposition is BpmnErrorDisposition.Propagated)
+        // error disposition is what makes it an informed decision.
+        if (evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated)
             _faults.Add(new FaultRecord(work.BindingRef, message));
 
         Apply(evaluation);
@@ -482,7 +491,7 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Pass outcome names on completion when a conditional sequence flow depends on them.
 - [ ] Make `CancelWorkSubtree` recursive. It is not "cancel this one thing".
 - [ ] Route `SignalEnclosingScope` to the immediate parent scope, not to the root.
-- [ ] Decide your failure policy from `BpmnErrorDisposition`, not from every fault.
+- [ ] Decide your failure policy from `BpmnEvaluation.ErrorDisposition`, not from every fault.
 
 ## Two traps that are easy to hit and hard to diagnose
 

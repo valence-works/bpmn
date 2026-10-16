@@ -212,18 +212,15 @@ public abstract record BpmnContinuation
 public record BpmnEvaluation(
     BpmnExecutionState State,
     BpmnContinuation Continuation,
-    IReadOnlyList<BpmnHostCommand> Commands);
-
-/// <summary>An evaluation of a work fault, which additionally reports how the error was handled.</summary>
-/// <param name="State">The new execution state.</param>
-/// <param name="Continuation">What this process scope should do next.</param>
-/// <param name="Commands">What to ask the host to do, in order.</param>
-/// <param name="Disposition">Whether a BPMN catcher took the error, or it propagated.</param>
-public sealed record BpmnFaultEvaluation(
-    BpmnExecutionState State,
-    BpmnContinuation Continuation,
-    IReadOnlyList<BpmnHostCommand> Commands,
-    BpmnErrorDisposition Disposition) : BpmnEvaluation(State, Continuation, Commands);
+    IReadOnlyList<BpmnHostCommand> Commands)
+{
+    /// <summary>
+    /// What BPMN did with a host-reported failure, including a call activity's failure outcome, or
+    /// <c>null</c> when this evaluation did not route or absorb a failure. Transaction cancellation and
+    /// event subprocesses activated without a failure do not produce an error disposition.
+    /// </summary>
+    public BpmnErrorDisposition? ErrorDisposition { get; init; }
+}
 
 /// <summary>
 /// What became of a faulted unit of work. This is a verdict, not an instruction: the interpreter reports what
@@ -252,6 +249,16 @@ public abstract record BpmnErrorDisposition
     {
         /// <summary>The shared instance.</summary>
         public static Propagated Instance { get; } = new();
+    }
+
+    /// <summary>
+    /// The failure belonged to work or a process scope that had already stopped. It is a late report,
+    /// not a new unhandled error; the scope retains its existing continuation.
+    /// </summary>
+    public sealed record Absorbed : BpmnErrorDisposition
+    {
+        /// <summary>The shared instance.</summary>
+        public static Absorbed Instance { get; } = new();
     }
 }
 

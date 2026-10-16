@@ -97,7 +97,9 @@ public sealed class TransactionCancellationTests
         transaction.CompleteWork("undo-reserve");
 
         transaction.Outcome.ShouldBe(BpmnInterpreter.CancelledOutcomeName, transaction.Transcript.ToString());
+        transaction.Transcript.Last().Disposition.ShouldBeNull("a transaction cancellation is not a host-reported failure");
         parent.PendingWork.Select(work => work.ElementId).ShouldBe(["Recover"], parent.Transcript.ToString());
+        parent.Transcript.Last().Disposition.ShouldBeNull("routing the cancel boundary is not error disposition");
 
         parent.CompleteWork("recover");
         parent.IsCompleted.ShouldBeTrue(parent.Transcript.ToString());

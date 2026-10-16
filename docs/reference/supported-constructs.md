@@ -30,7 +30,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | `sendTask` | Supported | Publishes a named message and continues. |
 | `receiveTask` | Supported | Waits for a named message. |
 | `callActivity` | Supported | Behaves as a member of the task family; the host resolves and runs the called process. A `calledElement`-less call activity reads with an `Info` finding. |
-| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. |
+| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. The returned `BpmnEvaluation.ErrorDisposition` reports whether routing caught, propagated or absorbed the failure. |
 | `subProcess`, embedded | Supported | The nested body travels as a `NestedProcess` work binding. |
 | `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. |
 | `transaction` | Supported | Modeled as `subProcess` with `isTransaction: true`. May not also carry loop characteristics. |
