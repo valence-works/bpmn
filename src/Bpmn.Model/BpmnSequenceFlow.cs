@@ -73,8 +73,11 @@ public sealed class BpmnSequenceFlow
 
     /// <summary>
     /// Foreign XML retained from this flow: its <c>&lt;documentation&gt;</c>, its
-    /// <c>&lt;extensionElements&gt;</c> children, and any attributes or child elements from namespaces the
-    /// reader does not own.
+    /// <c>&lt;extensionElements&gt;</c> children, unrecognized children (including an author's
+    /// <c>&lt;conditionExpression&gt;</c>, which is carried rather than evaluated), and any attributes
+    /// from namespaces the reader does not own. The predicate this library writes for a
+    /// <see cref="ConditionOutcome"/> is not retained, so a later edit of that outcome cannot leave
+    /// a stale expression.
     /// <para>
     /// Flows carry vendor annotations more often than one might expect - execution listeners on a flow are
     /// common in tool-authored files - so retention here is as load-bearing as it is on elements.

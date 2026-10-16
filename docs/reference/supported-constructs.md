@@ -111,7 +111,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | `sequenceFlow` | Supported | Dropped when it is missing `sourceRef` / `targetRef`, or when either endpoint was dropped. |
 | Default flow | Supported | Taken only when no conditional flow matched. Declared on both sides: `defaultFlowId` on the element, `isDefault` on the flow. |
 | Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. |
-| Conditional flow, **expression-based** | Degraded | A `<conditionExpression>` is not evaluated; the flow reads as unconditional and the finding quotes the expression. This is a permanent design position, not a gap — see [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). |
+| Conditional flow, **expression-based** | Degraded | A `<conditionExpression>` is not evaluated; the flow reads as unconditional and the finding quotes the expression. The element itself is retained and written back (body, `language`, `xsi:type`, vendor attributes). This is a permanent design position, not a gap — see [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). |
 | Cyclic flow (loop-backs) | Supported | A token traversing a backward flow mints a fresh iteration key; join accounting groups arrivals by element *and* iteration, so a revisited join never conflates one pass with the next. |
 | `association` | Supported | Read to associate a compensation boundary event with its handler. |
 | `textAnnotation`, `group` | Dropped | Reported and dropped; they carry no executable meaning. |

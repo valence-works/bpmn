@@ -540,8 +540,11 @@ public sealed class BpmnXmlReader
                     if (conditionOutcome is null && conditionExpression is not null)
                         context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Value.Trim()}'); expression conditions are not evaluated by this model, so the flow read as unconditional.", id);
 
+                    // An author's conditionExpression is retained (body, language, xsi:type, vendor
+                    // attributes). The predicate this writer itself emits for a conditionOutcome is
+                    // consumed, so a later edit of that outcome cannot leave a stale expression.
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
-                        extensions: context.Capture(child, IsFlowNodeChildConsumed)));
+                        extensions: context.Capture(child, grandchild => BpmnConditionExpression.IsLibraryGenerated(grandchild, conditionOutcome))));
                     break;
                 }
                 case "laneSet":
@@ -1680,7 +1683,7 @@ public sealed class BpmnXmlReader
 
     private static bool IsFlowNodeChildConsumed(XElement child) =>
         child.Name.Namespace == BpmnXmlNames.Model
-        && (child.Name.LocalName is "incoming" or "outgoing" or "conditionExpression"
+        && (child.Name.LocalName is "incoming" or "outgoing"
                 or "multiInstanceLoopCharacteristics" or "standardLoopCharacteristics"
             || IsEventDefinition(child));
 

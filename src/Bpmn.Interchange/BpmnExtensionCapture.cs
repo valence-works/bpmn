@@ -89,7 +89,7 @@ internal static class BpmnExtensionCapture
         var xml = new XElement(ToXName(element.Name));
 
         foreach (var attribute in element.Attributes)
-            xml.SetAttributeValue(ToXName(attribute.Name), attribute.Value);
+            WriteAttribute(xml, attribute);
 
         foreach (var child in element.Children)
             xml.Add(ToXml(child));
@@ -111,12 +111,61 @@ internal static class BpmnExtensionCapture
     {
         var attributes = element.Attributes()
             .Where(attribute => !attribute.IsNamespaceDeclaration)
-            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), attribute.Value))
+            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(element, attribute)))
             .ToArray();
         var children = element.Elements().Select(ToExtensionElement).ToArray();
         var value = children.Length == 0 && !string.IsNullOrEmpty(element.Value) ? element.Value : null;
 
         return new BpmnExtensionElement(ToQName(element.Name), attributes, children, value);
+    }
+
+    /// <summary>
+    /// Stores <c>xsi:type</c> as an ordinary QName so the payload format stays compatible with 0.3.0.
+    /// A prefix that resolves to the BPMN model namespace is normalized to <c>bpmn:&lt;local&gt;</c>;
+    /// every other prefix, and any unprefixed value, is kept as authored. Clark names are not used.
+    /// </summary>
+    private static string CaptureAttributeValue(XElement scope, XAttribute attribute)
+    {
+        if (attribute.Name != BpmnXmlNames.SchemaInstance + "type")
+            return attribute.Value;
+
+        var value = attribute.Value;
+        var colon = value.IndexOf(':');
+        if (colon <= 0)
+            return value;
+
+        var prefix = value[..colon];
+        var local = value[(colon + 1)..];
+        return scope.GetNamespaceOfPrefix(prefix) == BpmnXmlNames.Model
+            ? $"bpmn:{local}"
+            : value;
+    }
+
+    private static void WriteAttribute(XElement xml, BpmnForeignAttribute attribute)
+    {
+        var name = ToXName(attribute.Name);
+        if (name == BpmnXmlNames.SchemaInstance + "type")
+        {
+            WriteTypeAttribute(xml, attribute.Value);
+            return;
+        }
+
+        xml.SetAttributeValue(name, attribute.Value);
+    }
+
+    /// <summary>
+    /// Writes <c>xsi:type</c>. Capture already rewrote a prefix bound to the BPMN model namespace as
+    /// <c>bpmn:&lt;local&gt;</c>; this method declares <c>xmlns:bpmn</c> so that form resolves. Any
+    /// other prefix is written as stored and is not rebound — a leftover <c>model:</c> came from a
+    /// prefix that was not bound to BPMN, and must not steal a vendor <c>xmlns:model</c>.
+    /// </summary>
+    private static void WriteTypeAttribute(XElement xml, string value)
+    {
+        var colon = value.IndexOf(':');
+        if (colon > 0 && value[..colon] == "bpmn")
+            xml.SetAttributeValue(XNamespace.Xmlns + "bpmn", BpmnXmlNames.Model.NamespaceName);
+
+        xml.SetAttributeValue(BpmnXmlNames.SchemaInstance + "type", value);
     }
 
     /// <summary>
