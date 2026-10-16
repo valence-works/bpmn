@@ -924,6 +924,44 @@ public sealed class RoundTripTests
     }
 
     /// <summary>
+    /// A stored <c>model:</c> prefix was not bound to BPMN (capture would have rewritten it to
+    /// <c>bpmn:</c>). The writer must not rebind it, or vendor content such as
+    /// <c>xmlns:model="urn:vendor:model" xsi:type="model:Thing"</c> changes namespace on write.
+    /// </summary>
+    [Fact]
+    public void A_vendor_model_xsi_type_is_not_rebound_to_the_bpmn_namespace()
+    {
+        const string vendorType = """
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                              xmlns:vendor="urn:vendor"
+                              xmlns:model="urn:vendor:model"
+                              id="Defs">
+              <bpmn:process id="P" isExecutable="true">
+                <bpmn:startEvent id="Start" />
+                <bpmn:endEvent id="Done" />
+                <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done">
+                  <bpmn:extensionElements>
+                    <vendor:meta xsi:type="model:Thing" />
+                  </bpmn:extensionElements>
+                </bpmn:sequenceFlow>
+              </bpmn:process>
+            </bpmn:definitions>
+            """;
+
+        var (first, firstXml, _, _) = RoundTrip(vendorType);
+
+        var retained = FlowExtensions(first, "F").ExtensionElements.ShouldHaveSingleItem();
+        Attribute(retained, Xsi.NamespaceName, "type").ShouldBe("model:Thing");
+
+        var written = XDocument.Parse(firstXml).Descendants()
+            .Single(element => element.Name.LocalName == "meta");
+        var type = written.Attribute(Xsi + "type").ShouldNotBeNull();
+        type.Value.ShouldBe("model:Thing");
+        written.GetNamespaceOfPrefix("model").ShouldNotBe(BpmnXmlNames.Model);
+    }
+
+    /// <summary>
     /// An outcome plus a generated-shaped body that names a different outcome: kept on read,
     /// dropped on write while the outcome remains, kept if the outcome is then cleared.
     /// </summary>

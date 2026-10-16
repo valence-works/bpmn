@@ -154,21 +154,19 @@ internal static class BpmnExtensionCapture
     }
 
     /// <summary>
-    /// Writes <c>xsi:type</c> so a conventional BPMN prefix binds to the model namespace. Capture
-    /// already normalized model-namespace prefixes to <c>bpmn:&lt;local&gt;</c>; leftovers such as
-    /// <c>semantic:</c> or <c>bpmn2:</c> are rebound the same way rather than left dangling.
+    /// Writes <c>xsi:type</c>. Capture already rewrote a prefix bound to the BPMN model namespace as
+    /// <c>bpmn:&lt;local&gt;</c>; this method declares <c>xmlns:bpmn</c> so that form resolves. Any
+    /// other prefix is written as stored and is not rebound — a leftover <c>model:</c> came from a
+    /// prefix that was not bound to BPMN, and must not steal a vendor <c>xmlns:model</c>.
     /// </summary>
     private static void WriteTypeAttribute(XElement xml, string value)
     {
         var colon = value.IndexOf(':');
-        if (colon > 0 && IsConventionalBpmnTypePrefix(value[..colon]))
-            xml.SetAttributeValue(XNamespace.Xmlns + value[..colon], BpmnXmlNames.Model.NamespaceName);
+        if (colon > 0 && value[..colon] == "bpmn")
+            xml.SetAttributeValue(XNamespace.Xmlns + "bpmn", BpmnXmlNames.Model.NamespaceName);
 
         xml.SetAttributeValue(BpmnXmlNames.SchemaInstance + "type", value);
     }
-
-    private static bool IsConventionalBpmnTypePrefix(string prefix) =>
-        prefix is "bpmn" or "bpmn2" or "semantic" or "model";
 
     /// <summary>
     /// Counts retained content per namespace, for the one-finding-per-namespace report. BPMN's own namespaces
