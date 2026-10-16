@@ -356,7 +356,9 @@ routed as an elbow below the row, so a cyclic graph does not render as a pile of
 A sequence flow's `<conditionExpression>` is part of that retained content. The library does not
 evaluate it, but a read then write keeps the author's body, `language`, `xsi:type`, and vendor
 attributes. A generated `outcome == '…'` expression is written only when the model has a
-`conditionOutcome` and no original expression — typically a process built in code.
+`conditionOutcome` and no original expression — typically a process built in code. That generated
+predicate is consumed on the next read, so changing or clearing the outcome does not leave a stale
+expression.
 
 What the writer does not do is reproduce the source byte for byte.
 

@@ -233,18 +233,21 @@ public sealed class BpmnXmlWriter
                 new XAttribute("sourceRef", flow.SourceRef),
                 new XAttribute("targetRef", flow.TargetRef));
             if (flow.Name is not null) flowElement.SetAttributeValue("name", flow.Name);
+            var extensions = WithoutLibraryConditionExpression(flow.Extensions, flow.ConditionOutcome);
             if (flow.ConditionOutcome is not null)
             {
                 // BPMN has no outcome-matched condition, so the match rides a vendor attribute. A
                 // synthesized conditionExpression is only for models that never had one — typically a
                 // process built in code — so other modelers still see a readable predicate. An author's
-                // original expression is retained as a foreign child and restored below.
+                // original expression is retained as a foreign child and restored below. The library's
+                // own generated predicate is stripped first, so a changed or cleared outcome is not
+                // written next to a stale outcome == '…' body.
                 flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
-                if (!HasRetainedConditionExpression(flow.Extensions))
-                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", $"outcome == '{flow.ConditionOutcome}'"));
+                if (!HasAuthorConditionExpression(extensions))
+                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnConditionExpression.GeneratedBody(flow.ConditionOutcome)));
             }
 
-            ApplyExtensions(flowElement, flow.Extensions, context.Vendor);
+            ApplyExtensions(flowElement, extensions, context.Vendor);
             container.Add(flowElement);
         }
 
@@ -704,15 +707,37 @@ public sealed class BpmnXmlWriter
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>
+    /// Drops a retained <c>conditionExpression</c> that is this library's generated predicate, so a write
+    /// after the outcome changed or was cleared does not emit a contradictory body. An author's
+    /// expression — anything with attributes, children, or a different body — is left alone.
+    /// </summary>
+    private static BpmnExtensions WithoutLibraryConditionExpression(BpmnExtensions? extensions, string? conditionOutcome)
+    {
+        extensions ??= BpmnExtensions.Empty;
+        if (extensions.ForeignChildren.Count == 0)
+            return extensions;
+
+        // Only a flow that still has an outcome can own a generated predicate. An expression-only
+        // flow may legitimately carry the same text as an author's condition.
+        if (conditionOutcome is null)
+            return extensions;
+
+        var kept = extensions.ForeignChildren
+            .Where(child => !BpmnConditionExpression.IsLibraryGeneratedShape(child.Element))
+            .ToList();
+        return kept.Count == extensions.ForeignChildren.Count
+            ? extensions
+            : extensions with { ForeignChildren = kept };
+    }
+
+    /// <summary>
     /// Whether the flow already carries the author's <c>conditionExpression</c>, so the writer must not
     /// invent a second one. The element lives in BPMN's own namespace and is retained rather than
     /// interpreted, because this library never evaluates it.
     /// </summary>
-    private static bool HasRetainedConditionExpression(BpmnExtensions? extensions) =>
+    private static bool HasAuthorConditionExpression(BpmnExtensions? extensions) =>
         extensions is not null
-        && extensions.ForeignChildren.Any(child =>
-            StringComparer.Ordinal.Equals(child.Element.Name.LocalName, "conditionExpression")
-            && StringComparer.Ordinal.Equals(child.Element.Name.Namespace, BpmnXmlNames.Model.NamespaceName));
+        && extensions.ForeignChildren.Any(child => BpmnConditionExpression.IsModelElement(child.Element.Name));
 
     /// <summary>Adds a child at the position its name takes in the canonical order, rather than at the end.</summary>
     private static void InsertByRank(XElement parent, XElement child)
@@ -746,7 +771,7 @@ public sealed class BpmnXmlWriter
                 Consider(attribute.Name);
         }
 
-        var taken = new HashSet<string>(StringComparer.Ordinal) { "bpmndi", "dc", "di", vendor.Prefix, "xml", "xmlns" };
+        var taken = new HashSet<string>(StringComparer.Ordinal) { "bpmn", "bpmndi", "dc", "di", vendor.Prefix, "xml", "xmlns", "xsi" };
         var fallback = 1;
         foreach (var ns in namespaces)
         {
@@ -761,6 +786,11 @@ public sealed class BpmnXmlWriter
         }
     }
 
+    /// <summary>
+    /// Picks a readable prefix for a retained namespace. XML Schema instance is always <c>xsi</c> —
+    /// the conventional prefix for <c>xsi:type</c> — rather than a host-derived guess such as <c>w3</c>.
+    /// That changes output bytes, not meaning.
+    /// </summary>
     private static string? SuggestPrefix(string ns)
     {
         if (StringComparer.Ordinal.Equals(ns, BpmnXmlNames.SchemaInstance.NamespaceName))

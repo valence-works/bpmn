@@ -774,7 +774,50 @@ public sealed class RoundTripTests
     [Fact]
     public void A_code_built_outcome_still_gets_a_generated_expression_when_none_was_retained()
     {
-        var definitions = new BpmnDefinitions(
+        var xml = _writer.Write(OutcomeOnlyDefinitions("approved"));
+        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'approved'");
+
+        var read = Read(xml);
+        var flow = Process(read).SequenceFlows.Single();
+        flow.ConditionOutcome.ShouldBe("approved");
+        flow.Extensions.ForeignChildren.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void Changing_a_library_outcome_regenerates_the_conditionExpression()
+    {
+        var read = Read(_writer.Write(OutcomeOnlyDefinitions("approved")));
+        Process(read).SequenceFlows.Single().Extensions.ForeignChildren.ShouldBeEmpty();
+
+        var xml = _writer.Write(WithFlowOutcome(read.Definitions, "rejected"));
+        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'rejected'");
+        xml.ShouldNotContain("outcome == 'approved'");
+    }
+
+    [Fact]
+    public void Removing_a_library_outcome_drops_the_generated_conditionExpression()
+    {
+        var read = Read(_writer.Write(OutcomeOnlyDefinitions("approved")));
+
+        var xml = _writer.Write(WithFlowOutcome(read.Definitions, conditionOutcome: null));
+        var flow = XDocument.Parse(xml).Descendants()
+            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == "f1");
+        flow.Elements().ShouldNotContain(element => element.Name.LocalName == "conditionExpression");
+        flow.Attributes().ShouldNotContain(attribute => attribute.Name.LocalName == "conditionOutcome");
+    }
+
+    [Fact]
+    public void A_stale_generated_expression_on_the_model_is_replaced_when_the_outcome_changes()
+    {
+        var stale = new BpmnExtensions(ForeignChildren:
+        [
+            new BpmnForeignChild(
+                new BpmnExtensionElement(new BpmnQName(BpmnXmlNames.Model.NamespaceName, "conditionExpression"),
+                    Value: "outcome == 'approved'"),
+                Index: 0)
+        ]);
+
+        var xml = _writer.Write(new BpmnDefinitions(
             Id: "built",
             Processes:
             [
@@ -784,15 +827,115 @@ public sealed class RoundTripTests
                     new BpmnElement("done", BpmnElementTypes.EndEvent)
                 ], SequenceFlows:
                 [
-                    new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: "approved")
+                    new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: "rejected", extensions: stale)
                 ])
-            ]);
+            ]));
 
-        var xml = _writer.Write(definitions);
-        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'approved'");
+        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'rejected'");
+        xml.ShouldNotContain("outcome == 'approved'");
+    }
 
-        var read = Read(xml);
-        read.Definitions.Processes.Single().SequenceFlows.Single().ConditionOutcome.ShouldBe("approved");
-        RetainedExpression(read, "f1").Value.ShouldBe("outcome == 'approved'");
+    [Fact]
+    public void An_author_expression_that_looks_like_the_generated_body_is_kept_when_there_is_no_outcome()
+    {
+        const string authored = """
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs">
+              <bpmn:process id="P" isExecutable="true">
+                <bpmn:startEvent id="Start" />
+                <bpmn:endEvent id="Done" />
+                <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done">
+                  <bpmn:conditionExpression>outcome == 'approved'</bpmn:conditionExpression>
+                </bpmn:sequenceFlow>
+              </bpmn:process>
+            </bpmn:definitions>
+            """;
+
+        var (first, firstXml, _, _) = RoundTrip(authored);
+        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'approved'");
+        WrittenExpression(firstXml, "F").Value.ShouldBe("outcome == 'approved'");
+        Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBeNull();
+    }
+
+    [Fact]
+    public void A_prefixed_xsi_type_still_resolves_after_a_round_trip()
+    {
+        const string prefixed = """
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                              id="Defs" targetNamespace="http://example.test/orders">
+              <bpmn:process id="P" isExecutable="true">
+                <bpmn:startEvent id="Start" />
+                <bpmn:endEvent id="Done" />
+                <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done">
+                  <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">amount &lt; 1000</bpmn:conditionExpression>
+                </bpmn:sequenceFlow>
+              </bpmn:process>
+            </bpmn:definitions>
+            """;
+
+        var (first, firstXml, second, _) = RoundTrip(prefixed);
+
+        var retained = RetainedExpression(first, "F");
+        retained.Value.ShouldBe("amount < 1000");
+        var capturedType = Attribute(retained, Xsi.NamespaceName, "type");
+        capturedType.ShouldNotBeNull();
+        capturedType.ShouldContain("tFormalExpression");
+
+        var written = WrittenExpression(firstXml, "F");
+        written.Value.ShouldBe("amount < 1000");
+        var type = written.Attribute(Xsi + "type").ShouldNotBeNull();
+        var expanded = ExpandType(written, type.Value);
+        expanded.Namespace.ShouldBe(BpmnXmlNames.Model.NamespaceName);
+        expanded.LocalName.ShouldBe("tFormalExpression");
+
+        var secondXml = _writer.Write(second);
+        var secondWritten = WrittenExpression(secondXml, "F");
+        var secondType = secondWritten.Attribute(Xsi + "type").ShouldNotBeNull();
+        ExpandType(secondWritten, secondType.Value).ShouldBe(expanded);
+    }
+
+    private static BpmnDefinitions OutcomeOnlyDefinitions(string outcome) =>
+        new(Id: "built", Processes:
+        [
+            new BpmnProcessDefinition("p", Elements:
+            [
+                new BpmnElement("start", BpmnElementTypes.StartEvent),
+                new BpmnElement("done", BpmnElementTypes.EndEvent)
+            ], SequenceFlows:
+            [
+                new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: outcome)
+            ])
+        ]);
+
+    private static BpmnDefinitions WithFlowOutcome(BpmnDefinitions definitions, string? conditionOutcome)
+    {
+        var process = definitions.Processes.Single();
+        var flow = process.SequenceFlows.Single();
+        return definitions with
+        {
+            Processes =
+            [
+                process with
+                {
+                    SequenceFlows =
+                    [
+                        new BpmnSequenceFlow(flow.FlowId, flow.SourceRef, flow.TargetRef, flow.Name, conditionOutcome, flow.IsDefault, flow.Extensions)
+                    ]
+                }
+            ]
+        };
+    }
+
+    private static (string? Namespace, string LocalName) ExpandType(XElement scope, string qname)
+    {
+        var colon = qname.IndexOf(':');
+        if (colon <= 0)
+            return (scope.GetDefaultNamespace().NamespaceName, qname);
+
+        var prefix = qname[..colon];
+        var local = qname[(colon + 1)..];
+        var ns = scope.GetNamespaceOfPrefix(prefix);
+        ns.ShouldNotBeNull($"prefixed xsi:type '{qname}' must resolve in the written document");
+        return (ns!.NamespaceName, local);
     }
 }

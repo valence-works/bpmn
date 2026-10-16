@@ -89,7 +89,7 @@ internal static class BpmnExtensionCapture
         var xml = new XElement(ToXName(element.Name));
 
         foreach (var attribute in element.Attributes)
-            xml.SetAttributeValue(ToXName(attribute.Name), attribute.Value);
+            WriteAttribute(xml, attribute);
 
         foreach (var child in element.Children)
             xml.Add(ToXml(child));
@@ -111,13 +111,95 @@ internal static class BpmnExtensionCapture
     {
         var attributes = element.Attributes()
             .Where(attribute => !attribute.IsNamespaceDeclaration)
-            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), attribute.Value))
+            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(element, attribute)))
             .ToArray();
         var children = element.Elements().Select(ToExtensionElement).ToArray();
         var value = children.Length == 0 && !string.IsNullOrEmpty(element.Value) ? element.Value : null;
 
         return new BpmnExtensionElement(ToQName(element.Name), attributes, children, value);
     }
+
+    /// <summary>
+    /// Resolves a prefixed <c>xsi:type</c> against the source element's in-scope prefixes and stores it
+    /// as a Clark name, so a later write can re-emit a prefix that actually binds. Unprefixed values
+    /// (<c>tFormalExpression</c>) are kept as authored — that is the form most BPMN files already use.
+    /// </summary>
+    private static string CaptureAttributeValue(XElement scope, XAttribute attribute)
+    {
+        if (attribute.Name != BpmnXmlNames.SchemaInstance + "type")
+            return attribute.Value;
+
+        var value = attribute.Value;
+        var colon = value.IndexOf(':');
+        if (colon <= 0)
+            return value;
+
+        var prefix = value[..colon];
+        var local = value[(colon + 1)..];
+        var ns = scope.GetNamespaceOfPrefix(prefix);
+        return ns is null || ns == XNamespace.None
+            ? value
+            : $"{{{ns.NamespaceName}}}{local}";
+    }
+
+    private static void WriteAttribute(XElement xml, BpmnForeignAttribute attribute)
+    {
+        var name = ToXName(attribute.Name);
+        if (name == BpmnXmlNames.SchemaInstance + "type")
+        {
+            WriteTypeAttribute(xml, attribute.Value);
+            return;
+        }
+
+        xml.SetAttributeValue(name, attribute.Value);
+    }
+
+    /// <summary>
+    /// Writes <c>xsi:type</c> so the QName resolves in the output. A Clark name captured from a
+    /// prefixed source (<c>bpmn:tFormalExpression</c>, <c>semantic:tFormalExpression</c>, …) is
+    /// re-emitted with a declared prefix; a leftover conventional BPMN prefix is rebound to the
+    /// model namespace rather than left dangling.
+    /// </summary>
+    private static void WriteTypeAttribute(XElement xml, string value)
+    {
+        if (TryParseClarkName(value, out var ns, out var local))
+        {
+            var prefix = PrefixForTypeNamespace(ns);
+            xml.SetAttributeValue(XNamespace.Xmlns + prefix, ns);
+            xml.SetAttributeValue(BpmnXmlNames.SchemaInstance + "type", $"{prefix}:{local}");
+            return;
+        }
+
+        var colon = value.IndexOf(':');
+        if (colon > 0 && IsConventionalBpmnTypePrefix(value[..colon]))
+            xml.SetAttributeValue(XNamespace.Xmlns + value[..colon], BpmnXmlNames.Model.NamespaceName);
+
+        xml.SetAttributeValue(BpmnXmlNames.SchemaInstance + "type", value);
+    }
+
+    private static bool TryParseClarkName(string value, out string ns, out string local)
+    {
+        ns = "";
+        local = "";
+        if (value.Length < 3 || value[0] != '{')
+            return false;
+        var end = value.IndexOf('}');
+        if (end <= 1 || end == value.Length - 1)
+            return false;
+        ns = value[1..end];
+        local = value[(end + 1)..];
+        return ns.Length > 0 && local.Length > 0;
+    }
+
+    /// <summary>
+    /// Prefix used when re-emitting a resolved <c>xsi:type</c>. The model namespace is always
+    /// <c>bpmn</c>, which is what bpmn.io and Camunda write.
+    /// </summary>
+    private static string PrefixForTypeNamespace(string ns) =>
+        StringComparer.Ordinal.Equals(ns, BpmnXmlNames.Model.NamespaceName) ? "bpmn" : "ns";
+
+    private static bool IsConventionalBpmnTypePrefix(string prefix) =>
+        prefix is "bpmn" or "bpmn2" or "semantic" or "model";
 
     /// <summary>
     /// Counts retained content per namespace, for the one-finding-per-namespace report. BPMN's own namespaces
