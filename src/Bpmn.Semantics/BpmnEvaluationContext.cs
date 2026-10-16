@@ -80,7 +80,8 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     /// on a non-fault continuation: one that has been carried but not staged is discarded when the process
     /// faults, because the whole scope is going away and a premature teardown would race the fault. The one
     /// command added mid-propagation is the signal an escalation throw raises, which happened before any
-    /// verdict and so rides whichever continuation follows.
+    /// verdict and so rides whichever continuation follows, except a fault at the propagation limit, which
+    /// withdraws it.
     /// </summary>
     public void AddCommand(BpmnHostCommand command) => _commands.Add(command);
 
@@ -94,4 +95,28 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
 
     /// <summary>Carries a teardown to the clean exit, for a step whose result never reaches the caller.</summary>
     public void CarryTeardown(PendingTeardown teardown) => _carriedTeardowns.Add(teardown);
+
+    /// <summary>
+    /// How many tokens this evaluation has dispatched to an element behavior on arrival. Counted here rather
+    /// than in the propagation loop so the limit holds for the evaluation as a whole, however many times it
+    /// enters that loop.
+    /// </summary>
+    public int PropagationSteps { get; private set; }
+
+    /// <summary>The element of the token most recently dispatched, or <c>null</c> before the first.</summary>
+    public string? LastPropagatedElementId { get; private set; }
+
+    /// <summary>
+    /// Withdraws every <see cref="BpmnHostCommand.SignalEnclosingScope"/> on the command list and returns how many
+    /// there were. Only the propagation limit does this; every other continuation keeps the signals an
+    /// escalation throw raised.
+    /// </summary>
+    public int WithdrawScopeSignals() => _commands.RemoveAll(command => command is BpmnHostCommand.SignalEnclosingScope);
+
+    /// <summary>Records one token dispatched to the behavior of <paramref name="elementId"/>.</summary>
+    public void CountPropagationStep(string elementId)
+    {
+        PropagationSteps++;
+        LastPropagatedElementId = elementId;
+    }
 }
