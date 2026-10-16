@@ -148,7 +148,8 @@ public sealed class VendorNamespaceTests
 
         ShouldHaveReadEveryVendorFact(read);
         read.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
-        // Interpreted content is not also retained, at any of the three levels that could hold it.
+        // Interpreted vendor names are not also retained. The synthesized conditionExpression the
+        // writer emitted for a code-built outcome is consumed, so a later write can regenerate it.
         Process(read).Extensions.IsEmpty.ShouldBeTrue();
         Flow(read, "f1").Extensions.IsEmpty.ShouldBeTrue();
         Element(read, "call").Extensions.IsEmpty.ShouldBeTrue();
