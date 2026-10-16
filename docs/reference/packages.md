@@ -141,6 +141,8 @@ See [Reading and writing BPMN XML](../guides/reading-and-writing-bpmn.md).
 
 - **Entry points**: `BpmnInterpreter` (`CreateDefault`, `Start`, `OnWorkCompleted`,
   `OnWorkFaulted`, `OnWorkSignalled`).
+- **Escalation signals**: `BpmnInterpreter.EscalationSignalCode`, `EscalationPayload` and
+  `TryReadEscalationCode`; see [Errors and escalation](../concepts/errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 - **Requests**: `BpmnStartRequest`, `BpmnWorkCompletedRequest`, `BpmnWorkFaultedRequest`,
   `BpmnWorkSignalledRequest`, `BpmnStartSignal`.
 - **Graph**: `BpmnGraph`, `BpmnBoundWork`.

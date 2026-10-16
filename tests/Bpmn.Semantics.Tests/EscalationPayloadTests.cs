@@ -50,9 +50,7 @@ public sealed class EscalationPayloadTests
     [Fact]
     public void A_padded_code_reads_back_trimmed()
     {
-        using var document = JsonDocument.Parse("""{"code":" overdue "}""");
-
-        BpmnInterpreter.TryReadEscalationCode(document.RootElement, out var code).ShouldBeTrue();
+        BpmnInterpreter.TryReadEscalationCode(TestJson.Parse("""{"code":" overdue "}"""), out var code).ShouldBeTrue();
         code.ShouldBe("overdue");
     }
 
@@ -68,7 +66,7 @@ public sealed class EscalationPayloadTests
     [InlineData("""{"code":"   "}""")]
     public void A_payload_without_a_readable_code_reads_as_none(string? json)
     {
-        JsonElement? payload = json is null ? null : JsonDocument.Parse(json).RootElement;
+        JsonElement? payload = json is null ? null : TestJson.Parse(json);
 
         BpmnInterpreter.TryReadEscalationCode(payload, out var code).ShouldBeFalse();
         code.ShouldBeNull();
