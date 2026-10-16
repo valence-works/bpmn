@@ -76,6 +76,18 @@ public sealed record BpmnToken
     /// </summary>
     [JsonPropertyName("kind")]
     public BpmnTokenKind? Kind { get; init; }
+
+    /// <summary>
+    /// The host handle of the work the interpreter tore down when it cancelled this token, or <c>null</c>.
+    /// Set only on a <see cref="BpmnTokenStatus.Canceled"/> token, and only once the teardown was actually issued:
+    /// a <c>CancelWorkSubtree</c> for this handle went out on a non-fault continuation. A completion or fault that
+    /// still arrives for the handle is the late callback of work the scope already stopped, and is absorbed; the
+    /// field is then cleared, so a second report for the same handle is not. Work withdrawn before the host saw it
+    /// had no handle, so it records none. Additive in payload format 1.1.0, and init-only rather than a constructor
+    /// parameter so the constructor is unchanged.
+    /// </summary>
+    [JsonPropertyName("stoppedHandle")]
+    public string? StoppedHandle { get; init; }
 }
 
 /// <summary>The token-role discriminator; see <see cref="BpmnToken.Kind"/>. Additive and nullable — it is never a token status.</summary>
