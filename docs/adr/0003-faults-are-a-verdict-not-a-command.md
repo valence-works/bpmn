@@ -22,10 +22,11 @@ cancellation and an event subprocess activated on another path.
 
 The disposition is a closed set:
 
-- `Caught(CatchingElementId, ErrorCode?)` names the catcher that took the error; a null code means
-  the catcher was a catch-all.
+- `Caught(CatchingElementId, ErrorCode?)` names the catcher that took the error in an evaluation
+  that returned without fault; recovery work may still be running. A null code means the catcher
+  was a catch-all.
 - `Propagated` means the final evaluation continuation is `Fault`: either no catcher took the error,
-  or a catcher's route itself subsequently faulted.
+  or a catcher's route faulted during this evaluation.
 - `Absorbed` means the failure belonged to work or a scope that had already stopped.
 
 The transcript's `BpmnTranscriptEntry.Disposition` remains unchanged. This amendment changes the

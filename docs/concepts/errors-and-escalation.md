@@ -75,11 +75,11 @@ catches it.
 The returned `BpmnEvaluation` reports how BPMN handled a host-reported failure in its nullable
 `ErrorDisposition`:
 
-- `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched and its route completed
-  without fault. From BPMN's point of view nothing is wrong; the model anticipated this. A null code
-  means the catcher is a catch-all.
+- `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched and this evaluation
+  returned without fault. Recovery work may still be running. A null code means the catcher is a
+  catch-all.
 - `Propagated` — the final continuation is always a `Fault`. No catcher may have matched, or a
-  catcher's route may itself have faulted, so the failure has gone up.
+  catcher's route faulted during this evaluation, so the failure has gone up.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
 This applies both to `OnWorkFaulted` and to `OnWorkCompleted` when a call activity reports the

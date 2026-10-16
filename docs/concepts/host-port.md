@@ -269,10 +269,10 @@ host it knows cannot answer.
 host-reported failure without making the host adopt an incident or retry policy:
 
 - `Caught(CatchingElementId, ErrorCode?)` — an error boundary event or an error event subprocess took
-  the failure, and its route completed without fault. From BPMN's point of view nothing went wrong. A
+  the failure and this evaluation returned without fault. Recovery work may still be running. A
   null `ErrorCode` means the catcher is a catch-all.
 - `Propagated` — the final evaluation has a `Fault` continuation. This means no catcher in the scope
-  matched, or a catcher's route itself subsequently faulted; the failure is now the enclosing
+  matched, or a catcher's route faulted during this evaluation; the failure is now the enclosing
   scope's problem, or at the root, yours.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 

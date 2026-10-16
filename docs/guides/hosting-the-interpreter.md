@@ -238,9 +238,10 @@ Note what the request does **not** carry: an error code. The host reports that w
 human terms. Which BPMN error a catcher matches is a property of the model — an error boundary event
 declares its code, and a code-less one catches anything — not something the host names.
 
-`Caught` means an error boundary event or an error event subprocess took the failure and its route
-completed without fault. `Propagated` means the final continuation is always a
-`BpmnContinuation.Fault`: no catcher matched, or a catcher's route itself faulted. `Absorbed` means
+`Caught` means an error boundary event or an error event subprocess took the failure and this
+evaluation returned without fault. Recovery work may still be running. `Propagated` means the final
+continuation is always a `BpmnContinuation.Fault`: no catcher matched, or a catcher's route faulted
+during this evaluation. `Absorbed` means
 the failure belonged to work or a scope that had already stopped. Ordinary starts, completions and
 signals, transaction cancellation, and an event subprocess activated on another path leave
 `ErrorDisposition` null. The transaction's `Cancelled` completion is different from a call activity's
