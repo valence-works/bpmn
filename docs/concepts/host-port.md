@@ -209,6 +209,15 @@ Two optional fields appear on specific constructs. `IterationScope` carries the 
 multi-instance instance must be seeded with: always the zero-based `loopIndex`, plus the current item
 in collection mode. `StartElementHint` names the start event an event subprocess body must begin at.
 
+`ProducedByHandle` identifies the producer of ordinary element work: the completed work's handle
+when its callback routes to this start, or the scope instance identity during initial propagation.
+It follows the evaluation's existing provenance through synchronous routing and fan-out. Treat it
+as opaque reporting data; it does not replace the handle you assign to the newly started work or
+change callback matching. It is null for scope-owned starts: multi-instance instances,
+compensation handlers, boundary/scope listeners and event-subprocess bodies. Use your scope
+identity for those starts if your scheduler needs an owner; see
+[the host-port decision](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-17-amendment-scheduling-provenance).
+
 The interpreter never parses a `BindingRef` — it compares and echoes it. Resolving one to an actual
 timer, work item, HTTP call or nested process is entirely yours.
 

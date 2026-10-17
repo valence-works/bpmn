@@ -147,7 +147,16 @@ public abstract record BpmnHostCommand
         string SchedulingCause,
         IReadOnlyDictionary<string, string> Correlation,
         BpmnIterationScope? IterationScope = null,
-        string? StartElementHint = null) : BpmnHostCommand;
+        string? StartElementHint = null) : BpmnHostCommand
+    {
+        /// <summary>
+        /// The opaque producer of ordinary element work: a completed work handle when routing its callback,
+        /// or the scope instance identity on initial propagation. Null for scope-owned starts (multi-instance
+        /// instances, compensation handlers, boundary/scope listeners and event-subprocess bodies). Reporting
+        /// only; it does not participate in callback matching.
+        /// </summary>
+        public string? ProducedByHandle { get; init; }
+    }
 
     /// <summary>
     /// Stop a running unit of work and everything it in turn started. Issued when BPMN interrupts: a losing
