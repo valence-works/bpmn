@@ -1746,7 +1746,8 @@ public sealed class BpmnInterpreter
                         return StartMultiInstanceLoop(context, graph, state, element, token, bindingRef, producedBy);
 
                     state = UpdateToken(state, token with { Status = BpmnTokenStatus.AwaitingChild });
-                    state = StartWork(context, state, bindingRef, element.ElementId, token.TokenId, $"element:{element.ElementType}");
+                    state = StartWork(context, state, bindingRef, element.ElementId, token.TokenId, $"element:{element.ElementType}",
+                        producedByHandle: producedBy);
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Scheduled, element.ElementId, null, token.TokenId, $"BPMN element '{element.ElementId}' started work '{bindingRef}'.");
                     // Arm the host's catch boundaries alongside its bound work; error boundaries stay dormant.
                     state = ArmCatchBoundaries(context, graph, state, element, token.TokenId, producedBy);
@@ -2477,6 +2478,8 @@ public sealed class BpmnInterpreter
     /// <summary>
     /// Asks the host to start the work bound to an element, and records it on the execution state. Both halves
     /// happen here and only here, so every path produces identical correlation and identical bookkeeping.
+    /// Only ordinary routed work supplies a producer; specialized starts belong to the scope even when their
+    /// tokens retain the work handle that triggered them.
     /// </summary>
     private static BpmnExecutionState StartWork(
         BpmnEvaluationContext context,
@@ -2486,7 +2489,8 @@ public sealed class BpmnInterpreter
         string tokenId,
         string schedulingCause,
         BpmnIterationScope? iterationScope = null,
-        string? startElementId = null)
+        string? startElementId = null,
+        string? producedByHandle = null)
     {
         var correlation = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -2503,7 +2507,10 @@ public sealed class BpmnInterpreter
             correlation[StartElementIdCorrelationKey] = startElementId;
 
         context.AddStartWork(new BpmnHostCommand.StartWork(
-            bindingRef, elementId, tokenId, schedulingCause, correlation, iterationScope, startElementId));
+            bindingRef, elementId, tokenId, schedulingCause, correlation, iterationScope, startElementId)
+        {
+            ProducedByHandle = producedByHandle
+        });
 
         return AddActiveWork(state, new BpmnActiveWork(bindingRef, elementId, tokenId, schedulingCause, iterationScope?.IterationId));
     }
