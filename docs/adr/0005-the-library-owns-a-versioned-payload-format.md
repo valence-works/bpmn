@@ -51,12 +51,12 @@ Shipped, after this ADR spent a while describing something that did not exist.
 - `tools/Bpmn.Schema.Generator` produces it by reflecting over the model. It describes what
   `System.Text.Json` actually writes, not what the C# types look like.
 - `PayloadSchemaTests` regenerates and compares on every test run, and cross-checks the schema against
-  real serializer output for both roots, so the artifact cannot rot.
+  real serializer output for every root, so the artifact cannot rot.
 
-The format covers two documents, not one: a definition and the execution state of a running instance.
-The schema root uses a `oneOf` over both, so a standard validator accepts either document when resolving
-`bpmn-payload.schema.json` directly. Both are also listed under `x-roots` so a code generator does not
-have to know the individual `$defs` names.
+The original format covered two documents: a definition and the execution state of a running instance.
+The schema root uses a `oneOf`, and `x-roots` lists addressable roots so a code generator does not have
+to know the individual `$defs` names. Format 1.2.0 adds a third root for work bindings, as recorded in
+[ADR 0007](0007-work-bindings-have-a-json-contract.md); the original model shapes stay unchanged.
 
 ### What publishing it exposed
 
@@ -70,7 +70,7 @@ That is precisely the class of thing this ADR predicted a hand-written mirror wo
 was in the format itself the whole time. Nothing was checking, because nothing had ever written the
 format down.
 
-The names were normalized to camelCase before the format was frozen, and the version is **1.0.0**
+The names were normalized to camelCase before the format was frozen, and the initial version was **1.0.0**
 rather than something below 1.0 to say that it is frozen. The alternative — publishing the
 inconsistency and deferring the fix — was considered and rejected: the cost of normalizing is bounded
 now, while the library is pre-1.0 with no schema behind it, and unbounded once consumers have generated
