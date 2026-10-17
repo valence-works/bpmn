@@ -119,13 +119,16 @@ value cannot be hoisted into the snapshot.
 
 `BpmnNoVariables.Instance` is the do-nothing implementation for a host with no variables.
 
-Three answers are distinct, and the difference matters:
+The read outcomes are distinct, and the difference matters:
 
 - return `false` — you have no such variable at all.
 - return `true` with `BpmnValue.Null` — you have it, and it is null.
 - return `true` with `BpmnValuePresence.StoredExternally` — you have it, but not inline, so the
   interpreter cannot read it. Treated as unreadable rather than absent, so a multi-instance
   collection stored that way fails with a clear diagnostic instead of silently iterating zero times.
+- return `true` with `BpmnValue.Refused(code, message)` — you withhold it. A collection-mode loop
+  faults with your exact code and message, without starting an iteration. The reference reader exposes
+  this through `new InMemoryVariables().SetRefused("reviewers", "host.variable.denied", "Collection is withheld.")`.
 
 If your host would need to await something to answer, pre-resolve it before the evaluation. There is
 no async escape hatch here, deliberately.

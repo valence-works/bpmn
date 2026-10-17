@@ -319,20 +319,25 @@ public interface IBpmnVariableReader
 }
 ```
 
-Three answers are distinct:
+The read outcomes are distinct:
 
 | Answer | Meaning |
 | --- | --- |
 | `false` | No such variable. |
 | `true`, with `BpmnValue.Null` | The variable exists and is null. |
 | `true`, with `BpmnValuePresence.StoredExternally` | The variable exists, but not inline, so it cannot be read. |
+| `true`, with `BpmnValue.Refused(code, message)` | The host withholds the value; a collection-mode loop faults with exactly that code and message. |
 
 `BpmnNoVariables.Instance` is the shared implementation for a host with no variables at all.
 
-The third is the interesting one. It is treated as unreadable rather than absent, so a multi-instance
+External storage is treated as unreadable rather than absent, so a multi-instance
 collection held outside the inline payload fails with a clear diagnostic instead of silently
 iterating zero times. Distinguishing "no" from "cannot tell you" prevents a whole class of quiet
-wrong answers.
+wrong answers. A refusal is also distinct: return `true` with `BpmnValue.Refused("host.variable.denied", "The collection is withheld.")`.
+Both sequential and parallel collection loops return the host's exact fault code and message without
+starting iterations. A malformed refused value without a usable code faults as
+`bpmn.loop.collection-unreadable`; a missing message gets a deterministic diagnostic. Empty host
+messages are preserved. See [the decision](../adr/0008-variable-read-refusals-preserve-host-faults.md).
 
 Values cross the boundary as JSON with a host-interpreted type hint. `BpmnValueTypes` names the two
 hints the interpreter itself understands — `integer` and `any` — and every other string is yours to

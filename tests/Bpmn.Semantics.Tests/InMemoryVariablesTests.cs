@@ -7,7 +7,7 @@ namespace Bpmn.Semantics.Tests;
 
 /// <summary>
 /// The variable reader. The interesting part is that "I have never heard of it", "I have it and it is null"
-/// and "I have it but not where you can read it" are three different answers, and the port depends on them
+/// "I have it but not where you can read it", and "I refuse to disclose it" are distinct answers, and the port depends on them
 /// staying different.
 /// </summary>
 public sealed class InMemoryVariablesTests
@@ -39,6 +39,20 @@ public sealed class InMemoryVariablesTests
         value.Presence.ShouldBe(BpmnValuePresence.StoredExternally);
         value.HasValue.ShouldBeFalse();
         value.TypeHint.ShouldBe("application/pdf");
+    }
+
+    [Fact]
+    public void A_refused_read_is_known_but_withholds_the_value_and_preserves_the_host_fault()
+    {
+        _variables.SetRefused("reviewers", "host.variable.denied", "Collection is withheld.");
+
+        var clone = _variables.Clone();
+        clone.TryRead("reviewers", out var value).ShouldBeTrue();
+        value.Presence.ShouldBe(BpmnValuePresence.Refused);
+        value.FaultCode.ShouldBe("host.variable.denied");
+        value.FaultMessage.ShouldBe("Collection is withheld.");
+        value.HasValue.ShouldBeFalse();
+        clone.ToString().ShouldBe("reviewers=(refused)");
     }
 
     [Fact]
