@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Bpmn.Interchange;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Bpmn.Schema.Generator;
@@ -75,7 +76,7 @@ public sealed class PayloadSchemaTests
     /// </para>
     /// </summary>
     [Fact]
-    public void Model_declares_every_serialized_name()
+    public void Every_covered_type_declares_every_serialized_name()
     {
         BpmnSchemaGenerator.Generate(out var covered);
 
@@ -97,18 +98,65 @@ public sealed class PayloadSchemaTests
     }
 
     /// <summary>
-    /// Both documents the format covers are addressable. The schema's own <c>$ref</c> can only point at
-    /// one, so a consumer persisting execution state needs <c>x-roots</c> to find the other.
+    /// Every payload root is addressable through <c>x-roots</c>, including roots that consumers use as
+    /// components inside their own envelope.
     /// </summary>
     [Fact]
-    public void Both_payload_roots_are_addressable()
+    public void All_payload_roots_are_addressable()
     {
         var roots = (JsonObject)Schema["x-roots"]!;
 
-        roots.Count.ShouldBe(2);
+        roots.Count.ShouldBe(3);
+        Schema["oneOf"]!.AsArray().Count.ShouldBe(3);
 
         foreach (var (name, _) in roots)
             RootSchema(name).ShouldNotBeNull($"x-roots lists '{name}' but it resolves to nothing.");
+    }
+
+    [Fact]
+    public void Every_binding_branch_requires_its_discriminator_constant()
+    {
+        var union = RootSchema(nameof(BpmnWorkBinding));
+        var branches = union["oneOf"]!.AsArray();
+        var discriminatorValues = new List<string>();
+
+        branches.Count.ShouldBe(7);
+
+        foreach (var branch in branches)
+        {
+            var described = Resolve(branch!)!;
+            var kind = (JsonObject)described["properties"]!["kind"]!;
+            kind["type"]!.GetValue<string>().ShouldBe("string");
+            Required(described).ShouldContain("kind");
+            discriminatorValues.Add(kind["const"]!.GetValue<string>());
+        }
+
+        discriminatorValues.OrderBy(value => value, StringComparer.Ordinal).ToArray().ShouldBe([
+            "callProcess",
+            "messagePublish",
+            "messageWait",
+            "nestedProcess",
+            "signalWait",
+            "timerWait",
+            "unboundTask"
+        ]);
+    }
+
+    [Fact]
+    public void Binding_slots_are_numeric_and_match_the_schema_enum()
+    {
+        var serializedSlots = SampleBindings()
+            .Select(binding => JsonSerializer.SerializeToNode((BpmnWorkBinding)binding)!.AsObject()["slot"]!.GetValue<int>())
+            .Distinct()
+            .Order()
+            .ToArray();
+        var declared = (JsonObject)Defs["bpmnBindingSlot"]!;
+
+        serializedSlots.ShouldBe([0, 1]);
+        declared["type"]!.GetValue<string>().ShouldBe("integer");
+        declared["enum"]!.AsArray().Select(value => value!.GetValue<int>()).ToArray().ShouldBe([0, 1]);
+        declared["x-enumNames"]!.AsArray().Select(value => value!.GetValue<string>()).ToArray()
+            .ShouldBe([nameof(BpmnBindingSlot.Primary), nameof(BpmnBindingSlot.ScopeListener)]);
     }
 
     /// <summary>
@@ -120,7 +168,7 @@ public sealed class PayloadSchemaTests
     [MemberData(nameof(SampleDocuments))]
     public void Every_property_the_serializer_emits_is_described_by_the_schema(string root, object sample)
     {
-        var document = JsonSerializer.SerializeToNode(sample, sample.GetType())!;
+        var document = SerializeSample(root, sample);
         var undescribed = new List<string>();
 
         Walk(document, RootSchema(root), "$", undescribed);
@@ -138,21 +186,41 @@ public sealed class PayloadSchemaTests
     [MemberData(nameof(SampleDocuments))]
     public void Every_required_property_is_actually_written(string root, object sample)
     {
-        var document = JsonSerializer.SerializeToNode(sample, sample.GetType())!.AsObject();
+        var document = SerializeSample(root, sample).AsObject();
+        var schema = RootSchema(root);
 
-        foreach (var name in Required(RootSchema(root)))
+        if (schema["oneOf"] is JsonArray branches)
+        {
+            var selectedBranch = SelectBranch(document, branches);
+            selectedBranch.ShouldNotBeNull($"Serialized {root} sample did not match one schema branch.");
+            schema = selectedBranch!;
+        }
+
+        foreach (var name in Required(schema))
             document.ContainsKey(name).ShouldBeTrue($"Schema requires '{name}' on {root}, but it was not written.");
     }
 
     /// <summary>
-    /// One sample per payload root. A definition alone would leave the whole of
-    /// <c>Bpmn.Model.State</c> unchecked, which is the half of the format that drifted.
+    /// Samples cover all three addressable roots, including every polymorphic binding branch. A
+    /// definition alone would leave the whole of <c>Bpmn.Model.State</c> unchecked, which is the half
+    /// of the format that drifted.
     /// </summary>
-    public static TheoryData<string, object> SampleDocuments() => new()
+    public static TheoryData<string, object> SampleDocuments()
     {
-        { nameof(BpmnDefinitions), SampleDefinitions() },
-        { nameof(BpmnExecutionState), SampleExecutionState() }
-    };
+        var bindings = SampleBindings();
+        return new()
+        {
+            { nameof(BpmnDefinitions), SampleDefinitions() },
+            { nameof(BpmnExecutionState), SampleExecutionState() },
+            { nameof(BpmnWorkBinding), bindings[0] },
+            { nameof(BpmnWorkBinding), bindings[1] },
+            { nameof(BpmnWorkBinding), bindings[2] },
+            { nameof(BpmnWorkBinding), bindings[3] },
+            { nameof(BpmnWorkBinding), bindings[4] },
+            { nameof(BpmnWorkBinding), bindings[5] },
+            { nameof(BpmnWorkBinding), bindings[6] }
+        };
+    }
 
     // ---- walking ---------------------------------------------------------------------------------
 
@@ -160,6 +228,18 @@ public sealed class PayloadSchemaTests
     {
         if (node is null || schema is null)
             return;
+
+        if (schema["oneOf"] is JsonArray branches)
+        {
+            var matchingBranch = SelectBranch(node, branches);
+            if (matchingBranch is null)
+            {
+                undescribed.Add($"{path} does not match exactly one discriminated schema branch");
+                return;
+            }
+
+            schema = matchingBranch;
+        }
 
         switch (node)
         {
@@ -192,6 +272,43 @@ public sealed class PayloadSchemaTests
 
                 break;
         }
+    }
+
+    /// <summary>
+    /// Selects the unique branch whose required constant discriminator matches the serializer output.
+    /// Ignoring a <c>oneOf</c> would make a walk of the abstract base accept a document without checking
+    /// any of the concrete binding properties.
+    /// </summary>
+    private static JsonObject? SelectBranch(JsonNode node, JsonArray branches)
+    {
+        if (node is not JsonObject value)
+            return null;
+
+        var matches = branches
+            .Select(branch => branch is null ? null : Resolve(branch))
+            .Where(branch => branch is not null && HasMatchingConstant(branch, value))
+            .ToArray();
+
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static bool HasMatchingConstant(JsonObject schema, JsonObject value)
+    {
+        if (schema["properties"] is not JsonObject properties)
+            return false;
+
+        foreach (var (name, propertySchema) in properties)
+        {
+            if (propertySchema is JsonObject describedProperty
+                && describedProperty["const"] is { } expected
+                && value.TryGetPropertyValue(name, out var actual)
+                && JsonNode.DeepEquals(actual, expected))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Follows a <c>$ref</c> or an <c>anyOf</c> containing one, to the object it describes.</summary>
@@ -269,6 +386,27 @@ public sealed class PayloadSchemaTests
             compensables: [new BpmnCompensable("comp:1", "work", "undo", BpmnCompensableStatus.Registered)],
             compensationRuns: [new BpmnCompensationRun("comprun:1", "tok:1", ["comp:1"])],
             cancelling: true);
+
+    private static BpmnWorkBinding[] SampleBindings()
+    {
+        var process = SampleDefinitions().Processes[0];
+
+        return
+        [
+            new BpmnWorkBinding.TimerWait("process", "timer", "timer:primary", BpmnBindingSlot.Primary, "PT1M"),
+            new BpmnWorkBinding.MessageWait("process", "message", "message:listener", BpmnBindingSlot.ScopeListener, "Started"),
+            new BpmnWorkBinding.SignalWait("process", "signal", "signal:primary", BpmnBindingSlot.Primary, "Ready"),
+            new BpmnWorkBinding.MessagePublish("process", "publish", "publish:primary", BpmnBindingSlot.Primary, "Completed"),
+            new BpmnWorkBinding.CallProcess("process", "call", "call:primary", BpmnBindingSlot.Primary, "called-process", WaitForCompletion: true),
+            new BpmnWorkBinding.NestedProcess("process", "nested", "nested:primary", BpmnBindingSlot.Primary, process),
+            new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask")
+        ];
+    }
+
+    private static JsonNode SerializeSample(string root, object sample) =>
+        root == nameof(BpmnWorkBinding)
+            ? JsonSerializer.SerializeToNode((BpmnWorkBinding)sample)!
+            : JsonSerializer.SerializeToNode(sample, sample.GetType())!;
 
     private static JsonObject LoadSchema() =>
         (JsonObject)JsonNode.Parse(File.ReadAllText(SchemaPath()))!;

@@ -26,7 +26,7 @@ public static class BpmnPayloadFormat
     /// document.
     /// </para>
     /// <para>
-    /// Those names were normalized to camelCase before the format was frozen, which is why this is 1.0.0
+    /// Those names were normalized to camelCase before the format was frozen, which is why it began at 1.0.0
     /// rather than something below 1.0. Normalizing cost a day while the library was pre-1.0 with no
     /// published schema behind it; the same change after consumers had generated types from a 1.0 contract
     /// would have been a breaking change in every language at once. Every serialized property now declares
@@ -36,8 +36,12 @@ public static class BpmnPayloadFormat
     /// 1.1.0 adds one optional property, <c>BpmnToken.StoppedHandle</c>. A 1.0.0 document reads as before, with
     /// the property absent.
     /// </para>
+    /// <para>
+    /// 1.2.0 adds the polymorphic <c>BpmnWorkBinding</c> contract from interchange as a schema root,
+    /// so hosts can transfer definitions and their bindings together. Existing model shapes are unchanged.
+    /// </para>
     /// </summary>
-    public const string Version = "1.1.0";
+    public const string Version = "1.2.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.
