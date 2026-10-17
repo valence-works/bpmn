@@ -323,8 +323,9 @@ The read outcomes are distinct:
 
 | Answer | Meaning |
 | --- | --- |
-| `false` | No such variable. |
-| `true`, with `BpmnValue.Null` | The variable exists and is null. |
+| `false` | No such variable; a collection-mode loop faults with `bpmn.loop.collection-unreadable`. |
+| `true`, with `BpmnValue.Absent` | The read was answered, but there is no value; a collection-mode loop treats it as an empty collection. |
+| `true`, with `BpmnValue.Null` | The variable exists and is null; a collection-mode loop treats it as an empty collection. |
 | `true`, with `BpmnValuePresence.StoredExternally` | The variable exists, but not inline, so it cannot be read. |
 | `true`, with `BpmnValue.Refused(code, message)` | The host withholds the value; a collection-mode loop faults with exactly that code and message. |
 
