@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Bpmn.Model;
 
 namespace Bpmn.Interchange;
@@ -27,7 +28,19 @@ public enum BpmnBindingSlot
 /// <param name="ElementId">The BPMN id of the element that needs the work.</param>
 /// <param name="BindingRef">The opaque key shared with the element, assigned deterministically from the element id.</param>
 /// <param name="Slot">Which channel of the element this binding fills.</param>
-public abstract record BpmnWorkBinding(string ProcessId, string ElementId, string BindingRef, BpmnBindingSlot Slot)
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
+[JsonDerivedType(typeof(BpmnWorkBinding.TimerWait), "timerWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.MessageWait), "messageWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.SignalWait), "signalWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.MessagePublish), "messagePublish")]
+[JsonDerivedType(typeof(BpmnWorkBinding.CallProcess), "callProcess")]
+[JsonDerivedType(typeof(BpmnWorkBinding.NestedProcess), "nestedProcess")]
+[JsonDerivedType(typeof(BpmnWorkBinding.UnboundTask), "unboundTask")]
+public abstract record BpmnWorkBinding(
+    [property: JsonPropertyName("processId")] string ProcessId,
+    [property: JsonPropertyName("elementId")] string ElementId,
+    [property: JsonPropertyName("bindingRef")] string BindingRef,
+    [property: JsonPropertyName("slot")] BpmnBindingSlot Slot)
 {
     /// <summary>A wait that ends after an ISO-8601 duration: a timer catch event, timer boundary event, or timer event-subprocess trigger.</summary>
     public sealed record TimerWait(
@@ -35,7 +48,7 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string IsoDuration) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("isoDuration")] string IsoDuration) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named message: a message catch event, message boundary event, receive task, or message event-subprocess trigger.</summary>
     public sealed record MessageWait(
@@ -43,7 +56,7 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("messageName")] string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named signal: a signal catch event, signal boundary event, or signal event-subprocess trigger.</summary>
     public sealed record SignalWait(
@@ -51,7 +64,7 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string SignalName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("signalName")] string SignalName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A publish of a named message: a message throw event, message end event, or send task.</summary>
     public sealed record MessagePublish(
@@ -59,7 +72,7 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("messageName")] string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A call activity: run a separately defined process the host resolves.</summary>
     public sealed record CallProcess(
@@ -67,8 +80,8 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string? CalledElement,
-        bool WaitForCompletion) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("calledElement")] string? CalledElement,
+        [property: JsonPropertyName("waitForCompletion")] bool WaitForCompletion) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>An embedded subprocess, transaction, or event subprocess: run the nested process carried here.</summary>
     public sealed record NestedProcess(
@@ -76,7 +89,7 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        BpmnProcessDefinition Definition) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("definition")] BpmnProcessDefinition Definition) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>
     /// A task the document describes but does not say how to perform: the host decides what a
@@ -87,5 +100,5 @@ public abstract record BpmnWorkBinding(string ProcessId, string ElementId, strin
         string ElementId,
         string BindingRef,
         BpmnBindingSlot Slot,
-        string TaskType) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+        [property: JsonPropertyName("taskType")] string TaskType) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 }
