@@ -150,10 +150,10 @@ public abstract record BpmnHostCommand
         string? StartElementHint = null) : BpmnHostCommand
     {
         /// <summary>
-        /// The opaque producer of ordinary element work: a completed work handle when routing its callback,
-        /// or the scope instance identity on initial propagation. Null for scope-owned starts (multi-instance
-        /// instances, compensation handlers, boundary/scope listeners and event-subprocess bodies). Reporting
-        /// only; it does not participate in callback matching.
+        /// The opaque producer of ordinary element work: a completed or faulted work handle when routing its
+        /// result, or the scope instance identity for scope-driven propagation. Null for scope-owned starts
+        /// (multi-instance instances, compensation handlers, boundary/scope listeners and event-subprocess bodies).
+        /// Reporting only; it does not participate in callback matching.
         /// </summary>
         public string? ProducedByHandle { get; init; }
     }

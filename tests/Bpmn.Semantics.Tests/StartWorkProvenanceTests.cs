@@ -117,6 +117,27 @@ public sealed class StartWorkProvenanceTests
     }
 
     [Fact]
+    public void Error_boundary_recovery_carries_the_faulted_work_handle()
+    {
+        var graph = BuildGraph(ProcessFixtures.RiskyActivity(withErrorBoundary: true));
+        var started = Start(graph);
+        var faultedHandle = "h-risky";
+
+        var evaluation = Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
+            graph,
+            started.State,
+            Scope(new BpmnLiveWork("risky", null, faultedHandle)),
+            "risky",
+            faultedHandle,
+            "boom"));
+
+        evaluation.Disposition.ShouldBe(new BpmnErrorDisposition.Caught("Failed", ErrorCode: null));
+        var recovery = StartedWork(evaluation).ShouldHaveSingleItem();
+        recovery.BindingRef.ShouldBe("recover");
+        recovery.ProducedByHandle.ShouldBe(faultedHandle);
+    }
+
+    [Fact]
     public void A_compensation_handler_start_has_no_producer_handle()
     {
         var (_, body) = ProcessFixtures.CancellableTransactionWithNothingElseLive();
@@ -203,5 +224,35 @@ public sealed class StartWorkProvenanceTests
 
         restored.ShouldNotBeNull();
         restored!.ProducedByHandle.ShouldBe("h-producer");
+    }
+
+    [Fact]
+    public void Legacy_start_work_json_without_produced_by_handle_deserializes_with_null_producer()
+    {
+        const string json = """
+            {
+              "BindingRef": "work",
+              "ElementId": "Work",
+              "TokenId": "token-1",
+              "SchedulingCause": "ordinary",
+              "Correlation": { "token": "token-1" },
+              "IterationScope": null,
+              "StartElementHint": null
+            }
+            """;
+
+        var restored = JsonSerializer.Deserialize<BpmnHostCommand.StartWork>(json);
+
+        restored.ShouldNotBeNull();
+        var command = restored!;
+        command.BindingRef.ShouldBe("work");
+        command.ElementId.ShouldBe("Work");
+        command.TokenId.ShouldBe("token-1");
+        command.SchedulingCause.ShouldBe("ordinary");
+        command.Correlation.Count.ShouldBe(1);
+        command.Correlation["token"].ShouldBe("token-1");
+        command.IterationScope.ShouldBeNull();
+        command.StartElementHint.ShouldBeNull();
+        command.ProducedByHandle.ShouldBeNull();
     }
 }

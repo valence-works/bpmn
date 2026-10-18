@@ -91,9 +91,10 @@ give no natural place for the non-fault-continuation invariant to live.
 ## 2026-10-17 amendment: scheduling provenance
 
 `StartWork.ProducedByHandle` exposes the interpreter's existing `producedBy` value for ordinary
-element work. A completion that routes to further work supplies its completed handle, including
-when propagation crosses synchronous elements or fans out. Initial propagation uses the scope
-instance identity. The value is opaque reporting data, not an ownership or callback-matching key.
+element work. Routing after completion or a caught work fault supplies that work's handle, including
+when propagation crosses synchronous elements or fans out. Scope-driven propagation, including
+initial propagation, uses the scope instance identity. The value is opaque reporting data, not an
+ownership or callback-matching key, and does not imply that its producer succeeded.
 
 Scope-owned starts leave the property null: multi-instance instances, compensation handlers,
 boundary and event-subprocess listeners, and event-subprocess bodies. Their host schedules on

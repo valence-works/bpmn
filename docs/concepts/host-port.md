@@ -209,8 +209,10 @@ Two optional fields appear on specific constructs. `IterationScope` carries the 
 multi-instance instance must be seeded with: always the zero-based `loopIndex`, plus the current item
 in collection mode. `StartElementHint` names the start event an event subprocess body must begin at.
 
-`ProducedByHandle` identifies the producer of ordinary element work: the completed work's handle
-when its callback routes to this start, or the scope instance identity during initial propagation.
+`ProducedByHandle` identifies the producer of ordinary element work: the completed or faulted
+work's handle when its result routes to this start, or the scope instance identity for scope-driven
+propagation, including initial propagation. For example, recovery work reached through an error
+boundary carries the faulted work's handle.
 It follows the evaluation's existing provenance through synchronous routing and fan-out. Treat it
 as opaque reporting data; it does not replace the handle you assign to the newly started work or
 change callback matching. It is null for scope-owned starts: multi-instance instances,
