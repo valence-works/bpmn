@@ -74,9 +74,10 @@ public sealed class StartWorkProvenanceTests
     public void Escalation_boundary_routing_uses_scope_identity_not_the_signalling_handle()
     {
         const string escalationCode = "overdue";
+        var (_, body) = ProcessFixtures.SubProcessWithEscalationBoundary(escalationCode);
         var definition = new BpmnProcessBuilder("start-work-provenance-signal")
             .StartEvent("Start")
-            .Task("Work", bindingRef: "work")
+            .SubProcess("Work", bindingRef: "work")
             .EndEvent("End")
             .BoundaryEvent("Escalated", "Work", ProcessFixtures.Escalation(escalationCode), interrupting: true)
             .Task("Handle", bindingRef: "handle")
@@ -84,7 +85,7 @@ public sealed class StartWorkProvenanceTests
             .ConnectSequence("Start", "Work", "End")
             .ConnectSequence("Escalated", "Handle", "EndEscalated")
             .Build();
-        var graph = BuildGraph(definition);
+        var graph = BuildGraph(definition, _ => body);
         var started = Start(graph);
         const string signallingHandle = "h-signaller";
 
