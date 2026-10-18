@@ -103,6 +103,9 @@ their scope identity when the property is null.
 
 The property is init-only and is not added to the positional record parameters. Existing
 constructors and seven-value deconstruction therefore retain their signatures; old callers get
-null by default. This adds no capability, command kind or persisted model/schema change. Copying
-the token's `ProducingWorkHandle` for every start was rejected because it would wrongly attribute
-scope-owned starts, especially event-subprocess bodies, to the triggering work.
+null by default. This adds no capability or command kind, and does not change persisted execution
+state or the process-model schema. Serialized `StartWork` commands do gain an additive
+`ProducedByHandle` field. Older command JSON that omits it still deserializes with a null value;
+hosts that validate or store commands with a closed schema must accommodate the new field.
+Copying the token's `ProducingWorkHandle` for every start was rejected because it would wrongly
+attribute scope-owned starts, especially event-subprocess bodies, to the triggering work.

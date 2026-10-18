@@ -220,6 +220,10 @@ compensation handlers, boundary/scope listeners and event-subprocess bodies. Use
 identity for those starts if your scheduler needs an owner; see
 [the host-port decision](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-17-amendment-scheduling-provenance).
 
+The property is additive in serialized commands. Older JSON without it deserializes with null;
+hosts using a closed command schema must allow the new field. Persisted execution state and the
+process-model schema are unchanged.
+
 The interpreter never parses a `BindingRef` — it compares and echoes it. Resolving one to an actual
 timer, work item, HTTP call or nested process is entirely yours.
 

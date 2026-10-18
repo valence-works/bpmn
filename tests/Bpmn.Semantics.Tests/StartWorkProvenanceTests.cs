@@ -70,6 +70,42 @@ public sealed class StartWorkProvenanceTests
         branches.ShouldAllBe(work => work.ProducedByHandle == "h-second");
     }
 
+    [Fact]
+    public void Escalation_boundary_routing_uses_scope_identity_not_the_signalling_handle()
+    {
+        const string escalationCode = "overdue";
+        var definition = new BpmnProcessBuilder("start-work-provenance-signal")
+            .StartEvent("Start")
+            .Task("Work", bindingRef: "work")
+            .EndEvent("End")
+            .BoundaryEvent("Escalated", "Work", ProcessFixtures.Escalation(escalationCode), interrupting: true)
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("EndEscalated")
+            .ConnectSequence("Start", "Work", "End")
+            .ConnectSequence("Escalated", "Handle", "EndEscalated")
+            .Build();
+        var graph = BuildGraph(definition);
+        var started = Start(graph);
+        const string signallingHandle = "h-signaller";
+
+        var signalled = Interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
+            graph,
+            started.State,
+            Scope(new BpmnLiveWork("work", null, signallingHandle)),
+            "work",
+            signallingHandle,
+            BpmnInterpreter.EscalationSignalCode,
+            JsonSerializer.SerializeToElement(new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["code"] = escalationCode
+            })));
+
+        var downstream = StartedWork(signalled).ShouldHaveSingleItem();
+        downstream.BindingRef.ShouldBe("handle");
+        downstream.ProducedByHandle.ShouldBe(ScopeInstanceId);
+        downstream.ProducedByHandle.ShouldNotBe(signallingHandle);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
