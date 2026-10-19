@@ -38,6 +38,23 @@ public sealed class RefusedValueTests
     }
 
     [Theory]
+    [InlineData("{\"presence\":0,\"typeHint\":null,\"json\":null,\"HasValue\":false}", BpmnValuePresence.Absent)]
+    [InlineData("{\"presence\":1,\"typeHint\":null,\"json\":null,\"HasValue\":false}", BpmnValuePresence.Null)]
+    [InlineData("{\"presence\":2,\"typeHint\":\"integer\",\"json\":3,\"HasValue\":true}", BpmnValuePresence.Present)]
+    [InlineData("{\"presence\":3,\"typeHint\":null,\"json\":null,\"HasValue\":false}", BpmnValuePresence.StoredExternally)]
+    public void Values_from_legacy_json_keep_existing_ordinals_and_omit_refusal_metadata(
+        string json,
+        BpmnValuePresence expectedPresence)
+    {
+        var value = JsonSerializer.Deserialize<BpmnValue>(json)!;
+
+        value.Presence.ShouldBe(expectedPresence);
+        value.FaultCode.ShouldBeNull();
+        value.FaultMessage.ShouldBeNull();
+        JsonSerializer.Serialize(value).ShouldBe(json);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData(" ")]
