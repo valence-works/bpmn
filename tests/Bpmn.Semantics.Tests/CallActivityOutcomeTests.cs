@@ -214,8 +214,8 @@ public sealed class CallActivityOutcomeTests
             .Select(command => command.ElementId).ToArray();
         started.Count(elementId => elementId == "Call").ShouldBe(1);
         started.Count(elementId => elementId == "Recover").ShouldBe(1);
-        instance.State.Tokens.ShouldContain(token =>
-            token.TokenId == coordinatorId && token.Status == BpmnTokenStatus.Canceled);
+        instance.Transcript.SelectMany(entry => entry.TokenMoves).ShouldContain(move =>
+            move.TokenId == coordinatorId && move.To == BpmnTokenStatus.Canceled);
         instance.State.Loops.ShouldNotContain(loop => loop.ElementId == "Call");
         instance.PendingWork.Select(work => work.ElementId).ShouldBe(["Recover"]);
         instance.CompleteWork("recover");

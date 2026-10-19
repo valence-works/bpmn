@@ -1,6 +1,7 @@
 using Bpmn.Model;
 using Bpmn.Semantics;
 using Bpmn.Runtime.InMemory;
+using Shouldly;
 
 namespace Bpmn.Semantics.Tests;
 
@@ -11,6 +12,24 @@ internal static class AdvancedScenarioFixtures
 
     public static BpmnGraph Graph(BpmnProcessDefinition definition, Func<string, BpmnProcessDefinition?>? nestedProcess = null) =>
         BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition, nestedProcess), BpmnHostCapabilities.Full);
+
+    public static (string[] TokenMoves, string[] Diagnostics) DeterministicEvidence(InMemoryProcessInstance instance)
+    {
+        var tokenMoves = instance.Transcript.SelectMany(entry => entry.TokenMoves).ToArray();
+        tokenMoves.ShouldNotBeEmpty();
+        tokenMoves.Select(move => move.TokenId).ShouldAllBe(tokenId => !string.IsNullOrWhiteSpace(tokenId));
+
+        var diagnostics = instance.State.Diagnostics.ToArray();
+        diagnostics.ShouldNotBeEmpty();
+        diagnostics.Select(diagnostic => diagnostic.DiagnosticId)
+            .ShouldAllBe(diagnosticId => !string.IsNullOrWhiteSpace(diagnosticId));
+
+        return (
+            tokenMoves.Select(move => $"{move.TokenId}:{move.ElementId}:{move.From?.ToString() ?? "<none>"}:{move.To}")
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
+            diagnostics.Select(diagnostic => $"{diagnostic.DiagnosticId}:{diagnostic.Kind}")
+                .OrderBy(value => value, StringComparer.Ordinal).ToArray());
+    }
 
     public static BpmnElement CompensationBoundary(string id, string hostId, string handlerId) =>
         new(id, BpmnElementTypes.BoundaryEvent,

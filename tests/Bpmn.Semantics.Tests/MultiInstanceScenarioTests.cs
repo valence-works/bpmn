@@ -104,7 +104,8 @@ public sealed class MultiInstanceScenarioTests
         instance.FaultWork("review", "instance failed");
 
         instance.IsFaulted.ShouldBeFalse();
-        instance.State.Tokens.ShouldContain(token => token.TokenId == coordinatorId && token.Status == BpmnTokenStatus.Canceled);
+        instance.Transcript.SelectMany(entry => entry.TokenMoves)
+            .ShouldContain(move => move.TokenId == coordinatorId && move.To == BpmnTokenStatus.Canceled);
         instance.State.Diagnostics.ShouldContain(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.Canceled
             && diagnostic.TokenId == coordinatorId && diagnostic.Message.Contains("caught a work fault", StringComparison.Ordinal));
         instance.State.Loops.ShouldBeEmpty();

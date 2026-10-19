@@ -250,25 +250,20 @@ public sealed class ExternalEventSubprocessTests
     [Fact]
     public void Identical_listener_runs_produce_identical_token_and_diagnostic_ids()
     {
-        static (string[] Tokens, string[] Diagnostics) RunOnce()
+        static (string[] TokenMoves, string[] Diagnostics) RunOnce()
         {
             var (parent, bodies) = ScopeWithExternalHandlers(
                 [Handler("Handler", "handler-body", "listener", BpmnEventDefinitionTypes.Message, "notice", interrupting: false)]);
             var instance = Host(bodies).Start(parent);
             instance.CompleteWork("listener");
 
-            return (
-                instance.State.Tokens.Select(token => $"{token.TokenId}:{token.AtElementId}:{token.Status}:{token.Kind}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
-                instance.State.Diagnostics.Select(diagnostic => $"{diagnostic.DiagnosticId}:{diagnostic.Kind}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray());
+            return AdvancedScenarioFixtures.DeterministicEvidence(instance);
         }
 
         var first = RunOnce();
         var second = RunOnce();
 
-        first.Tokens.ShouldNotBeEmpty();
-        second.Tokens.ShouldBe(first.Tokens);
+        second.TokenMoves.ShouldBe(first.TokenMoves);
         second.Diagnostics.ShouldBe(first.Diagnostics);
     }
 

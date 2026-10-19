@@ -418,7 +418,7 @@ public sealed class EscalationRoutingTests
     [Fact]
     public void Repeating_the_same_escalation_scenario_preserves_token_and_diagnostic_ids()
     {
-        static (string[] Tokens, string[] Diagnostics) RunOnce()
+        static (string[] TokenMoves, string[] Diagnostics) RunOnce()
         {
             var body = ThrowingChild("raise");
             var instance = HostWithNested(("sub", body)).Start(BoundaryParent("raise", interrupting: false));
@@ -426,23 +426,19 @@ public sealed class EscalationRoutingTests
             instance.CompleteWork("recover");
             instance.Children[0].CompleteWork("hold");
 
-            return (
-                instance.State.Tokens.Select(token => $"{token.TokenId}:{token.AtElementId}:{token.ParentTokenId}:{token.Status}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
-                instance.State.Diagnostics.Select(diagnostic => $"{diagnostic.DiagnosticId}:{diagnostic.Kind}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray());
+            return AdvancedScenarioFixtures.DeterministicEvidence(instance);
         }
 
         var first = RunOnce();
         var second = RunOnce();
-        first.Tokens.ShouldBe(second.Tokens);
+        first.TokenMoves.ShouldBe(second.TokenMoves);
         first.Diagnostics.ShouldBe(second.Diagnostics);
     }
 
     [Fact]
     public void Repeating_an_event_subprocess_scenario_preserves_token_and_diagnostic_ids()
     {
-        static (string[] Tokens, string[] Diagnostics) RunOnce()
+        static (string[] TokenMoves, string[] Diagnostics) RunOnce()
         {
             var handler = EscalationHandler("raise", interrupting: false);
             var parent = new BpmnProcessBuilder("deterministic-event-subprocess")
@@ -457,16 +453,12 @@ public sealed class EscalationRoutingTests
             instance.CompleteWork("begin");
             instance.Children.ShouldHaveSingleItem().CompleteWork("handle");
 
-            return (
-                instance.State.Tokens.Select(token => $"{token.TokenId}:{token.AtElementId}:{token.ParentTokenId}:{token.Status}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray(),
-                instance.State.Diagnostics.Select(diagnostic => $"{diagnostic.DiagnosticId}:{diagnostic.Kind}")
-                    .OrderBy(value => value, StringComparer.Ordinal).ToArray());
+            return AdvancedScenarioFixtures.DeterministicEvidence(instance);
         }
 
         var first = RunOnce();
         var second = RunOnce();
-        first.Tokens.ShouldBe(second.Tokens);
+        first.TokenMoves.ShouldBe(second.TokenMoves);
         first.Diagnostics.ShouldBe(second.Diagnostics);
     }
 
