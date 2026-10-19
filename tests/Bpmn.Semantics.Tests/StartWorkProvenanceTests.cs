@@ -59,12 +59,12 @@ public sealed class StartWorkProvenanceTests
         started.BindingRef.ShouldBe("first");
         started.ProducedByHandle.ShouldBe(ScopeInstanceId);
 
-        var afterFirst = Complete(graph, startedEvaluation, "first", "h-first", Scope(new BpmnLiveWork("first", null, "h-first")));
+        var afterFirst = Complete(graph, startedEvaluation, "first", "h-first", Scope());
         var second = StartedWork(afterFirst).ShouldHaveSingleItem();
         second.BindingRef.ShouldBe("second");
         second.ProducedByHandle.ShouldBe("h-first");
 
-        var afterSecond = Complete(graph, afterFirst, "second", "h-second", Scope(new BpmnLiveWork("second", null, "h-second")));
+        var afterSecond = Complete(graph, afterFirst, "second", "h-second", Scope());
         var branches = StartedWork(afterSecond);
         branches.Select(work => work.BindingRef).ShouldBe(["left", "right"]);
         branches.ShouldAllBe(work => work.ProducedByHandle == "h-second");
@@ -130,7 +130,7 @@ public sealed class StartWorkProvenanceTests
             started,
             "review",
             handle,
-            Scope(new BpmnLiveWork("review", iterationId, handle)),
+            Scope(),
             iterationId);
 
         var nextInstance = StartedWork(next).ShouldHaveSingleItem();
@@ -163,7 +163,7 @@ public sealed class StartWorkProvenanceTests
         var evaluation = Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
             graph,
             started.State,
-            Scope(new BpmnLiveWork("risky", null, faultedHandle)),
+            Scope(),
             "risky",
             faultedHandle,
             "boom"));
@@ -187,7 +187,7 @@ public sealed class StartWorkProvenanceTests
             started,
             "reserve",
             "h-reserve",
-            Scope(new BpmnLiveWork("reserve", null, "h-reserve")) with { HasEnclosingScope = true });
+            Scope() with { HasEnclosingScope = true });
         var trigger = StartedWork(afterReserve).ShouldHaveSingleItem();
         trigger.BindingRef.ShouldBe("trigger");
         trigger.ProducedByHandle.ShouldBe("h-reserve");
@@ -197,7 +197,7 @@ public sealed class StartWorkProvenanceTests
             afterReserve,
             "trigger",
             "h-trigger",
-            Scope(new BpmnLiveWork("trigger", null, "h-trigger")) with { HasEnclosingScope = true });
+            Scope() with { HasEnclosingScope = true });
 
         var compensation = StartedWork(afterTrigger).ShouldHaveSingleItem();
         compensation.BindingRef.ShouldBe("undo-reserve");
