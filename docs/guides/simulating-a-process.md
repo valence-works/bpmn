@@ -111,8 +111,10 @@ foreach (var work in instance.State.ActiveWork)
 
 `BpmnTokenStatus` distinguishes `Active` (at an element, not yet dispatched), `AwaitingChild` (parked
 while bound work runs), `WaitingAtJoin` (arrived at a join that has not fired), `Consumed` and
-`Canceled`. Consumed and canceled tokens are kept rather than pruned, so the state is a history and
-not just a position.
+`Canceled`. The reference host prunes consumed tokens no longer referenced by active work and canceled tokens
+with neither an active-work reference nor an unresolved stopped-work handle. `instance.State` holds the records
+still needed to make future decisions. Inspect `instance.Transcript` for the reference host's evaluation history;
+`State.Diagnostics` is a separate, capped trace of interpreter decisions.
 
 ### The diagnostic trace
 

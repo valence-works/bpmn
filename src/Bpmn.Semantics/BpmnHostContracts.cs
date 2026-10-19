@@ -205,7 +205,9 @@ public abstract record BpmnContinuation
 /// </summary>
 /// <param name="State">
 /// The new execution state. Persist it verbatim and hand it back as the next request's prior state; call
-/// <see cref="BpmnExecutionState.Prune"/> first to keep the persisted payload bounded.
+/// <see cref="BpmnExecutionState.Prune"/> first to remove obsolete token records and cap diagnostics. A canceled
+/// token remains while its stopped-work handle may still identify a late callback, so callbacks the host never
+/// delivers can leave records without a fixed bound.
 /// </param>
 /// <param name="Continuation">What this process scope should do next.</param>
 /// <param name="Commands">What to ask the host to do, in order.</param>
