@@ -2604,8 +2604,6 @@ public sealed class BpmnInterpreter
     /// </summary>
     private static void IssueTerminateTeardowns(BpmnEvaluationContext context)
     {
-        ValidateUniqueLiveWorkEvidence(context.Host.LiveWork, "terminate teardown");
-
         var tornDown = context.Commands
             .OfType<BpmnHostCommand.CancelWorkSubtree>()
             .Select(teardown => teardown.Handle)
@@ -2642,6 +2640,8 @@ public sealed class BpmnInterpreter
 
     /// <summary>
     /// Resolves the live snapshot by invocation identity and rejects duplicate or contradictory host evidence.
+    /// Handles already marked stopped are excluded before active correlation, but a supplied identity must
+    /// still agree with the stopped token. This allows a host to stage teardown without rebinding old work.
     /// An ID-less snapshot entry uses the legacy binding/iteration slot only when that slot identifies one
     /// active work record. Unknown ID-less entries remain available to terminate teardown, but cannot resolve a
     /// token cancellation.
@@ -2653,7 +2653,28 @@ public sealed class BpmnInterpreter
 
         var host = context.Host;
         var state = context.EntryState;
-        ValidateUniqueLiveWorkEvidence(host.LiveWork, callback);
+        var stoppedByHandle = state.Tokens
+            .Where(token => token.StoppedHandle is not null)
+            .ToLookup(token => token.StoppedHandle!, StringComparer.Ordinal);
+        var liveWork = new List<BpmnLiveWork>(host.LiveWork.Count);
+        foreach (var live in host.LiveWork)
+        {
+            var stoppedTokens = stoppedByHandle[live.Handle].ToArray();
+            if (stoppedTokens.Length == 0)
+            {
+                liveWork.Add(live);
+                continue;
+            }
+
+            if (stoppedTokens.Length > 1)
+                throw new BpmnExecutionException($"BPMN {callback} found more than one stopped token for handle '{live.Handle}'.");
+            if (live.WorkTokenId is not null
+                && (string.IsNullOrWhiteSpace(live.WorkTokenId)
+                    || !StringComparer.Ordinal.Equals(live.WorkTokenId, stoppedTokens[0].TokenId)))
+                throw new BpmnExecutionException($"BPMN {callback} found live handle '{live.Handle}' with WorkTokenId '{live.WorkTokenId}' conflicting with stopped token '{stoppedTokens[0].TokenId}'.");
+        }
+
+        ValidateUniqueLiveWorkEvidence(liveWork, callback);
 
         var activeByTokenId = new Dictionary<string, BpmnActiveWork>(StringComparer.Ordinal);
         foreach (var work in state.ActiveWork)
@@ -2661,7 +2682,7 @@ public sealed class BpmnInterpreter
                 throw new BpmnExecutionException($"BPMN {callback} cannot resolve duplicate active work token id '{work.TokenId}'.");
 
         var liveByTokenId = new Dictionary<string, BpmnLiveWork>(StringComparer.Ordinal);
-        foreach (var live in host.LiveWork)
+        foreach (var live in liveWork)
         {
             string? tokenId = live.WorkTokenId;
             if (tokenId is not null)

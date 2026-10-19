@@ -732,6 +732,27 @@ public sealed class WorkInvocationIdentityTests
         return (graph, retried, oldWork, replacement, timer);
     }
 
+    private static (BpmnGraph Graph, BpmnEvaluation Terminated, Invocation Child, Invocation Other)
+        TerminateBesideLiveWork()
+    {
+        var graph = BuildGraph(ProcessFixtures.TerminateBesideASignallingChild());
+        var started = Start(graph);
+        var work = started.Commands.OfType<BpmnHostCommand.StartWork>().ToDictionary(item => item.BindingRef, StringComparer.Ordinal);
+        var child = InvocationOf(work["child"], "h-child");
+        var other = InvocationOf(work["other"], "h-other");
+        var trigger = InvocationOf(work["trigger"], "h-trigger");
+        var terminated = Complete(graph, started.State, trigger.BindingRef, trigger.Handle, [Live(child), Live(other)], trigger.TokenId);
+        terminated.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        terminated.State.Terminated.ShouldBeTrue();
+        return (graph, terminated, child, other);
+    }
+
+    private static BpmnExecutionState DuplicateStoppedHandleOwner(BpmnExecutionState state, string tokenId)
+    {
+        var stopped = state.Tokens.Single(token => token.TokenId == tokenId);
+        return state with { Tokens = [.. state.Tokens, stopped with { TokenId = $"{stopped.TokenId}:duplicate" }] };
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -762,18 +783,128 @@ public sealed class WorkInvocationIdentityTests
     }
 
     [Theory]
+    [InlineData(false, "")]
+    [InlineData(false, " ")]
+    [InlineData(true, "")]
+    [InlineData(true, " ")]
+    public void A_stopped_handle_rejects_blank_explicit_identity_without_spending_its_marker(bool asFault, string suppliedId)
+    {
+        var (graph, retried, oldWork, _, timer) = RetryLongWork();
+        var live = new[] { Live(timer) };
+
+        Should.Throw<BpmnExecutionException>(() => asFault
+            ? Fault(graph, retried.State, oldWork.BindingRef, oldWork.Handle, live, suppliedId)
+            : Complete(graph, retried.State, oldWork.BindingRef, oldWork.Handle, live, suppliedId));
+
+        retried.State.Tokens.ShouldContain(token => token.TokenId == oldWork.TokenId && token.StoppedHandle == oldWork.Handle,
+            "a rejected blank identity must not consume the one-shot stopped-handle marker");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_callback_rejects_a_handle_marked_stopped_on_more_than_one_token(bool asFault)
+    {
+        var (graph, retried, oldWork, _, timer) = RetryLongWork();
+        var stateWithDuplicateMarker = DuplicateStoppedHandleOwner(retried.State, oldWork.TokenId);
+
+        Should.Throw<BpmnExecutionException>(() => asFault
+            ? Fault(graph, stateWithDuplicateMarker, oldWork.BindingRef, oldWork.Handle, [Live(timer)], oldWork.TokenId)
+            : Complete(graph, stateWithDuplicateMarker, oldWork.BindingRef, oldWork.Handle, [Live(timer)], oldWork.TokenId));
+
+        stateWithDuplicateMarker.Tokens.Count(token => token.StoppedHandle == oldWork.Handle).ShouldBe(2);
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    public void A_running_callback_ignores_a_staged_stopped_row_before_mapping_live_work(
+        bool stagedRowIsIdless, bool duplicateRow, bool replacementIsIdless)
+    {
+        var (graph, retried, oldWork, replacement, timer) = RetryLongWork();
+        var stagedOldWork = Live(oldWork);
+        if (stagedRowIsIdless)
+            stagedOldWork = stagedOldWork with { WorkTokenId = null };
+        var liveReplacement = Live(replacement);
+        if (replacementIsIdless)
+            liveReplacement = liveReplacement with { WorkTokenId = null };
+
+        BpmnLiveWork[] live = duplicateRow
+            ? [stagedOldWork, stagedOldWork, liveReplacement]
+            : [stagedOldWork, liveReplacement];
+        var nextTimeout = Complete(graph, retried.State, timer.BindingRef, timer.Handle, live, timer.TokenId);
+
+        nextTimeout.Continuation.ShouldBe(Defer);
+        nextTimeout.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>()
+            .Select(command => command.Handle).ShouldBe([replacement.Handle]);
+        nextTimeout.State.Tokens.ShouldContain(token => token.TokenId == oldWork.TokenId && token.StoppedHandle == oldWork.Handle,
+            "resolving a staged snapshot must not spend the earlier stopped marker");
+        nextTimeout.State.Tokens.ShouldContain(token => token.TokenId == replacement.TokenId && token.StoppedHandle == replacement.Handle,
+            "the timeout routes against the replacement's own live handle");
+        nextTimeout.State.Tokens.ShouldNotContain(token => token.TokenId == replacement.TokenId && token.StoppedHandle == oldWork.Handle);
+    }
+
+    [Fact]
+    public void An_idless_staged_stopped_row_is_not_rebound_to_a_replacement_missing_from_the_snapshot()
+    {
+        var (graph, retried, oldWork, replacement, timer) = RetryLongWork();
+        var stagedOldWork = Live(oldWork) with { WorkTokenId = null };
+
+        var nextTimeout = Complete(graph, retried.State, timer.BindingRef, timer.Handle, [stagedOldWork], timer.TokenId);
+
+        nextTimeout.Continuation.ShouldBe(Defer);
+        nextTimeout.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldBeEmpty();
+        nextTimeout.Commands.OfType<BpmnHostCommand.StartWork>().ShouldContain(start => start.BindingRef == "long");
+        nextTimeout.State.Tokens.ShouldContain(token => token.TokenId == oldWork.TokenId && token.StoppedHandle == oldWork.Handle,
+            "the old stopped marker remains available for its late callback");
+        nextTimeout.State.Tokens.ShouldContain(token => token.TokenId == replacement.TokenId
+            && token.Status == BpmnTokenStatus.Canceled && token.StoppedHandle == null,
+            "a missing replacement host row cannot inherit the old handle");
+        nextTimeout.State.Tokens.ShouldNotContain(token => token.TokenId == replacement.TokenId && token.StoppedHandle == oldWork.Handle);
+    }
+
+    [Theory]
+    [InlineData("replacement")]
+    [InlineData("blank")]
+    public void A_staged_stopped_row_with_contradictory_identity_is_rejected_before_live_work_mapping(string identity)
+    {
+        var (graph, retried, oldWork, replacement, timer) = RetryLongWork();
+        var conflictingId = identity == "replacement" ? replacement.TokenId : "";
+        var stagedOldWork = Live(oldWork) with { WorkTokenId = conflictingId };
+
+        var exception = Should.Throw<BpmnExecutionException>(() => Complete(graph, retried.State,
+            timer.BindingRef, timer.Handle, [Live(oldWork), stagedOldWork, Live(replacement)], timer.TokenId));
+
+        exception.Message.ShouldContain("stopped token");
+        retried.State.Tokens.ShouldContain(token => token.TokenId == oldWork.TokenId && token.StoppedHandle == oldWork.Handle,
+            "a contradictory snapshot must not spend the old stopped marker");
+        retried.State.ActiveWork.ShouldContain(work => work.TokenId == replacement.TokenId,
+            "rejection must leave the replacement invocation available");
+    }
+
+    [Fact]
+    public void Snapshot_resolution_rejects_a_stopped_handle_owned_by_multiple_tokens()
+    {
+        var (graph, retried, oldWork, replacement, timer) = RetryLongWork();
+        var stateWithDuplicateMarker = DuplicateStoppedHandleOwner(retried.State, oldWork.TokenId);
+
+        var exception = Should.Throw<BpmnExecutionException>(() => Complete(graph, stateWithDuplicateMarker,
+            timer.BindingRef, timer.Handle, [Live(oldWork), Live(replacement)], timer.TokenId));
+
+        exception.Message.ShouldContain("more than one stopped token");
+        stateWithDuplicateMarker.Tokens.Count(token => token.StoppedHandle == oldWork.Handle).ShouldBe(2);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void An_ended_scope_absorbs_a_callback_before_resolving_its_unknown_identity(bool asFault)
     {
-        var graph = BuildGraph(ProcessFixtures.TerminateBesideASignallingChild());
-        var started = Start(graph);
-        var work = started.Commands.OfType<BpmnHostCommand.StartWork>().ToDictionary(item => item.BindingRef, StringComparer.Ordinal);
-        var child = InvocationOf(work["child"], "h-child");
-        var other = InvocationOf(work["other"], "h-other");
-        var trigger = InvocationOf(work["trigger"], "h-trigger");
-        var terminated = Complete(graph, started.State, trigger.BindingRef, trigger.Handle, [Live(child), Live(other)], trigger.TokenId);
-        terminated.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        var (graph, terminated, child, other) = TerminateBesideLiveWork();
 
         var late = asFault
             ? Fault(graph, terminated.State, child.BindingRef, child.Handle, [Live(child), Live(other)], "unknown-token")
@@ -782,6 +913,54 @@ public sealed class WorkInvocationIdentityTests
         late.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
         late.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().Select(command => command.Handle)
             .ShouldBe([child.Handle, other.Handle]);
+    }
+
+    [Theory]
+    [InlineData(false, "duplicate-idless")]
+    [InlineData(true, "duplicate-idless")]
+    [InlineData(false, "mixed-slot")]
+    [InlineData(true, "mixed-slot")]
+    [InlineData(false, "duplicate-token-id")]
+    [InlineData(true, "duplicate-token-id")]
+    public void An_ended_scope_tears_down_distinct_handles_without_resolving_staged_identity(
+        bool asFault,
+        string snapshotShape)
+    {
+        var (graph, terminated, child, other) = TerminateBesideLiveWork();
+        var repeated = new BpmnLiveWork(other.BindingRef, other.IterationId, "h-repeated");
+        BpmnLiveWork[] staged = snapshotShape switch
+        {
+            "duplicate-idless" =>
+            [
+                new BpmnLiveWork(child.BindingRef, child.IterationId, "h-staged-a"),
+                new BpmnLiveWork(child.BindingRef, child.IterationId, "h-staged-b"),
+                repeated,
+                repeated
+            ],
+            "mixed-slot" =>
+            [
+                new BpmnLiveWork(child.BindingRef, child.IterationId, "h-staged-legacy"),
+                new BpmnLiveWork(child.BindingRef, child.IterationId, "h-staged-explicit") { WorkTokenId = "unrelated-token" },
+                repeated,
+                repeated
+            ],
+            "duplicate-token-id" =>
+            [
+                new BpmnLiveWork(child.BindingRef, child.IterationId, "h-staged-a") { WorkTokenId = "reused-token" },
+                new BpmnLiveWork(other.BindingRef, other.IterationId, "h-staged-b") { WorkTokenId = "reused-token" },
+                repeated,
+                repeated
+            ],
+            _ => throw new ArgumentOutOfRangeException(nameof(snapshotShape), snapshotShape, "Unknown staged snapshot shape.")
+        };
+
+        var late = asFault
+            ? Fault(graph, terminated.State, child.BindingRef, child.Handle, staged, "unknown-token")
+            : Complete(graph, terminated.State, child.BindingRef, child.Handle, staged, "unknown-token");
+
+        late.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        late.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().Select(command => command.Handle)
+            .ShouldBe(staged.Select(live => live.Handle).Distinct(StringComparer.Ordinal));
     }
 
     private sealed record Invocation(string BindingRef, string TokenId, string? IterationId, string Handle);
