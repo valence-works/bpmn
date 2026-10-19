@@ -3,13 +3,15 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Bpmn.Interchange;
 using Bpmn.Model;
 using Bpmn.Model.State;
 
 namespace Bpmn.Schema.Generator;
 
 /// <summary>
-/// Generates the JSON Schema for the library-owned payload format by reflecting over the model.
+/// Generates the JSON Schema for the library-owned payload format by reflecting over the model and
+/// interchange contracts.
 /// <para>
 /// It describes what <see cref="JsonSerializer"/> actually writes with default options, not what the
 /// C# types look like to a reader. Those differ in ways that matter, and every one of them is a place
@@ -30,16 +32,17 @@ public static class BpmnSchemaGenerator
     /// <summary>
     /// The roots a consumer serializes. Everything reachable from them is emitted into <c>$defs</c>.
     /// <para>
-    /// There are two, because the format covers two documents: a definition and the execution state of a
-    /// running instance. The schema root uses a <c>oneOf</c> over both, so a standard validator accepts
-    /// either document. Both are also listed under <c>x-roots</c> so a code generator can find them without
-    /// knowing the individual <c>$defs</c> names.
+    /// There are three: a definition, the execution state of a running instance, and a work binding.
+    /// The schema root uses a <c>oneOf</c> over them, so a standard validator accepts any published
+    /// payload component. They are also listed under <c>x-roots</c> so a code generator can find them
+    /// without knowing the individual <c>$defs</c> names.
     /// </para>
     /// </summary>
     private static readonly Type[] Roots =
     [
         typeof(BpmnDefinitions),
-        typeof(BpmnExecutionState)
+        typeof(BpmnExecutionState),
+        typeof(BpmnWorkBinding)
     ];
 
     /// <summary>Generates the schema document, formatted for a reviewable diff.</summary>
@@ -88,7 +91,7 @@ public static class BpmnSchemaGenerator
             ["title"] = "BPMN payload format",
             ["description"] =
                 $"Version {BpmnPayloadFormat.Version} of the payload format owned by Bpmn.Model. "
-                + "Generated from the model; do not edit by hand. See ADR 0005.",
+                + "Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
             ["x-payloadFormatVersion"] = BpmnPayloadFormat.Version,
             ["x-roots"] = RootPointers(),
             ["oneOf"] = RootOneOf(),
@@ -100,8 +103,25 @@ public static class BpmnSchemaGenerator
 
     private static JsonObject DescribeObject(Type type, Queue<Type> pending)
     {
+        var derivedTypes = JsonDerivedTypes(type).ToArray();
+
+        if (derivedTypes.Length > 0)
+        {
+            foreach (var derived in derivedTypes)
+                pending.Enqueue(derived.DerivedType);
+
+            return new JsonObject
+            {
+                ["title"] = type.Name,
+                ["oneOf"] = new JsonArray(derivedTypes
+                    .Select(derived => (JsonNode)new JsonObject { ["$ref"] = Ref(derived.DerivedType) })
+                    .ToArray())
+            };
+        }
+
         var properties = new JsonObject();
         var required = new JsonArray();
+        AddDiscriminator(type, properties, required);
 
         foreach (var property in SerializedProperties(type))
         {
@@ -129,6 +149,50 @@ public static class BpmnSchemaGenerator
         // hand-written document into a validation error rather than a silently ignored field.
         described["additionalProperties"] = false;
         return described;
+    }
+
+    private static IEnumerable<JsonDerivedTypeAttribute> JsonDerivedTypes(Type type) =>
+        type.GetCustomAttributes<JsonDerivedTypeAttribute>(inherit: false);
+
+    /// <summary>
+    /// System.Text.Json writes the discriminator as a synthetic property, so reflection over ordinary
+    /// CLR properties cannot discover it. Copy the declared discriminator into each concrete schema
+    /// branch as a required constant; that makes the union unambiguous to standard JSON Schema
+    /// validators and keeps its labels tied to the serializer attributes.
+    /// </summary>
+    private static void AddDiscriminator(Type type, JsonObject properties, JsonArray required)
+    {
+        for (var baseType = type.BaseType; baseType is not null; baseType = baseType.BaseType)
+        {
+            var polymorphic = baseType.GetCustomAttribute<JsonPolymorphicAttribute>(inherit: false);
+            if (polymorphic is null)
+                continue;
+
+            var derived = JsonDerivedTypes(baseType).FirstOrDefault(candidate => candidate.DerivedType == type);
+            if (derived is null)
+                continue;
+
+            var (discriminator, jsonType) = derived.TypeDiscriminator switch
+            {
+                string value => ((JsonNode?)JsonValue.Create(value), "string"),
+                int value => ((JsonNode?)JsonValue.Create(value), "integer"),
+                _ => throw new InvalidOperationException(
+                    $"The JSON discriminator for {type.FullName} must be a string or integer.")
+            };
+
+            var name = polymorphic.TypeDiscriminatorPropertyName ?? "$type";
+            if (properties.ContainsKey(name))
+                throw new InvalidOperationException(
+                    $"The JSON discriminator '{name}' conflicts with a serialized property on {type.FullName}.");
+
+            properties[name] = new JsonObject
+            {
+                ["const"] = discriminator,
+                ["type"] = jsonType
+            };
+            required.Add(name);
+            return;
+        }
     }
 
     /// <summary>
@@ -306,8 +370,8 @@ public static class BpmnSchemaGenerator
 
     /// <summary>
     /// The addressable roots, keyed by type name. A consumer generating types needs to know which
-    /// <c>$defs</c> entries are whole documents rather than fragments, and the schema's single
-    /// <c>oneOf</c> expresses the same information to a standard validator.
+    /// <c>$defs</c> entries are supported payload roots rather than merely reachable records, and the
+    /// schema's single <c>oneOf</c> expresses the same set to a standard validator.
     /// </summary>
     private static JsonObject RootPointers()
     {
@@ -320,8 +384,8 @@ public static class BpmnSchemaGenerator
     }
 
     /// <summary>
-    /// A <c>oneOf</c> array pointing at each root, so a standard JSON Schema validator accepts either
-    /// payload document when it resolves <c>bpmn-payload.schema.json</c> directly.
+    /// A <c>oneOf</c> array pointing at each root, so a standard JSON Schema validator accepts any
+    /// addressable payload component when it resolves <c>bpmn-payload.schema.json</c> directly.
     /// </summary>
     private static JsonArray RootOneOf() =>
         new(Roots.Select(t => (JsonNode)new JsonObject { ["$ref"] = Ref(t) }).ToArray());

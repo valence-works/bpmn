@@ -78,6 +78,24 @@ var boundWork = result.Bindings
 `BpmnCapabilityException` when the definition needs a capability you did not declare — see
 [Host capabilities](../concepts/capabilities.md).
 
+#### Recurring timer starts
+
+Graph construction refuses a timer start unless it declares exactly one nonblank `interval` or
+`cron` property. Hosts registering recurring triggers use the same resolver:
+
+```csharp
+var schedule = BpmnTimerStartSchedule.Resolve(timerStartElement);
+// schedule.Kind is BpmnTimerStartScheduleKind.Interval or Cron.
+// schedule.Expression is normalized for the host's scheduler.
+```
+
+An interval is trimmed; cron whitespace between fields is collapsed to one space. Blank values
+count as absent. Resolution validates the schedule choice, not ISO-8601 or cron syntax: validate
+the expression against your scheduler before registering it. The helper performs no scheduling
+and its result is not a new wire format. Event-subprocess timers retain their narrower rule:
+one nonblank interval and no nonblank cron, representing a one-shot listener re-armed on each
+non-interrupting fire. They are not recurring process-start registrations.
+
 ### 2. A snapshot
 
 `BpmnHostSnapshot` is what the interpreter is allowed to know about your world at the moment of the

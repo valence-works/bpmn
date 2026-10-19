@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.1.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.2.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.1.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADR 0005.",
-  "x-payloadFormatVersion": "1.1.0",
+  "description": "Version 1.2.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.2.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
-    "BpmnExecutionState": "#/$defs/bpmnExecutionState"
+    "BpmnExecutionState": "#/$defs/bpmnExecutionState",
+    "BpmnWorkBinding": "#/$defs/bpmnWorkBinding"
   },
   "oneOf": [
     {
@@ -14,6 +15,9 @@
     },
     {
       "$ref": "#/$defs/bpmnExecutionState"
+    },
+    {
+      "$ref": "#/$defs/bpmnWorkBinding"
     }
   ],
   "$defs": {
@@ -47,6 +51,19 @@
         "schedulingCause"
       ],
       "additionalProperties": false
+    },
+    "bpmnBindingSlot": {
+      "type": "integer",
+      "title": "BpmnBindingSlot",
+      "description": "Serialized as an integer: the model declares no JsonStringEnumConverter.",
+      "enum": [
+        0,
+        1
+      ],
+      "x-enumNames": [
+        "Primary",
+        "ScopeListener"
+      ]
     },
     "bpmnBounds": {
       "type": "object",
@@ -1419,6 +1436,276 @@
       },
       "required": [
         "name"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnWorkBinding": {
+      "title": "BpmnWorkBinding",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timerWait"
+        },
+        {
+          "$ref": "#/$defs/messageWait"
+        },
+        {
+          "$ref": "#/$defs/signalWait"
+        },
+        {
+          "$ref": "#/$defs/messagePublish"
+        },
+        {
+          "$ref": "#/$defs/callProcess"
+        },
+        {
+          "$ref": "#/$defs/nestedProcess"
+        },
+        {
+          "$ref": "#/$defs/unboundTask"
+        }
+      ]
+    },
+    "callProcess": {
+      "type": "object",
+      "title": "CallProcess",
+      "properties": {
+        "kind": {
+          "const": "callProcess",
+          "type": "string"
+        },
+        "calledElement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waitForCompletion": {
+          "type": "boolean"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "waitForCompletion",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "messagePublish": {
+      "type": "object",
+      "title": "MessagePublish",
+      "properties": {
+        "kind": {
+          "const": "messagePublish",
+          "type": "string"
+        },
+        "messageName": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "messageName",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "messageWait": {
+      "type": "object",
+      "title": "MessageWait",
+      "properties": {
+        "kind": {
+          "const": "messageWait",
+          "type": "string"
+        },
+        "messageName": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "messageName",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "nestedProcess": {
+      "type": "object",
+      "title": "NestedProcess",
+      "properties": {
+        "kind": {
+          "const": "nestedProcess",
+          "type": "string"
+        },
+        "definition": {
+          "$ref": "#/$defs/bpmnProcessDefinition"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "definition",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "signalWait": {
+      "type": "object",
+      "title": "SignalWait",
+      "properties": {
+        "kind": {
+          "const": "signalWait",
+          "type": "string"
+        },
+        "signalName": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "signalName",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "timerWait": {
+      "type": "object",
+      "title": "TimerWait",
+      "properties": {
+        "kind": {
+          "const": "timerWait",
+          "type": "string"
+        },
+        "isoDuration": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "isoDuration",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "unboundTask": {
+      "type": "object",
+      "title": "UnboundTask",
+      "properties": {
+        "kind": {
+          "const": "unboundTask",
+          "type": "string"
+        },
+        "taskType": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "taskType",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
       ],
       "additionalProperties": false
     }

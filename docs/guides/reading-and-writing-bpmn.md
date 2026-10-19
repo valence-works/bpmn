@@ -383,6 +383,38 @@ source-preserving parser, and a semantic round-trip that a diff tool can compare
 one that cannot. The test to write is "read, write, read again, compare the two models" — not
 "compare the two strings".
 
+### Passing a document through JSON
+
+Transfer the definitions **and** bindings when a client needs to edit nested subprocesses or call
+options. Payload format 1.2.0 gives `BpmnWorkBinding` a JSON contract with explicit camelCase names and
+a `kind` discriminator. Serialize bindings as `BpmnWorkBinding` or a collection of that base type,
+using `System.Text.Json`'s default options:
+
+```csharp
+using System.Text.Json;
+
+var payload = JsonSerializer.Serialize(new
+{
+    definitions = result.Definitions,
+    bindings = result.Bindings
+});
+
+using var envelope = JsonDocument.Parse(payload);
+var definitions = envelope.RootElement.GetProperty("definitions").Deserialize<BpmnDefinitions>()!;
+var bindings = envelope.RootElement.GetProperty("bindings").Deserialize<IReadOnlyList<BpmnWorkBinding>>()!;
+var rewritten = writer.Write(definitions, bindings);
+```
+
+The envelope belongs to the host. Its two components use the library's
+[published schema](../reference/packages.md#the-serialization-is-owned-and-versioned); validate each
+binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `messageWait`, `signalWait`,
+`messagePublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
+Keep `kind` first when a client rebuilds a binding object: the default serializer writes it there,
+and [System.Text.Json requires discriminator metadata first by default](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism).
+`slot` is numeric like other enums in the format: `0` for Primary and `1` for ScopeListener. Nested
+process definitions and their retained content travel in `nestedProcess.definition`; nested work
+bindings remain entries in the bindings collection, identified by their `processId`.
+
 ## Reading a document you did not author
 
 A short checklist for BPMN arriving from a modeling tool you do not control:
