@@ -157,8 +157,7 @@ public sealed class BpmnInterpreter
     /// scope's other work alone, so it has no handles to resolve and issues no teardown. Every interrupting path
     /// passes real handles — see <see cref="BuildLiveWorkHandles"/>.
     /// </summary>
-    private static readonly IReadOnlyDictionary<(string BindingRef, string? IterationId), string> NoLiveWork =
-        new Dictionary<(string BindingRef, string? IterationId), string>();
+    private static readonly IReadOnlyDictionary<string, string> NoLiveWork = new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>The prefix of a multi-instance instance's minted iteration id; the instance token id it embeds is unique across the process.</summary>
     public const string MultiInstanceIterationIdPrefix = "bpmn-mi:";
@@ -211,8 +210,8 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var state = request.PriorState ?? new BpmnExecutionState();
+        var context = new BpmnEvaluationContext(request.Graph, request.Host, state);
 
         if (graph.Elements.Count == 0)
             return new BpmnEvaluation(state, new BpmnContinuation.Complete(DoneOutcomeName), context.Commands.ToArray());
@@ -328,9 +327,9 @@ public sealed class BpmnInterpreter
     /// the element's behavior and propagates.
     /// <para>
     /// A completion whose handle names work this scope already tore down is a late callback, absorbed once with a
-    /// <see cref="BpmnDiagnosticKind.Canceled"/> diagnostic. A completion the snapshot contradicts, because it
-    /// still lists the same (binding ref, iteration id) under another handle, or one no work record matches,
-    /// throws <see cref="BpmnExecutionException"/>.
+    /// <see cref="BpmnDiagnosticKind.Canceled"/> diagnostic. An echoed token id selects the exact invocation;
+    /// without one, the binding and reported iteration must resolve uniquely. A snapshot that still lists the
+    /// completed invocation, or contains conflicting identity evidence, throws <see cref="BpmnExecutionException"/>.
     /// </para>
     /// </summary>
     public BpmnEvaluation OnWorkCompleted(BpmnWorkCompletedRequest request)
@@ -338,20 +337,22 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var completionContext = request;
         var state = request.PriorState ?? new BpmnExecutionState();
+        var context = new BpmnEvaluationContext(request.Graph, request.Host, state);
 
         if (AbsorbIntoEndedScope(context, graph, state, completionContext.CompletedBindingRef,
                 $"completion of work '{completionContext.CompletedBindingRef}'") is { } absorbedCompletion)
             return absorbedCompletion;
 
-        if (AbsorbStoppedWork(state, completionContext.CompletedHandle, $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
+        if (AbsorbStoppedWork(state, completionContext.CompletedHandle, completionContext.WorkTokenId,
+                $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
             return FinishEvaluation(context, lateCompletion);
 
-        var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, "completed work")
+        var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId,
+                completionContext.WorkTokenId, "completed work")
             ?? throw UnresolvedWork("completed work", completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
-        ThrowIfAnotherUnitHoldsTheSlot(context, completedWork, completionContext.CompletedHandle, "completed work");
+        ValidateTerminalCallbackSnapshot(context, completedWork, completionContext.CompletedHandle, "completed work");
 
         var tokenId = completedWork.TokenId;
         state = RemoveActiveWork(state, tokenId);
@@ -515,12 +516,13 @@ public sealed class BpmnInterpreter
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var context = new BpmnEvaluationContext(request.Graph, request.Host);
+        var state = request.PriorState ?? new BpmnExecutionState();
+        var context = new BpmnEvaluationContext(request.Graph, request.Host, state);
 
         // A scope that already holds its verdict absorbs the fault before anything else looks at it, exactly as a
         // completion is absorbed: the snapshot of a terminated scope can still list work it is tearing down, and
         // checking the fault against that would refuse a report the completion path accepts.
-        if (AbsorbIntoEndedScope(context, request.Graph, request.PriorState ?? new BpmnExecutionState(), request.FaultedBindingRef,
+        if (AbsorbIntoEndedScope(context, request.Graph, state, request.FaultedBindingRef,
                 $"fault of work '{request.FaultedBindingRef}'") is { } absorbed)
             return new BpmnFaultEvaluation(absorbed.State, absorbed.Continuation, absorbed.Commands, BpmnErrorDisposition.Propagated.Instance);
 
@@ -548,12 +550,13 @@ public sealed class BpmnInterpreter
         // catcher in a nested scope then caught only when the two ids happened to coincide, and a coincidence
         // with a consumed token absorbed the fault as late.
         var faultedBindingRef = request.FaultedBindingRef;
-        if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
+        if (AbsorbStoppedWork(state, request.FaultedHandle, request.WorkTokenId,
+                $"fault of work '{faultedBindingRef}'") is { } lateFault)
             return lateFault;
 
-        var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, "faulted work");
+        var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, request.WorkTokenId, "faulted work");
         if (faultedWork is not null)
-            ThrowIfAnotherUnitHoldsTheSlot(context, faultedWork, request.FaultedHandle, "faulted work");
+            ValidateTerminalCallbackSnapshot(context, faultedWork, request.FaultedHandle, "faulted work");
         var faultedToken = faultedWork is not null
             ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedWork.TokenId))
             : null;
@@ -732,7 +735,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken completingToken,
         string failureOutcome,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -849,7 +852,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnEventSubprocessCatcher catcher,
         string? triggerIterationKey,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         string producedBy,
         string triggerDescription)
@@ -902,7 +905,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken listenerToken,
         BpmnEventSubprocessCatcher catcher,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -1013,10 +1016,10 @@ public sealed class BpmnInterpreter
     /// untouched host, so repeated signals fire repeatedly; an interrupting match tears the host down (a
     /// multi-instance coordinator cascading to its instances) before routing the boundary path. An unmatched
     /// escalation is re-signalled one hop further out when this process itself has an enclosing scope, and is
-    /// a documented no-op at a root process. A signal that arrives after the signalling work terminalized
-    /// fires non-interrupting boundaries but no-ops interrupting ones — interrupting retroactively would
-    /// double-route the host's outbound. Any non-escalation code is a forward-compatible diagnostic
-    /// pass-through. Never faults.
+    /// a documented no-op at a root process. A signal without token identity retains the legacy behavior when
+    /// the signalling work terminalized: non-interrupting boundaries may fire, while interrupting ones no-op.
+    /// A signal with explicit token identity must match an active invocation and its live host record. Any
+    /// non-escalation code is a forward-compatible diagnostic pass-through.
     /// </para>
     /// </summary>
     public BpmnEvaluation OnWorkSignalled(BpmnWorkSignalledRequest request)
@@ -1024,8 +1027,8 @@ public sealed class BpmnInterpreter
         ArgumentNullException.ThrowIfNull(request);
 
         var graph = request.Graph;
-        var context = new BpmnEvaluationContext(request.Graph, request.Host);
         var state = request.PriorState ?? new BpmnExecutionState();
+        var context = new BpmnEvaluationContext(request.Graph, request.Host, state);
 
         if (AbsorbIntoEndedScope(context, graph, state, request.SignallingBindingRef,
                 $"signal '{request.Code}' from work '{request.SignallingBindingRef}'") is { } absorbedSignal)
@@ -1037,6 +1040,19 @@ public sealed class BpmnInterpreter
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.EscalationUnhandled, null, null, null,
                 $"BPMN process ignored a scope signal with unrecognized code '{request.Code}' (forward-compatible pass-through).");
             return FinishEvaluation(context, new EvaluationResult(state));
+        }
+
+        // Explicit identity is strict for recognized escalation signals. Unknown signal codes above remain
+        // forward-compatible and bypass identity resolution, as before.
+        if (request.WorkTokenId is not null)
+        {
+            var activeWork = ResolveLiveWork(state, request.SignallingBindingRef, request.SignallingIterationId,
+                    request.WorkTokenId, "signalled work")
+                ?? throw UnresolvedWork("signalled work", request.SignallingBindingRef, request.SignallingIterationId);
+            var hostToken = state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, activeWork.TokenId));
+            if (hostToken is null || hostToken.Status is BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled)
+                throw new BpmnExecutionException($"BPMN signal for work '{request.SignallingBindingRef}' names token '{activeWork.TokenId}', which is not an active invocation.");
+            ValidateSignalSnapshot(context, activeWork, request);
         }
 
         return FinishEvaluation(context, HandleEscalationSignal(context, graph, state, request));
@@ -1057,15 +1073,17 @@ public sealed class BpmnInterpreter
         if (hostElement is null || escalationCode is null)
             return BubbleOrUnhandled(context, state, signal, escalationCode, hostElementId: hostElement?.ElementId);
 
-        // The signalling work's record: present in the live case, absent in the late case where the work already
-        // completed or failed and its record was dropped.
-        var activeWork = state.ActiveWork.FirstOrDefault(work =>
-            StringComparer.Ordinal.Equals(work.NodeId, signal.SignallingBindingRef) &&
-            StringComparer.Ordinal.Equals(work.IterationId, signal.SignallingIterationId));
+        // The signalling work's record: present in the live case, absent in the legacy late case where the work
+        // already completed or failed and its record was dropped. Ambiguous ID-less matches are refused.
+        var activeWork = signal.WorkTokenId is null
+            ? ResolveLegacySignallingWork(state, signal)
+            : ResolveLiveWork(state, signal.SignallingBindingRef, signal.SignallingIterationId, signal.WorkTokenId, "signalled work");
         var hostToken = activeWork is not null
             ? state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, activeWork.TokenId))
             : null;
         var isLate = hostToken is null || hostToken.Status is BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled;
+        if (!isLate && signal.WorkTokenId is null)
+            ValidateSignalSnapshot(context, activeWork!, signal);
 
         // The specificity ladder — (1) host boundary exact, (2) scope event subprocess exact, (3) host
         // boundary catch-all, (4) scope event subprocess catch-all, (5) bubble. Exact beats catch-all across kinds;
@@ -1266,7 +1284,7 @@ public sealed class BpmnInterpreter
         BpmnGraph graph,
         BpmnExecutionState state,
         BpmnToken hostToken,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -1477,7 +1495,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken instanceToken,
         BpmnLoopState loop,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -2239,7 +2257,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnEventRace race,
         string winnerTokenId,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations)
     {
         foreach (var loserTokenId in race.MemberTokenIds.Where(id => !StringComparer.Ordinal.Equals(id, winnerTokenId)))
@@ -2261,7 +2279,7 @@ public sealed class BpmnInterpreter
         BpmnGraph graph,
         BpmnExecutionState state,
         BpmnToken completingToken,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations)
     {
         var completingElement = graph.GetRequiredElement(completingToken.AtElementId);
@@ -2336,7 +2354,7 @@ public sealed class BpmnInterpreter
         string hostTokenId,
         string? listenerTokenToSkip,
         string reason,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations)
     {
         var listenerTokenIds = state.Tokens
@@ -2378,7 +2396,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         string tokenId,
         string reason,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         Func<BpmnToken, string, string> diagnosticMessage)
     {
@@ -2417,7 +2435,7 @@ public sealed class BpmnInterpreter
         if (work is not null)
         {
             state = RemoveActiveWork(state, tokenId);
-            if (withdrawn is null && liveWorkHandles.TryGetValue((work.NodeId, work.IterationId), out var handle))
+            if (withdrawn is null && liveWorkHandles.TryGetValue(work.TokenId, out var handle))
                 pendingCancellations.Add(new PendingTeardown(handle, token.AtElementId, reason, token.TokenId));
         }
 
@@ -2442,7 +2460,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         string keepTokenId,
         string reason,
-        IReadOnlyDictionary<(string BindingRef, string? IterationId), string> liveWorkHandles,
+        IReadOnlyDictionary<string, string> liveWorkHandles,
         List<PendingTeardown> pendingCancellations,
         Func<BpmnToken, string, string> diagnosticMessage)
     {
@@ -2509,17 +2527,12 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// The host's live work keyed by <c>(binding ref, iteration id)</c>. Ordinary single-run work keys under a
-    /// <c>null</c> iteration id; N concurrent instances of the same binding key under their distinct iteration
-    /// ids, so a teardown resolves the right instance's handle.
+    /// Resolves host handles by this scope's local work-token id. Legacy snapshot entries without an id are
+    /// usable only when their binding and iteration identify one active work record.
     /// </summary>
-    private static IReadOnlyDictionary<(string BindingRef, string? IterationId), string> BuildLiveWorkHandles(BpmnEvaluationContext context)
-    {
-        var liveWorkHandles = new Dictionary<(string BindingRef, string? IterationId), string>();
-        foreach (var live in context.Host.LiveWork)
-            liveWorkHandles[(live.BindingRef, live.IterationId)] = live.Handle;
-        return liveWorkHandles;
-    }
+    private static IReadOnlyDictionary<string, string> BuildLiveWorkHandles(BpmnEvaluationContext context) =>
+        ResolveLiveWorkSnapshot(context, "teardown lookup")
+            .ToDictionary(pair => pair.Key, pair => pair.Value.Handle, StringComparer.Ordinal);
 
     /// <summary>
     /// Issues each carried teardown and the re-signalled escalation, if any. Only called from a non-fault
@@ -2550,41 +2563,6 @@ public sealed class BpmnInterpreter
         foreach (var teardown in issued)
             state = UpdateToken(state, GetRequiredToken(state, teardown.TokenId) with { StoppedHandle = teardown.Handle });
         return state;
-    }
-
-    /// <summary>
-    /// Absorbs a completion or fault for <paramref name="handle"/> when it names work this scope tore down, and
-    /// clears the record so a second report is not absorbed too; <c>null</c> for any other handle. The match is
-    /// on the host's handle, which names one unit for the scope's lifetime, so a later pass over the same element,
-    /// or another instance on the same slot, can never be mistaken for it.
-    /// </summary>
-    private static EvaluationResult? AbsorbStoppedWork(BpmnExecutionState state, string handle, string callback)
-    {
-        if (state.Tokens.FirstOrDefault(token => StringComparer.Ordinal.Equals(token.StoppedHandle, handle)) is not { } stopped)
-            return null;
-
-        state = UpdateToken(state, stopped with { StoppedHandle = null });
-        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, stopped.AtElementId, stopped.FlowId, stopped.TokenId,
-            $"BPMN ignored a late {callback} (handle '{handle}'): the scope had already torn that work down when it cancelled token '{stopped.TokenId}'.");
-        return new EvaluationResult(state);
-    }
-
-    /// <summary>
-    /// Throws when the snapshot lists the slot of the record a report resolved to, its (binding ref, iteration id),
-    /// under a different handle than the report's. The reported unit has already left the snapshot, as the port
-    /// requires, so a slot still held means another unit owns that record: acting on it would resume or fail work
-    /// that is still running. Checking the resolved record rather than the reported slot also catches a report
-    /// with no iteration id that fell back to the binding's only record. A late report for work this scope tore
-    /// down never gets here; it is absorbed first.
-    /// </summary>
-    private static void ThrowIfAnotherUnitHoldsTheSlot(BpmnEvaluationContext context, BpmnActiveWork resolved, string handle, string callback)
-    {
-        if (context.Host.LiveWork.FirstOrDefault(live =>
-                StringComparer.Ordinal.Equals(live.BindingRef, resolved.NodeId)
-                && StringComparer.Ordinal.Equals(live.IterationId, resolved.IterationId)
-                && !StringComparer.Ordinal.Equals(live.Handle, handle)) is { } holder)
-            throw new BpmnExecutionException(
-                $"BPMN {callback} '{resolved.NodeId}' was reported under handle '{handle}' and resolves to the unit on iteration '{resolved.IterationId ?? "none"}', but the host still runs that slot under handle '{holder.Handle}' and this scope never stopped '{handle}'.");
     }
 
     /// <summary>
@@ -2626,6 +2604,8 @@ public sealed class BpmnInterpreter
     /// </summary>
     private static void IssueTerminateTeardowns(BpmnEvaluationContext context)
     {
+        ValidateUniqueLiveWorkEvidence(context.Host.LiveWork, "terminate teardown");
+
         var tornDown = context.Commands
             .OfType<BpmnHostCommand.CancelWorkSubtree>()
             .Select(teardown => teardown.Handle)
@@ -2661,32 +2641,196 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// The live work record a completion or a fault reports, from its binding ref and iteration id alone. A
-    /// reported iteration id matches exactly or not at all: falling back to the binding's only record would hand an
-    /// earlier pass's report to a later pass's instance on the same element. Without an iteration id the binding's
-    /// only record answers, so a host that reports none still resolves single-run and sequential work. <c>null</c>
-    /// when nothing matches; several records and no iteration id to tell them apart throw, because picking one
-    /// would resume, or tear down, the wrong instance.
-    /// <para>
-    /// The scope's invocation correlation plays no part. It belongs to the work that started this scope, so in a
-    /// nested scope the token id it carries names a token of the enclosing scope; matching it against this
-    /// scope's scope-local token ids only ever finds a coincidence.
-    /// </para>
+    /// Resolves the live snapshot by invocation identity and rejects duplicate or contradictory host evidence.
+    /// An ID-less snapshot entry uses the legacy binding/iteration slot only when that slot identifies one
+    /// active work record. Unknown ID-less entries remain available to terminate teardown, but cannot resolve a
+    /// token cancellation.
     /// </summary>
-    private static BpmnActiveWork? ResolveLiveWork(BpmnExecutionState state, string bindingRef, string? iterationId, string callback)
+    private static IReadOnlyDictionary<string, BpmnLiveWork> ResolveLiveWorkSnapshot(BpmnEvaluationContext context, string callback)
     {
-        var candidates = state.ActiveWork
-            .Where(work => StringComparer.Ordinal.Equals(work.NodeId, bindingRef))
-            .ToArray();
+        if (context.LiveWorkByTokenId is { } cached)
+            return cached;
 
-        if (iterationId is not null)
-            return candidates.FirstOrDefault(work => StringComparer.Ordinal.Equals(work.IterationId, iterationId));
+        var host = context.Host;
+        var state = context.EntryState;
+        ValidateUniqueLiveWorkEvidence(host.LiveWork, callback);
+
+        var activeByTokenId = new Dictionary<string, BpmnActiveWork>(StringComparer.Ordinal);
+        foreach (var work in state.ActiveWork)
+            if (!activeByTokenId.TryAdd(work.TokenId, work))
+                throw new BpmnExecutionException($"BPMN {callback} cannot resolve duplicate active work token id '{work.TokenId}'.");
+
+        var liveByTokenId = new Dictionary<string, BpmnLiveWork>(StringComparer.Ordinal);
+        foreach (var live in host.LiveWork)
+        {
+            string? tokenId = live.WorkTokenId;
+            if (tokenId is not null)
+            {
+                if (string.IsNullOrWhiteSpace(tokenId))
+                    throw new BpmnExecutionException($"BPMN {callback} found a blank WorkTokenId on live work '{live.BindingRef}'.");
+                if (!activeByTokenId.TryGetValue(tokenId, out var active))
+                    throw new BpmnExecutionException($"BPMN {callback} found live work '{live.BindingRef}' with unknown WorkTokenId '{tokenId}'.");
+                if (!StringComparer.Ordinal.Equals(active.NodeId, live.BindingRef)
+                    || !StringComparer.Ordinal.Equals(active.IterationId, live.IterationId))
+                    throw new BpmnExecutionException($"BPMN {callback} found live work token '{tokenId}' whose binding or iteration contradicts its active work record.");
+            }
+            else
+            {
+                var candidates = state.ActiveWork.Where(work =>
+                    StringComparer.Ordinal.Equals(work.NodeId, live.BindingRef)
+                    && StringComparer.Ordinal.Equals(work.IterationId, live.IterationId)).ToArray();
+                if (candidates.Length > 1)
+                    throw new BpmnExecutionException($"BPMN {callback} found ambiguous ID-less live work for binding '{live.BindingRef}' on iteration '{live.IterationId ?? "none"}'.");
+                if (candidates.Length == 0 && state.ActiveWork.Any(work => StringComparer.Ordinal.Equals(work.NodeId, live.BindingRef)))
+                    throw new BpmnExecutionException($"BPMN {callback} found ID-less live work for binding '{live.BindingRef}' whose iteration '{live.IterationId ?? "none"}' contradicts its active work records.");
+                tokenId = candidates.Length == 1 ? candidates[0].TokenId : null;
+            }
+
+            if (tokenId is not null && !liveByTokenId.TryAdd(tokenId, live))
+                throw new BpmnExecutionException($"BPMN {callback} found more than one live host record for work token '{tokenId}'.");
+        }
+
+        context.LiveWorkByTokenId = liveByTokenId;
+        return liveByTokenId;
+    }
+
+    /// <summary>Rejects duplicate handles, duplicate explicit token ids, and ambiguous legacy slots in a host snapshot.</summary>
+    private static void ValidateUniqueLiveWorkEvidence(IReadOnlyCollection<BpmnLiveWork> liveWork, string callback)
+    {
+        var handles = new HashSet<string>(StringComparer.Ordinal);
+        var tokenIds = new HashSet<string>(StringComparer.Ordinal);
+        var legacySlots = new HashSet<(string BindingRef, string? IterationId)>();
+        var explicitSlots = new HashSet<(string BindingRef, string? IterationId)>();
+
+        foreach (var live in liveWork)
+        {
+            if (!handles.Add(live.Handle))
+                throw new BpmnExecutionException($"BPMN {callback} found duplicate live-work handle '{live.Handle}'.");
+
+            var slot = (live.BindingRef, live.IterationId);
+            if (live.WorkTokenId is null)
+            {
+                if (!legacySlots.Add(slot))
+                    throw new BpmnExecutionException($"BPMN {callback} found duplicate ID-less live work for binding '{live.BindingRef}' on iteration '{live.IterationId ?? "none"}'.");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(live.WorkTokenId))
+                throw new BpmnExecutionException($"BPMN {callback} found a blank WorkTokenId on live work '{live.BindingRef}'.");
+            if (!tokenIds.Add(live.WorkTokenId))
+                throw new BpmnExecutionException($"BPMN {callback} found duplicate live-work token id '{live.WorkTokenId}'.");
+            explicitSlots.Add(slot);
+        }
+
+        foreach (var slot in legacySlots)
+            if (explicitSlots.Contains(slot))
+                throw new BpmnExecutionException($"BPMN {callback} found mixed explicit and ID-less live-work evidence for binding '{slot.BindingRef}' on iteration '{slot.IterationId ?? "none"}'.");
+    }
+
+    /// <summary>
+    /// Confirms that terminal work has left the host snapshot. Other invocations on the same binding and
+    /// iteration are valid when their token identities independently resolve.
+    /// </summary>
+    private static void ValidateTerminalCallbackSnapshot(
+        BpmnEvaluationContext context,
+        BpmnActiveWork resolved,
+        string handle,
+        string callback)
+    {
+        var liveByTokenId = ResolveLiveWorkSnapshot(context, callback);
+        if (context.Host.LiveWork.Any(live => StringComparer.Ordinal.Equals(live.Handle, handle)))
+            throw new BpmnExecutionException($"BPMN {callback} handle '{handle}' is still present in the host's live-work snapshot.");
+        if (liveByTokenId.TryGetValue(resolved.TokenId, out var live))
+            throw new BpmnExecutionException($"BPMN {callback} token '{resolved.TokenId}' is still live under handle '{live.Handle}'.");
+    }
+
+    /// <summary>Requires a live signal to agree with its host handle and any explicit identity.</summary>
+    private static void ValidateSignalSnapshot(
+        BpmnEvaluationContext context,
+        BpmnActiveWork resolved,
+        BpmnWorkSignalledRequest signal)
+    {
+        var liveByTokenId = ResolveLiveWorkSnapshot(context, "signalled work");
+        if (!liveByTokenId.TryGetValue(resolved.TokenId, out var live)
+            || (signal.WorkTokenId is not null && !StringComparer.Ordinal.Equals(live.WorkTokenId, signal.WorkTokenId))
+            || !StringComparer.Ordinal.Equals(live.Handle, signal.SignallingHandle))
+            throw new BpmnExecutionException($"BPMN signal for work '{signal.SignallingBindingRef}' and token '{resolved.TokenId}' does not match one live host record and handle.");
+    }
+
+    /// <summary>
+    /// Absorbs a completion or fault for work this scope tore down. The handle remains the first lookup; an
+    /// explicit token id, when supplied, must agree before the one-shot stopped marker is cleared.
+    /// </summary>
+    private static EvaluationResult? AbsorbStoppedWork(BpmnExecutionState state, string handle, string? workTokenId, string callback)
+    {
+        var stoppedMatches = state.Tokens.Where(token => StringComparer.Ordinal.Equals(token.StoppedHandle, handle)).ToArray();
+        if (stoppedMatches.Length > 1)
+            throw new BpmnExecutionException($"BPMN {callback} handle '{handle}' matches more than one stopped work token.");
+        if (stoppedMatches.Length == 0)
+            return null;
+
+        var stopped = stoppedMatches[0];
+        if (workTokenId is not null
+            && (string.IsNullOrWhiteSpace(workTokenId) || !StringComparer.Ordinal.Equals(workTokenId, stopped.TokenId)))
+            throw new BpmnExecutionException($"BPMN {callback} handle '{handle}' names stopped token '{stopped.TokenId}', not reported token '{workTokenId}'.");
+
+        state = UpdateToken(state, stopped with { StoppedHandle = null });
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, stopped.AtElementId, stopped.FlowId, stopped.TokenId,
+            $"BPMN ignored a late {callback} (handle '{handle}'): the scope had already torn that work down when it cancelled token '{stopped.TokenId}'.");
+        return new EvaluationResult(state);
+    }
+
+    /// <summary>Resolves an ID-less signal only from its exact binding/iteration slot; duplicates are never first-match wins.</summary>
+    private static BpmnActiveWork? ResolveLegacySignallingWork(BpmnExecutionState state, BpmnWorkSignalledRequest signal)
+    {
+        var candidates = state.ActiveWork.Where(work =>
+            StringComparer.Ordinal.Equals(work.NodeId, signal.SignallingBindingRef)
+            && StringComparer.Ordinal.Equals(work.IterationId, signal.SignallingIterationId)).ToArray();
+        return candidates.Length switch
+        {
+            0 => null,
+            1 => candidates[0],
+            _ => throw new BpmnExecutionException($"BPMN signalled work '{signal.SignallingBindingRef}' is ambiguous on iteration '{signal.SignallingIterationId ?? "none"}'.")
+        };
+    }
+
+    /// <summary>
+    /// Resolves a work callback. An explicit token id is strict and validates the binding plus any reported
+    /// iteration. Without one, the legacy binding/iteration slot must resolve exactly one active work record.
+    /// </summary>
+    private static BpmnActiveWork? ResolveLiveWork(
+        BpmnExecutionState state,
+        string bindingRef,
+        string? iterationId,
+        string? workTokenId,
+        string callback)
+    {
+        if (workTokenId is not null)
+        {
+            if (string.IsNullOrWhiteSpace(workTokenId))
+                throw new BpmnExecutionException($"BPMN {callback} supplied a blank WorkTokenId.");
+
+            var tokenMatches = state.ActiveWork.Where(work => StringComparer.Ordinal.Equals(work.TokenId, workTokenId)).ToArray();
+            if (tokenMatches.Length != 1)
+                throw new BpmnExecutionException($"Unable to resolve BPMN {callback} token id '{workTokenId}' to exactly one active work record.");
+
+            var resolved = tokenMatches[0];
+            if (!StringComparer.Ordinal.Equals(resolved.NodeId, bindingRef))
+                throw new BpmnExecutionException($"BPMN {callback} token '{workTokenId}' belongs to binding '{resolved.NodeId}', not reported binding '{bindingRef}'.");
+            if (iterationId is not null && !StringComparer.Ordinal.Equals(resolved.IterationId, iterationId))
+                throw new BpmnExecutionException($"BPMN {callback} token '{workTokenId}' belongs to iteration '{resolved.IterationId ?? "none"}', not reported iteration '{iterationId}'.");
+            return resolved;
+        }
+
+        var candidates = state.ActiveWork.Where(work =>
+            StringComparer.Ordinal.Equals(work.NodeId, bindingRef)
+            && (iterationId is null || StringComparer.Ordinal.Equals(work.IterationId, iterationId))).ToArray();
 
         return candidates.Length switch
         {
             0 => null,
             1 => candidates[0],
-            _ => throw UnresolvedWork(callback, bindingRef, iterationId)
+            _ => throw new BpmnExecutionException($"BPMN {callback} '{bindingRef}' is ambiguous on iteration '{iterationId ?? "none"}'.")
         };
     }
 

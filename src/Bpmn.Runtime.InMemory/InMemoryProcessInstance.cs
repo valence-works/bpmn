@@ -244,7 +244,7 @@ public sealed class InMemoryProcessInstance
             : new BpmnTranscriptTrigger.WorkCompleted(work, outcomeNames);
 
         Evaluate(trigger, snapshot => _host.Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
-            Graph, _state, snapshot, work.BindingRef, work.Handle, outcomeNames, work.IterationId)));
+            Graph, _state, snapshot, work.BindingRef, work.Handle, outcomeNames, work.IterationId) { WorkTokenId = work.WorkTokenId }));
     }
 
     internal void RunWorkFaulted(InMemoryWorkItem work, string? message)
@@ -254,19 +254,24 @@ public sealed class InMemoryProcessInstance
 
         Evaluate(new BpmnTranscriptTrigger.WorkFaulted(work, message), snapshot =>
             _host.Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-                Graph, _state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId }));
+                Graph, _state, snapshot, work.BindingRef, work.Handle, message)
+            {
+                FaultedIterationId = work.IterationId,
+                WorkTokenId = work.WorkTokenId
+            }));
     }
 
     internal void RunWorkSignalled(InMemoryWorkItem work, string code, JsonElement? payload)
     {
         // Unlike a completion, a signal leaves the work running — the signalling scope carries on after
-        // escalating — so the live-work record stays exactly where it is.
-        if (IsFinished)
+        // escalating — so the live-work record stays exactly where it is. Drop a queued signal after its
+        // handle retires; it must never act on a replacement invocation.
+        if (IsFinished || FindWork(work.Handle) is null)
             return;
 
         Evaluate(new BpmnTranscriptTrigger.WorkSignalled(work, code), snapshot =>
             _host.Interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
-                Graph, _state, snapshot, work.BindingRef, work.Handle, code, payload, work.IterationId)));
+                Graph, _state, snapshot, work.BindingRef, work.Handle, code, payload, work.IterationId) { WorkTokenId = work.WorkTokenId }));
     }
 
     // --- Applying an evaluation ----------------------------------------------------------------------
@@ -349,7 +354,7 @@ public sealed class InMemoryProcessInstance
             IsCatchListener(start),
             dueAt,
             ScopeInstanceId,
-            Clock.Now);
+            Clock.Now) { WorkTokenId = start.TokenId };
 
         _live.Add(work);
         _host.RegisterWork(handle, this);
@@ -456,7 +461,7 @@ public sealed class InMemoryProcessInstance
     private BpmnHostSnapshot Snapshot() => new(
         ScopeInstanceId,
         HasEnclosingScope: _parent is not null,
-        LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle)).ToArray(),
+        LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle) { WorkTokenId = work.WorkTokenId }).ToArray(),
         InvocationCorrelation: _invocationCorrelation,
         Variables: Variables,
         Capabilities: _host.Capabilities);
