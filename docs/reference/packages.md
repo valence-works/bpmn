@@ -113,9 +113,10 @@ Three things a consumer generating types should know, all of them described in t
   rather than relying on a default, and a test fails on any that does not — generating the schema found
   53 properties that had drifted to PascalCase, and they were normalized before the format was frozen.
   See ADR 0005.
-- **There are two roots.** The schema root uses a `oneOf` over both `bpmnDefinitions` and
-  `bpmnExecutionState`, so a standard validator accepts either document directly when resolving
-  `bpmn-payload.schema.json`. Both are also listed under `x-roots` as a convenience for code generators.
+- **There are three roots.** The schema root uses a `oneOf` over `bpmnDefinitions`,
+  `bpmnExecutionState`, and `bpmnWorkBinding`. Each is also listed under `x-roots` for code generators.
+  Format 1.2.0 adds the binding root as a union of seven cases selected by `kind`; existing definition
+  and execution-state shapes are unchanged. See [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
 
 Regenerate the schema after any model change:
 

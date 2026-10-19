@@ -57,7 +57,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | None (plain) | Supported | |
 | Message, signal | Supported | Matched on the resolved message or signal **name**. An unresolvable `messageRef` / `signalRef` degrades to a plain start. |
-| Timer | Supported | Must be a **recurring schedule**: an ISO-8601 `interval` or a `cron` expression. A timer start that is not recurring degrades. |
+| Timer | Supported | Must be a **recurring schedule**: exactly one nonblank ISO-8601 `interval` or `cron` expression. Graph build rejects a missing or ambiguous choice; `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts. A timer start that is not recurring degrades on import. |
 | Error (event subprocess body only) | Supported | An error-triggered event subprocess. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |

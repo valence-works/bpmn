@@ -15,6 +15,8 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Bpmn.Model/Bpmn.Model.csproj" />
+    <!-- Build-time only: the interchange binding contract is reflected into the shared payload schema. -->
+    <ProjectReference Include="../../src/Bpmn.Interchange/Bpmn.Interchange.csproj" />
   </ItemGroup>
 
 </Project>

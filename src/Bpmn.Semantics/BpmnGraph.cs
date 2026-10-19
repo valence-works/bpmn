@@ -513,6 +513,9 @@ public sealed class BpmnGraph
             // Resolving the family also rejects unsupported element types and event definitions.
             var family = BpmnElementFamilies.Resolve(element);
 
+            if (family == BpmnElementFamilies.StartEventTimer)
+                _ = BpmnTimerStartSchedule.Resolve(element);
+
             if (element.BindingRef is not null)
             {
                 if (!boundWorkByRef.ContainsKey(element.BindingRef))
