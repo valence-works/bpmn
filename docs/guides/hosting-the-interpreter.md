@@ -242,6 +242,12 @@ its unique handle, retain each start's token ID in that ledger entry, and apply 
 the order returned. An interrupting path can emit replacement work before the teardown of the older
 unit it supersedes, so the slot can be occupied twice partway through one batch.
 
+If teardown is staged while the scope remains running, a snapshot row may still name work already
+marked by `BpmnToken.StoppedHandle`. The interpreter excludes that row from active correlation only when the handle
+matches exactly one stopped marker and `WorkTokenId` is absent or matches that marker's token ID;
+it rejects an explicit mismatch or an ambiguous marker. After termination, it issues cleanup for each distinct
+handle still in the snapshot without correlating teardown targets to active token identities.
+
 `IterationScope` carries the per-instance values to seed: always the zero-based `loopIndex`, plus the
 current item in collection mode. Report the completion, or the fault, back under the same `IterationId`.
 
@@ -370,7 +376,8 @@ public sealed class MinimalHost : IBpmnVariableReader
     /// A nested scope signalled outward; this scope is where it lands.
     public void SignalFromChild(string handle, string code, JsonElement? payload)
     {
-        var work = _live[handle];   // still running: a signal is not a completion
+        if (!_live.TryGetValue(handle, out var work))
+            return;                 // the handle was retired before this signal arrived
 
         Apply(_interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
             _graph, _state, Snapshot(), work.BindingRef, handle, code, payload, work.IterationId)

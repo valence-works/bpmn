@@ -321,6 +321,14 @@ spending the marker. An ID-less legacy report retains handle-only absorption. Th
 spent, so a second report for the same handle is not absorbed. A handle must name one unit for the
 scope's lifetime; never reuse one.
 
+With staged teardown in a scope that remains running, `LiveWork` may still contain a row for a handle
+recorded by `StoppedHandle`. The interpreter treats that row as residual stopped work, outside active-invocation
+correlation, only when its handle matches exactly one stopped marker and its `WorkTokenId` is absent
+or matches that marker's token ID. An explicit mismatch or a handle matching multiple stopped markers
+is rejected. Repeated rows for the same stopped handle are harmless only when each row satisfies
+that identity rule. A terminated scope uses a separate cleanup rule: the interpreter issues teardown for every distinct
+handle still in the snapshot; token identity does not select or suppress those teardown targets.
+
 Any other callback is a broken contract rather than a race, and stays loud: a completion throws
 `BpmnExecutionException`, and a fault faults the scope. That covers a second report for work that
 completed normally, a binding no element binds, and work the interpreter withdrew before you ever
