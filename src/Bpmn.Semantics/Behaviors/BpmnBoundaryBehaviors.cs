@@ -28,14 +28,7 @@ public sealed class BoundaryEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
         Route(context);
 
-    private static BpmnBehaviorDecision Route(IBpmnBehaviorContext context)
-    {
-        var flows = BpmnFlowSelector.SelectTaskFlows(context);
-        if (flows.Count == 0 && context.OutboundFlows.Count > 0)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-                "bpmn.flow.none-taken",
-                $"BPMN boundary event '{context.Element.ElementId}' fired but no outbound sequence flow matched and no default flow is declared."));
-
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
-    }
+    private static BpmnBehaviorDecision Route(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN boundary event '{context.Element.ElementId}' fired but no outbound sequence flow matched and no default flow is declared."));
 }

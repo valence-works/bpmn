@@ -455,7 +455,10 @@ public sealed class InMemoryProcessInstance
         LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle)).ToArray(),
         InvocationCorrelation: _invocationCorrelation,
         Variables: Variables,
-        Capabilities: _host.Capabilities);
+        Capabilities: _host.Capabilities)
+    {
+        Conditions = _host.Options.Conditions
+    };
 
     private bool Retire(string handle)
     {

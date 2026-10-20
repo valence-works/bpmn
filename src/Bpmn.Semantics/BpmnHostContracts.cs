@@ -51,6 +51,19 @@ public sealed record BpmnHostSnapshot(
     IBpmnVariableReader Variables,
     BpmnHostCapabilities Capabilities)
 {
+    /// <summary>
+    /// Answers the condition expressions the interpreter needs while it routes, or <c>null</c> for a host that
+    /// evaluates none. Required when the graph was built with
+    /// <see cref="BpmnHostCapabilities.ConditionEvaluation"/>: a host that declared the capability and supplies
+    /// no evaluator has broken the port, and the interpreter throws <see cref="BpmnExecutionException"/> naming
+    /// the element and flow the first time it needs an answer.
+    /// <para>
+    /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+    /// nor the deconstruction a host compiled against an earlier version uses. See ADR 0011.
+    /// </para>
+    /// </summary>
+    public IBpmnConditionEvaluator? Conditions { get; init; }
+
     /// <summary>A snapshot for a root scope with nothing running and no variables.</summary>
     public static BpmnHostSnapshot Root(string scopeInstanceId, BpmnHostCapabilities capabilities = BpmnHostCapabilities.Full) =>
         new(scopeInstanceId, HasEnclosingScope: false, [], new Dictionary<string, string>(), BpmnNoVariables.Instance, capabilities);
@@ -95,6 +108,114 @@ public sealed class BpmnNoVariables : IBpmnVariableReader
         value = BpmnValue.Absent;
         return false;
     }
+}
+
+/// <summary>
+/// Evaluates the condition expressions of a process: the second host callback, of the same shape as
+/// <see cref="IBpmnVariableReader"/>. The interpreter decides which conditions are asked, when, in what order
+/// and what the answers mean for routing; the host decides only what one expression evaluates to. It is asked
+/// synchronously, mid-evaluation, and must only read: a host that would have to await something to answer
+/// resolves it before the evaluation. There is no asynchronous path.
+/// <para>
+/// The interpreter's determinism rests on the answers being a function of the request and the host's process
+/// data, as it already rests on the variable reader. An evaluator that throws has broken the port; the exception
+/// surfaces as a <see cref="BpmnExecutionException"/> whose inner exception is the evaluator's. A condition that
+/// cannot be answered is reported as <see cref="BpmnConditionResult.Failed"/> instead, which faults the scope.
+/// See ADR 0011.
+/// </para>
+/// </summary>
+public interface IBpmnConditionEvaluator
+{
+    /// <summary>Evaluates one condition expression.</summary>
+    BpmnConditionResult Evaluate(BpmnConditionRequest request);
+}
+
+/// <summary>One condition expression the interpreter needs answered.</summary>
+/// <param name="ElementId">The element whose outgoing flows are being chosen.</param>
+/// <param name="FlowId">The flow whose condition this is.</param>
+/// <param name="Site">What kind of condition this is; one of <see cref="BpmnConditionSites"/>.</param>
+/// <param name="Body">The expression text exactly as modeled. The library never parses it.</param>
+/// <param name="Language">
+/// The expression's own language, else the process default
+/// (<see cref="BpmnProcessDefinition.ExpressionLanguage"/>), or <c>null</c> when the document declares neither.
+/// No XPath default is supplied: what a missing language means is the host's call.
+/// </param>
+/// <param name="Iteration">
+/// The <see cref="BpmnIterationScope.IterationId"/> of the multi-instance instance the routed token belongs to,
+/// so the host can evaluate against that instance's frame, or <c>null</c> outside one.
+/// </param>
+public sealed record BpmnConditionRequest(
+    string ElementId,
+    string FlowId,
+    string Site,
+    string Body,
+    string? Language,
+    string? Iteration);
+
+/// <summary>The kinds of condition a <see cref="BpmnConditionRequest"/> can carry. A new site is additive.</summary>
+public static class BpmnConditionSites
+{
+    /// <summary>A sequence flow's <c>&lt;conditionExpression&gt;</c>, asked when the source element routes.</summary>
+    public const string SequenceFlow = "sequenceFlow";
+}
+
+/// <summary>What a <see cref="BpmnConditionResult"/> says.</summary>
+public enum BpmnConditionResultKind
+{
+    /// <summary>The condition holds.</summary>
+    True,
+
+    /// <summary>The condition does not hold.</summary>
+    False,
+
+    /// <summary>The condition could not be evaluated. The scope faults.</summary>
+    Failed
+}
+
+/// <summary>
+/// The host's answer to one <see cref="BpmnConditionRequest"/>: <see cref="True"/>, <see cref="False"/>, or
+/// <see cref="Failed"/>. A failure faults the scope with <see cref="FaultCode"/>, or with
+/// <c>bpmn.condition.failed</c> when the host gives none. Like every interpreter fault it is a verdict on the
+/// scope, not a BPMN error, so no error catcher takes it.
+/// </summary>
+public sealed record BpmnConditionResult
+{
+    private BpmnConditionResult(BpmnConditionResultKind kind, string? faultCode, string? message)
+    {
+        Kind = kind;
+        FaultCode = faultCode;
+        Message = message;
+    }
+
+    /// <summary>The condition holds.</summary>
+    public static BpmnConditionResult True { get; } = new(BpmnConditionResultKind.True, null, null);
+
+    /// <summary>The condition does not hold.</summary>
+    public static BpmnConditionResult False { get; } = new(BpmnConditionResultKind.False, null, null);
+
+    /// <summary>What the answer is.</summary>
+    public BpmnConditionResultKind Kind { get; }
+
+    /// <summary>The fault code a <see cref="BpmnConditionResultKind.Failed"/> answer faults the scope with, or <c>null</c> for the library's own.</summary>
+    public string? FaultCode { get; }
+
+    /// <summary>Why a <see cref="BpmnConditionResultKind.Failed"/> answer failed; <c>null</c> otherwise.</summary>
+    public string? Message { get; }
+
+    /// <summary>The condition could not be evaluated.</summary>
+    /// <param name="faultCode">The code to fault the scope with, or <c>null</c> for <c>bpmn.condition.failed</c>.</param>
+    /// <param name="message">Why it failed.</param>
+    public static BpmnConditionResult Failed(string? faultCode, string message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        return new BpmnConditionResult(
+            BpmnConditionResultKind.Failed,
+            string.IsNullOrWhiteSpace(faultCode) ? null : faultCode,
+            message);
+    }
+
+    /// <summary><see cref="True"/> or <see cref="False"/>.</summary>
+    public static BpmnConditionResult Of(bool holds) => holds ? True : False;
 }
 
 /// <summary>

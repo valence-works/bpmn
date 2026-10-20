@@ -74,8 +74,13 @@ public sealed class InMemoryBpmnHost
     /// <summary>The options this host was built with.</summary>
     public InMemoryBpmnHostOptions Options { get; }
 
-    /// <summary>What this host claims it can do. Passed to every graph build and every snapshot.</summary>
-    public BpmnHostCapabilities Capabilities => Options.Capabilities;
+    /// <summary>
+    /// What this host claims it can do: <see cref="InMemoryBpmnHostOptions.Capabilities"/>, plus
+    /// <see cref="BpmnHostCapabilities.ConditionEvaluation"/> when <see cref="InMemoryBpmnHostOptions.Conditions"/>
+    /// is set. Passed to every graph build and every snapshot.
+    /// </summary>
+    public BpmnHostCapabilities Capabilities =>
+        Options.Conditions is null ? Options.Capabilities : Options.Capabilities | BpmnHostCapabilities.ConditionEvaluation;
 
     /// <summary>The simulated clock every scope on this host shares.</summary>
     public VirtualClock Clock { get; }

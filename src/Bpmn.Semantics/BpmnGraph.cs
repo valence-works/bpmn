@@ -461,9 +461,17 @@ public sealed class BpmnGraph
     /// </list>
     /// Everything else passes the token on. An unbound task, an unbound inclusive split, and any other escalation
     /// throw take their unconditional flows, else the default flow; an arriving token reports no outcome, so a
-    /// conditional flow is never taken. An unbound exclusive gateway takes its only flow, else its default. A
-    /// parallel split and an event-based gateway take every flow, and the event-based gateway's targets are catch
-    /// events, which wait. An element left with no flow to take ends the token or faults, so it is on no cycle.
+    /// flow conditioned on an outcome is never taken. An unbound exclusive gateway takes its only flow, else the
+    /// first flow in declaration order without a condition, else its default. A parallel split and an event-based
+    /// gateway take every flow, and the event-based gateway's targets are catch events, which wait. An element
+    /// left with no flow to take ends the token or faults, so it is on no cycle.
+    /// <para>
+    /// A flow whose only condition is an expression is possibly taken: nothing here can ask the host's evaluator.
+    /// It is never counted as certain, and while it could be taken neither is a flow the answer decides between,
+    /// such as the default, or for an exclusive gateway any flow after it. So an element whose way off a cycle
+    /// is an expression never closes a refused cycle through the alternative. An unconditional flow is still
+    /// certain beside an expression at a task or inclusive split, because the split takes it whatever the answer.
+    /// </para>
     /// </summary>
     private IReadOnlyCollection<BpmnSequenceFlow>? FlowsTakenWithoutWaiting(BpmnElement element)
     {
@@ -477,15 +485,15 @@ public sealed class BpmnGraph
             case BpmnElementFamilies.EventBasedGateway:
                 return outbound;
             case BpmnElementFamilies.ExclusiveGateway:
-                return outbound.Count == 1 ? outbound : BpmnFlowSelector.ResolveDefaultFlow(element, outbound) is { } defaultFlow ? [defaultFlow] : [];
+                return BpmnFlowSelector.CertainExclusiveFlowOnArrival(element, outbound);
             case BpmnElementFamilies.Task:
             case BpmnElementFamilies.InclusiveGateway:
-                return BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
+                return BpmnFlowSelector.CertainTaskFlowsOnArrival(element, outbound);
             case BpmnElementFamilies.IntermediateThrowEventEscalation:
                 // Validation already refused a throw without a code; without one, nothing in the scope could catch it.
                 return ReadEscalationCode(element) is { } code && EscalationEventSubprocess(code) is { Interrupting: true }
                     ? null
-                    : BpmnFlowSelector.SelectTaskFlows(element, outbound, []);
+                    : BpmnFlowSelector.CertainTaskFlowsOnArrival(element, outbound);
             default:
                 // Start, end and boundary events, which are on no cycle, and the compensate throw event.
                 return null;
@@ -1201,7 +1209,7 @@ public sealed class BpmnGraph
 
             foreach (var flow in outbound)
             {
-                if (flow.ConditionOutcome is not null || flow.IsDefault)
+                if (flow.ConditionOutcome is not null || flow.ConditionExpression is not null || flow.IsDefault)
                     throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition or be a default flow; the race is decided by stimulus arrival.");
 
                 if (!elementsById.TryGetValue(flow.TargetRef, out var target) ||

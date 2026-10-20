@@ -45,7 +45,22 @@ public enum BpmnHostCapabilities
     /// </summary>
     ScopeVariables = 8,
 
-    /// <summary>Every capability. What a fully featured host declares.</summary>
+    /// <summary>
+    /// The host can answer <see cref="IBpmnConditionEvaluator.Evaluate"/> through
+    /// <see cref="BpmnHostSnapshot.Conditions"/>. Required by every sequence flow that carries a condition
+    /// expression and no <see cref="BpmnSequenceFlow.ConditionOutcome"/>.
+    /// <para>
+    /// Deliberately not part of <see cref="Full"/>: <c>Full</c> is everything a host can do without embedding
+    /// an expression language, and a host that declared it before this capability existed made no promise to
+    /// evaluate expressions. See ADR 0011.
+    /// </para>
+    /// </summary>
+    ConditionEvaluation = 16,
+
+    /// <summary>
+    /// Every capability a host can provide without an expression language: everything except
+    /// <see cref="ConditionEvaluation"/>.
+    /// </summary>
     Full = SubtreeCancellation | ScopeSignalling | IterationScopes | ScopeVariables
 }
 
@@ -54,7 +69,10 @@ public enum BpmnHostCapabilities
 /// from the definition alone — no host, no state, no execution.
 /// </summary>
 /// <param name="Required">The union of every capability the definition needs.</param>
-/// <param name="DrivingElementIds">Per capability, the element ids that need it, in ordinal order.</param>
+/// <param name="DrivingElementIds">
+/// Per capability, the element ids that need it, in ordinal order. For
+/// <see cref="BpmnHostCapabilities.ConditionEvaluation"/> they are the ids of the sequence flows that need it.
+/// </param>
 public sealed record BpmnCapabilityRequirements(
     BpmnHostCapabilities Required,
     IReadOnlyDictionary<BpmnHostCapabilities, IReadOnlyList<string>> DrivingElementIds)
@@ -69,7 +87,8 @@ public sealed record BpmnCapabilityRequirements(
         BpmnHostCapabilities.SubtreeCancellation,
         BpmnHostCapabilities.ScopeSignalling,
         BpmnHostCapabilities.IterationScopes,
-        BpmnHostCapabilities.ScopeVariables
+        BpmnHostCapabilities.ScopeVariables,
+        BpmnHostCapabilities.ConditionEvaluation
     ];
 
     /// <summary>
@@ -86,6 +105,10 @@ public sealed record BpmnCapabilityRequirements(
     /// <item><b>Iteration scopes</b> — a multi-instance activity.</item>
     /// <item><b>Scope variables</b> — a collection-mode multi-instance activity, whose instance count and
     /// per-instance items come from a declared variable.</item>
+    /// <item><b>Condition evaluation</b> — a sequence flow that carries a condition expression and no
+    /// <c>conditionOutcome</c>. Reported under the flow's id, not an element's. A flow that also has an
+    /// outcome is outcome-matched and its expression is never evaluated, and a default flow is never
+    /// evaluated, so neither needs it.</item>
     /// </list>
     /// Only <paramref name="definition"/> itself is analyzed. A nested process carried as bound work is a
     /// separate scope with its own graph, so the host analyzes and builds it separately.
@@ -130,6 +153,17 @@ public sealed record BpmnCapabilityRequirements(
                 if (loop.IsCollectionMode)
                     Require(BpmnHostCapabilities.ScopeVariables, element.ElementId);
             }
+        }
+
+        var defaultFlowIds = definition.Elements
+            .Where(element => element.DefaultFlowId is not null)
+            .Select(element => element.DefaultFlowId!)
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var flow in definition.SequenceFlows)
+        {
+            if (flow is { ConditionExpression: not null, ConditionOutcome: null, IsDefault: false }
+                && !defaultFlowIds.Contains(flow.FlowId))
+                Require(BpmnHostCapabilities.ConditionEvaluation, flow.FlowId);
         }
 
         return required == BpmnHostCapabilities.None
