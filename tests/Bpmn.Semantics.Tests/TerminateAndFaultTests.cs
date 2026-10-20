@@ -57,8 +57,9 @@ public sealed class TerminateAndFaultTests
         instance.IsCompleted.ShouldBeTrue();
         instance.PendingWork.ShouldBeEmpty();
         instance.State.ActiveWork.ShouldBeEmpty("the state must not claim work the host was never asked to start");
-        instance.State.Tokens.Where(token => token.AtElementId is "Wait" or "Hold")
-            .ShouldAllBe(token => token.Status == BpmnTokenStatus.Canceled);
+        evaluation.TokenMoves.ShouldContain(move => move.ElementId == "Wait" && move.To == BpmnTokenStatus.Canceled);
+        evaluation.TokenMoves.ShouldContain(move => move.ElementId == "Hold" && move.To == BpmnTokenStatus.Canceled);
+        instance.State.Tokens.ShouldNotContain(token => token.AtElementId == "Wait" || token.AtElementId == "Hold");
     }
 
     [Fact]
@@ -74,7 +75,8 @@ public sealed class TerminateAndFaultTests
         instance.PendingWork.ShouldBeEmpty();
         instance.State.PendingFault.ShouldBeNull("the verdict was returned, not parked for a later callback");
         instance.State.ActiveWork.ShouldBeEmpty("the state must not claim work the host was never asked to start");
-        instance.State.Tokens.Single(token => token.AtElementId == "Wait").Status.ShouldBe(BpmnTokenStatus.Canceled);
+        evaluation.TokenMoves.ShouldContain(move => move.ElementId == "Wait" && move.To == BpmnTokenStatus.Canceled);
+        instance.State.Tokens.ShouldNotContain(token => token.AtElementId == "Wait");
     }
 
     [Fact]

@@ -65,7 +65,8 @@ public sealed class WithdrawnWorkTests
 
         instance.PendingWork.Select(work => work.BindingRef).ShouldBe(["on-overdue"]);
         instance.CancelledWork.ShouldBeEmpty("nothing was started for the stopped branch, so nothing is torn down for it");
-        instance.State.Tokens.Single(token => token.AtElementId == "LongRunning").Status.ShouldBe(BpmnTokenStatus.Canceled);
+        evaluation.TokenMoves.ShouldContain(move => move.ElementId == "LongRunning" && move.To == BpmnTokenStatus.Canceled);
+        instance.State.Tokens.ShouldNotContain(token => token.AtElementId == "LongRunning");
         ShouldRunOnlyWorkATokenWaitsFor(instance);
     }
 

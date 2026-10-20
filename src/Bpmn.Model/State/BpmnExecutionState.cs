@@ -89,16 +89,16 @@ public sealed record BpmnExecutionState
     public const int DiagnosticsCap = 200;
 
     /// <summary>
-    /// Returns a copy with the records that can never influence a future interpreter decision removed:
-    /// consumed tokens no longer referenced by active work, and diagnostics beyond
-    /// <see cref="DiagnosticsCap"/>. Intended for a host about to persist the state, so a long-running
-    /// process never re-serializes an ever-growing blob.
+    /// Returns a copy with records that can no longer influence a future interpreter decision removed:
+    /// consumed tokens no longer referenced by active work, canceled tokens with neither an unresolved
+    /// stopped-work handle nor an active-work reference, and diagnostics beyond <see cref="DiagnosticsCap"/>.
+    /// Intended for a host about to persist the state.
     /// <para>
-    /// <see cref="BpmnTokenStatus.Canceled"/> tokens are <b>never</b> pruned. Stopping work strips it from
-    /// <see cref="ActiveWork"/> while it may still report back, and the Canceled token's
-    /// <see cref="BpmnToken.StoppedHandle"/> is what recognizes that late callback; prune the token and the
-    /// callback is refused as unknown work instead. Nothing bounds how many accumulate: an element a loop
-    /// revisits leaves one per interrupted pass, so a long-running loop grows the state.
+    /// A canceled token with a non-null <see cref="BpmnToken.StoppedHandle"/> stays until a matching late
+    /// completion or fault is absorbed and clears the handle. It can then be removed at the next prune boundary,
+    /// unless <see cref="ActiveWork"/> still references it. If the host never delivers a late callback, that
+    /// handle and token remain without a fixed count or time limit, so pruning does not promise an unconditional
+    /// bound on state size.
     /// </para>
     /// <para>
     /// Pruning shapes only what is written: the schema is unchanged and <see cref="Sequence"/> is not bumped,
@@ -109,7 +109,12 @@ public sealed record BpmnExecutionState
     {
         var retainedTokenIds = ActiveWork.Select(work => work.TokenId).ToHashSet(StringComparer.Ordinal);
         var tokens = Tokens
-        .Where(token => token.Status != BpmnTokenStatus.Consumed || retainedTokenIds.Contains(token.TokenId))
+        .Where(token => token.Status switch
+        {
+            BpmnTokenStatus.Consumed => retainedTokenIds.Contains(token.TokenId),
+            BpmnTokenStatus.Canceled => token.StoppedHandle is not null || retainedTokenIds.Contains(token.TokenId),
+            _ => true
+        })
         .ToArray();
 
         var diagnostics = Diagnostics.Count <= DiagnosticsCap

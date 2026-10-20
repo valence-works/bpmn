@@ -274,8 +274,8 @@ public sealed class InMemoryProcessInstance
 
         var evaluation = run(Snapshot());
 
-        // Diff against the raw state before pruning: pruning drops consumed tokens, and a diff against a
-        // pruned baseline would keep re-reporting them as newly minted.
+        // Capture moves from the raw evaluation before pruning so tokens removed at this persistence boundary
+        // still contribute their final move to the transcript.
         var moves = DiffTokens(evaluation.State);
 
         _state = evaluation.State.Prune();

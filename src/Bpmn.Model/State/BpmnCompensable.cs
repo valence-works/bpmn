@@ -7,8 +7,8 @@ namespace Bpmn.Model.State;
 /// attached compensation boundary is registered here so a later compensate throw/end can replay its handler.
 /// <see cref="CompensableId"/> is <c>comp:N</c> from <c>BpmnExecutionState.Sequence</c> (registration order —
 /// total and deterministic; reverse replay = descending id). Written via <c>BpmnStateMutator</c> only. Records
-/// are <b>never pruned</b> (parallel to <c>Canceled</c> tokens): <c>Compensated</c>/<c>Claimed</c> entries stay
-/// for determinism, audit, and double-replay protection.
+/// are <b>never pruned</b>: <c>Compensated</c>/<c>Claimed</c> entries stay for determinism, audit, and
+/// double-replay protection.
 /// </summary>
 public sealed record BpmnCompensable
 {
