@@ -1188,12 +1188,6 @@ public sealed class BpmnGraph
         BpmnElementFamilies.HasCompensateDefinition(element);
 
     /// <summary>
-    /// Event-based gateway rules: at least two outbound flows; every outbound flow targets an
-    /// intermediate catch event whose only inbound flow is this gateway's; the gateway's outbound flows carry
-    /// no outcome condition and no default (the race is decided by stimulus arrival, not by a condition, so an
-    /// authored condition/default is rejected rather than silently ignored).
-    /// </summary>
-    /// <summary>
     /// Refuses a condition expression on a flow out of an element that takes every outgoing flow without
     /// testing a condition: a start event or a parallel gateway (an event-based gateway is refused by its own
     /// rule first). Nothing would ever evaluate the expression, so running it would take a flow its author
@@ -1220,6 +1214,12 @@ public sealed class BpmnGraph
         }
     }
 
+    /// <summary>
+    /// Event-based gateway rules: at least two outbound flows; every outbound flow targets an
+    /// intermediate catch event whose only inbound flow is this gateway's; the gateway's outbound flows carry
+    /// no outcome condition, no condition expression and no default (the race is decided by stimulus arrival,
+    /// not by a condition, so an authored condition/default is rejected rather than silently ignored).
+    /// </summary>
     private static void ValidateEventBasedGateways(
         IReadOnlyCollection<BpmnElement> elements,
         ILookup<string, BpmnSequenceFlow> outboundBySource,

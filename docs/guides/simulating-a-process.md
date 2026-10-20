@@ -104,7 +104,8 @@ var host = new InMemoryBpmnHost(new InMemoryBpmnHostOptions { Conditions = condi
 
 A flow the table has no answer for fails, so the scope faults with `bpmn.condition.failed` instead of
 routing one way by accident. `conditions.Requests` lists every condition asked, in order.
-Note that faulting does not name an error code — which error a catcher matches is a property of the
+
+Note that `FaultWork` does not name an error code — which error a catcher matches is a property of the
 model, not of the report. See
 [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
 
