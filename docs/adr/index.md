@@ -18,6 +18,7 @@ They are short and they take positions. An ADR that hedges is not worth keeping.
 | [0005](0005-the-library-owns-a-versioned-payload-format.md) | The library owns a versioned payload format |
 | [0006](0006-vendor-extensions-are-retained-as-typed-data.md) | Vendor extensions are retained as typed data |
 | [0007](0007-work-bindings-have-a-json-contract.md) | Work bindings have a JSON contract |
+| [0009](0009-raised-escalations-survive-a-later-fault.md) | Raised escalations survive a later fault |
 
 ## Writing a new one
 
