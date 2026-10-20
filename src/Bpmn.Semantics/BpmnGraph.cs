@@ -622,6 +622,8 @@ public sealed class BpmnGraph
 
         ValidateEventBasedGateways(elements, outboundBySource, inboundByTarget);
 
+        RefuseExpressionsNothingEvaluates(elements, outboundBySource);
+
         ValidateBoundaryEvents(elements, outboundBySource, inboundByTarget);
 
         ValidateEscalation(elements);
@@ -1191,6 +1193,33 @@ public sealed class BpmnGraph
     /// no outcome condition and no default (the race is decided by stimulus arrival, not by a condition, so an
     /// authored condition/default is rejected rather than silently ignored).
     /// </summary>
+    /// <summary>
+    /// Refuses a condition expression on a flow out of an element that takes every outgoing flow without
+    /// testing a condition: a start event or a parallel gateway (an event-based gateway is refused by its own
+    /// rule first). Nothing would ever evaluate the expression, so running it would take a flow its author
+    /// made conditional, which is incorrect execution rather than reduced execution (ADRs 0004 and 0011). The
+    /// refusal is structural and fires whatever the host declares. A flow with a <c>conditionOutcome</c> is
+    /// left as it was, expression or not: the outcome decides such a flow, and these elements have always
+    /// passed over outcomes.
+    /// </summary>
+    private static void RefuseExpressionsNothingEvaluates(
+        IReadOnlyCollection<BpmnElement> elements,
+        ILookup<string, BpmnSequenceFlow> outboundBySource)
+    {
+        foreach (var element in elements.Where(BpmnElementFamilies.TakesEveryOutgoingFlow))
+        {
+            var kind = element.ElementType switch
+            {
+                BpmnElementTypes.StartEvent => "start event",
+                BpmnElementTypes.ParallelGateway => "parallel gateway",
+                _ => "event-based gateway"
+            };
+            foreach (var flow in outboundBySource[element.ElementId].Where(BpmnFlowSelector.IsExpressionOnly))
+                throw new BpmnExecutionException(
+                    $"BPMN {kind} '{element.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition expression; a {kind} takes every outgoing flow and never evaluates one.");
+        }
+    }
+
     private static void ValidateEventBasedGateways(
         IReadOnlyCollection<BpmnElement> elements,
         ILookup<string, BpmnSequenceFlow> outboundBySource,

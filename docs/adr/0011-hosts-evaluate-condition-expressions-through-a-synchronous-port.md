@@ -203,3 +203,4 @@ Recorded when the interpreter step landed, where it differs from or adds to the 
   flow's own flag, which is how a read document marks it. Before this, an activity treated a default
   marked only on the element as an ordinary unconditional flow and took it beside every other.
 - **Event-based gateway flows** may not carry an expression, as they may not carry an outcome.
+- **Flows nothing evaluates are refused.** A start event, a parallel gateway and an event-based gateway take every outgoing flow, so graph build refuses an expression-only flow out of one whatever the host declares, and such a flow does not count toward `ConditionEvaluation`; an outcome on those flows is passed over as before.

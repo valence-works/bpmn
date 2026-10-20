@@ -179,7 +179,7 @@ day it does not.
 | Escalation throw or end event, escalation boundary event | `ScopeSignalling` | A throw signals the enclosing scope, and a scope re-signals what it cannot match itself. |
 | Multi-instance activity | `IterationScopes` | Each instance needs its own frame. |
 | Collection-mode multi-instance | `ScopeVariables` | Its instance count and items come from a declared variable. |
-| Sequence flow whose only condition is a `<conditionExpression>` | `ConditionEvaluation` | The host evaluates the expression; the library has no language. A flow that also has a `conditionOutcome` is matched on the outcome and needs nothing, and a default flow is never evaluated. |
+| Sequence flow whose only condition is a `<conditionExpression>` | `ConditionEvaluation` | The host evaluates the expression; the library has no language. A flow that also has a `conditionOutcome` is matched on the outcome and needs nothing, and a default flow is never evaluated. A flow out of a start event, parallel gateway or event-based gateway is refused structurally instead. |
 | Compensation boundary event | nothing | It arms no listener. |
 | Exclusive, parallel and inclusive gateways | nothing | |
 | Tasks, plain start and end events, unconditional and outcome-conditioned sequence flows | nothing | |

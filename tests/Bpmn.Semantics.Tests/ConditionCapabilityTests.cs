@@ -64,28 +64,43 @@ public sealed class ConditionCapabilityTests
         Should.NotThrow(() => BpmnGraph.Build(Gate(), BpmnBoundWork.Derive(Gate()), Evaluating));
     }
 
-    [Fact]
-    public void An_event_based_gateway_flow_cannot_carry_an_expression()
+    public static TheoryData<string> ElementsThatNeverEvaluate() => [.. NeverEvaluating.Keys];
+
+    [Theory]
+    [MemberData(nameof(ElementsThatNeverEvaluate))]
+    public void An_expression_on_a_flow_nothing_evaluates_is_refused_whatever_the_host_declares(string shape)
     {
-        var definition = WithExpressions(
-            new BpmnProcessBuilder("race")
-                .StartEvent("Start")
-                .EventBasedGateway("Race")
-                .IntermediateCatchEvent("OnTimer", Timer("PT1H"), bindingRef: "on-timer")
-                .IntermediateCatchEvent("OnMessage", Message("stop"), bindingRef: "on-message")
-                .EndEvent("End")
-                .Connect("Start", "Race")
-                .Connect("Race", "OnTimer", flowId: "toTimer")
-                .Connect("Race", "OnMessage")
-                .Connect("OnTimer", "End")
-                .Connect("OnMessage", "End")
-                .Build(),
-            ("toTimer", "soon"));
+        var (definition, expected) = NeverEvaluating[shape]();
 
-        var refusal = Should.Throw<BpmnExecutionException>(() => BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), Evaluating));
+        BpmnCapabilityRequirements.Analyze(definition).Required.HasFlag(BpmnHostCapabilities.ConditionEvaluation)
+            .ShouldBeFalse("a capability cannot make the flow run, so it is not asked for");
 
-        refusal.ShouldNotBeOfType<BpmnCapabilityException>();
-        refusal.Message.ShouldContain("'toTimer' cannot carry a condition");
+        foreach (var capabilities in new[] { BpmnHostCapabilities.Full, Evaluating })
+        {
+            var refusal = Should.Throw<BpmnExecutionException>(() => BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), capabilities));
+            refusal.ShouldNotBeOfType<BpmnCapabilityException>();
+            refusal.Message.ShouldContain(expected);
+        }
+    }
+
+    [Fact]
+    public void An_outcome_on_a_parallel_gateway_or_start_event_flow_is_still_passed_over()
+    {
+        var definition = new BpmnProcessBuilder("outcome-on-split")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .EndEvent("Left")
+            .EndEvent("Right")
+            .Connect("Start", "Split", condition: "Never")
+            .Connect("Split", "Left", condition: "Never")
+            .Connect("Split", "Right")
+            .Build();
+
+        var evaluation = BpmnInterpreter.CreateDefault().Start(new BpmnStartRequest(
+            BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.None), null, BpmnHostSnapshot.Root("scope")));
+
+        evaluation.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        evaluation.State.Diagnostics.ShouldContain(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.TokenEmitted && diagnostic.ElementId == "Left");
     }
 
     // --- The reference host --------------------------------------------------------------------------------
@@ -229,6 +244,59 @@ public sealed class ConditionCapabilityTests
     }
 
     // --- Fixtures ------------------------------------------------------------------------------------------
+
+    /// <summary>A definition with an expression-only flow out of an element that takes every flow, and the refusal it must get.</summary>
+    private static readonly IReadOnlyDictionary<string, Func<(BpmnProcessDefinition, string)>> NeverEvaluating =
+        new Dictionary<string, Func<(BpmnProcessDefinition, string)>>(StringComparer.Ordinal)
+        {
+            ["a parallel gateway"] = () => (
+                WithExpressions(
+                    new BpmnProcessBuilder("parallel-expression")
+                        .StartEvent("Start")
+                        .ParallelGateway("Split")
+                        .EndEvent("Left")
+                        .EndEvent("Right")
+                        .Connect("Start", "Split")
+                        .Connect("Split", "Left", flowId: "toLeft")
+                        .Connect("Split", "Right")
+                        .Build(),
+                    ("toLeft", "left wanted")),
+                "BPMN parallel gateway 'Split' outbound flow 'toLeft' cannot carry a condition expression"),
+            ["a none start event"] = () => (
+                WithExpressions(
+                    new BpmnProcessBuilder("start-expression")
+                        .StartEvent("Start")
+                        .EndEvent("End")
+                        .Connect("Start", "End", flowId: "fromStart")
+                        .Build(),
+                    ("fromStart", "ready")),
+                "BPMN start event 'Start' outbound flow 'fromStart' cannot carry a condition expression"),
+            ["a message start event"] = () => (
+                WithExpressions(
+                    new BpmnProcessBuilder("message-start-expression")
+                        .StartEvent("Start", eventDefinitions: Message("order"))
+                        .EndEvent("End")
+                        .Connect("Start", "End", flowId: "fromStart")
+                        .Build(),
+                    ("fromStart", "ready")),
+                "BPMN start event 'Start' outbound flow 'fromStart' cannot carry a condition expression"),
+            ["an event-based gateway"] = () => (
+                WithExpressions(
+                    new BpmnProcessBuilder("race-expression")
+                        .StartEvent("Start")
+                        .EventBasedGateway("Race")
+                        .IntermediateCatchEvent("OnTimer", Timer("PT1H"), bindingRef: "on-timer")
+                        .IntermediateCatchEvent("OnMessage", Message("stop"), bindingRef: "on-message")
+                        .EndEvent("End")
+                        .Connect("Start", "Race")
+                        .Connect("Race", "OnTimer", flowId: "toTimer")
+                        .Connect("Race", "OnMessage")
+                        .Connect("OnTimer", "End")
+                        .Connect("OnMessage", "End")
+                        .Build(),
+                    ("toTimer", "soon")),
+                "'toTimer' cannot carry a condition")
+        };
 
     /// <summary>
     /// A bound decision gateway with an outcome flow that also carries an expression, two expression-only

@@ -108,7 +108,9 @@ public sealed record BpmnCapabilityRequirements(
     /// <item><b>Condition evaluation</b> — a sequence flow that carries a condition expression and no
     /// <c>conditionOutcome</c>. Reported under the flow's id, not an element's. A flow that also has an
     /// outcome is outcome-matched and its expression is never evaluated, and a default flow is never
-    /// evaluated, so neither needs it.</item>
+    /// evaluated, so neither needs it. Nor does a flow out of a start event, a parallel gateway or an
+    /// event-based gateway: nothing would evaluate it, so graph build refuses it outright, whatever the host
+    /// declares.</item>
     /// </list>
     /// Only <paramref name="definition"/> itself is analyzed. A nested process carried as bound work is a
     /// separate scope with its own graph, so the host analyzes and builds it separately.
@@ -159,10 +161,17 @@ public sealed record BpmnCapabilityRequirements(
             .Where(element => element.DefaultFlowId is not null)
             .Select(element => element.DefaultFlowId!)
             .ToHashSet(StringComparer.Ordinal);
+        var neverEvaluating = definition.Elements
+            .Where(BpmnElementFamilies.TakesEveryOutgoingFlow)
+            .Select(element => element.ElementId)
+            .ToHashSet(StringComparer.Ordinal);
         foreach (var flow in definition.SequenceFlows)
         {
+            // A flow out of an element that never evaluates conditions is refused by graph build whatever the
+            // host declares, so it does not ask for a capability that could not make it run.
             if (flow is { ConditionExpression: not null, ConditionOutcome: null, IsDefault: false }
-                && !defaultFlowIds.Contains(flow.FlowId))
+                && !defaultFlowIds.Contains(flow.FlowId)
+                && !neverEvaluating.Contains(flow.SourceRef))
                 Require(BpmnHostCapabilities.ConditionEvaluation, flow.FlowId);
         }
 
