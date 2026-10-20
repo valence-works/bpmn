@@ -253,8 +253,10 @@ var summary = evaluation.ErrorDisposition switch
 ```
 
 Note what the request does **not** carry: an error code. The host reports that work failed and why in
-human terms. Which BPMN error a catcher matches is a property of the model — an error boundary event
-declares its code, and a code-less one catches anything — not something the host names.
+human terms, and today every error catcher takes any failure. In 0.4.0,
+[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) lets the host name the error, and
+makes a coded catcher catch only that code. A host that crosses scopes will then pass a child's
+`Fault.ErrorCode` up with the parent's fault report.
 
 `Caught` means an error boundary event or an error event subprocess took the failure and this
 evaluation returned without fault. Recovery work may still be running. `Propagated` means the final
