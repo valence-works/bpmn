@@ -98,9 +98,13 @@ shipped package here has zero external dependencies, and that is a constraint th
 **It would break determinism.** An arbitrary expression can read a clock, call out, or observe
 mutable state, and the pure-function property would be gone the first time someone used it.
 
-If sequence-flow condition expressions are supported later, they arrive as a second host-supplied
-reader of the same shape as `IBpmnVariableReader` — not as an embedded engine and not as an async
-escape hatch.
+Routing on expression conditions does not need an embedded engine.
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) records
+the decision: the host evaluates them through a second host-supplied reader of the same shape as
+`IBpmnVariableReader`. It is not an embedded engine and not an async escape hatch. The library
+decides which conditions are asked, in what order, and what the answers mean for routing. Each of
+the three reasons above still holds. Until that interpreter work lands, an expression-only flow
+reads as unconditional, with an import finding that says so.
 
 ## Where the line is drawn, precisely
 

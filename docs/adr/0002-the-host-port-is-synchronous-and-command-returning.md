@@ -64,6 +64,7 @@ reaches, which is not known before the loop runs. It is synchronous, read-only, 
 
 If sequence-flow condition expressions are supported later, they get a second reader of the same
 shape rather than an async escape hatch. A host that needs to await something pre-resolves it.
+[ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) takes that path.
 
 ## Consequences
 
