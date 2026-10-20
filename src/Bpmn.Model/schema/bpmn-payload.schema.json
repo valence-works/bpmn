@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.2.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.3.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.2.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
-  "x-payloadFormatVersion": "1.2.0",
+  "description": "Version 1.3.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.3.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState",
@@ -187,6 +187,29 @@
       ],
       "additionalProperties": false
     },
+    "bpmnConditionExpression": {
+      "type": "object",
+      "title": "BpmnConditionExpression",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "body",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
     "bpmnDefinitions": {
       "type": "object",
       "title": "BpmnDefinitions",
@@ -263,6 +286,12 @@
         },
         "extensions": {
           "$ref": "#/$defs/bpmnExtensions"
+        },
+        "expressionLanguage": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1182,6 +1211,12 @@
         },
         "extensions": {
           "$ref": "#/$defs/bpmnExtensions"
+        },
+        "expressionLanguage": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1242,6 +1277,16 @@
         },
         "isDefault": {
           "type": "boolean"
+        },
+        "conditionExpression": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnConditionExpression"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "extensions": {
           "$ref": "#/$defs/bpmnExtensions"

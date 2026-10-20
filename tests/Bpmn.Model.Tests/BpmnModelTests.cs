@@ -135,6 +135,80 @@ public sealed class BpmnModelTests
     }
 
     [Fact]
+    public void A_condition_expression_round_trips_through_json_under_its_published_wire_names()
+    {
+        var flow = new BpmnSequenceFlow("flow-1", "gate", "ship")
+        {
+            ConditionExpression = new BpmnConditionExpression(
+                " amount > 10 ",
+                "urn:example:language",
+                new BpmnExtensions(ForeignAttributes: [new BpmnForeignAttribute(new BpmnQName(null, "id"), "condition-1")]))
+        };
+
+        var node = JsonSerializer.SerializeToNode(flow)!.AsObject();
+        var expression = node["conditionExpression"]!.AsObject();
+        expression["body"]!.GetValue<string>().ShouldBe(" amount > 10 ", "the body is kept exactly as authored");
+        expression["language"]!.GetValue<string>().ShouldBe("urn:example:language");
+        expression["extensions"]!["foreignAttributes"]!.AsArray().Count.ShouldBe(1);
+
+        var restored = JsonSerializer.Deserialize<BpmnSequenceFlow>(node.ToJsonString()).ShouldNotBeNull();
+        restored.ConditionExpression.ShouldBe(flow.ConditionExpression, "retained content compares by value");
+    }
+
+    [Fact]
+    public void A_condition_expression_requires_a_body_and_normalizes_a_blank_language()
+    {
+        Should.Throw<ArgumentNullException>(() => new BpmnConditionExpression(null!));
+
+        var expression = new BpmnConditionExpression("", "  ");
+        expression.Body.ShouldBe("");
+        expression.Language.ShouldBeNull();
+        expression.Extensions.ShouldBe(BpmnExtensions.Empty);
+        new BpmnConditionExpression("x", " urn:example ").Language.ShouldBe("urn:example");
+    }
+
+    [Fact]
+    public void The_expression_language_round_trips_on_the_definitions_and_the_process()
+    {
+        var original = new BpmnDefinitions(Processes: [new BpmnProcessDefinition("p") { ExpressionLanguage = "urn:example" }])
+        {
+            ExpressionLanguage = "urn:example"
+        };
+
+        var node = JsonSerializer.SerializeToNode(original)!.AsObject();
+        node["expressionLanguage"]!.GetValue<string>().ShouldBe("urn:example");
+        node["processes"]![0]!["expressionLanguage"]!.GetValue<string>().ShouldBe("urn:example");
+
+        var restored = JsonSerializer.Deserialize<BpmnDefinitions>(node.ToJsonString()).ShouldNotBeNull();
+        restored.ExpressionLanguage.ShouldBe("urn:example");
+        restored.Processes.Single().ExpressionLanguage.ShouldBe("urn:example");
+    }
+
+    [Fact]
+    public void A_format_1_2_document_reads_with_no_expressions_and_no_language()
+    {
+        const string json = """
+            {
+              "id": "defs",
+              "processes": [
+                {
+                  "processId": "p",
+                  "sequenceFlows": [ { "flowId": "f", "sourceRef": "a", "targetRef": "b", "conditionOutcome": "ok" } ]
+                }
+              ]
+            }
+            """;
+
+        var restored = JsonSerializer.Deserialize<BpmnDefinitions>(json).ShouldNotBeNull();
+
+        restored.ExpressionLanguage.ShouldBeNull();
+        restored.Processes.Single().ExpressionLanguage.ShouldBeNull();
+        var flow = restored.Processes.Single().SequenceFlows.Single();
+        flow.ConditionOutcome.ShouldBe("ok");
+        flow.ConditionExpression.ShouldBeNull();
+    }
+
+    [Fact]
     public void An_error_declaration_carries_the_code_bpmn_matches_on()
     {
         // BPMN matches a thrown error against catching events by errorCode, not by name or id.

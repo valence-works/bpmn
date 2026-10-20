@@ -110,6 +110,12 @@ public sealed class BpmnXmlReader
         var messageFlowDeclarations = ReadMessageFlows(root, context);
         var diagrams = ReadDiagrams(root);
 
+        // Declared once on the document but needed by every graph, which sees only its own process, so it is
+        // copied onto each process and nested body as they are built.
+        context.ExpressionLanguage = ((string?)root.Attribute("expressionLanguage"))?.Trim() is { Length: > 0 } expressionLanguage
+            ? expressionLanguage
+            : null;
+
         var built = new List<BuiltProcess>(processElements.Length);
         foreach (var processElement in processElements)
         {
@@ -141,7 +147,10 @@ public sealed class BpmnXmlReader
             signals,
             errors,
             escalations,
-            context.Capture(root, IsDefinitionsChildConsumed));
+            context.Capture(root, IsDefinitionsChildConsumed))
+        {
+            ExpressionLanguage = context.ExpressionLanguage
+        };
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -552,15 +561,33 @@ public sealed class BpmnXmlReader
                     }
 
                     var conditionOutcome = (string?)child.Attribute(context.Vendor.ConditionOutcome);
-                    var conditionExpression = child.Element(BpmnXmlNames.Model + "conditionExpression");
-                    if (conditionOutcome is null && conditionExpression is not null)
-                        context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Value.Trim()}'); expression conditions are not evaluated by this model, so the flow read as unconditional.", id);
 
-                    // An author's conditionExpression is retained (body, language, xsi:type, vendor
-                    // attributes). The predicate this writer itself emits for a conditionOutcome is
-                    // consumed, so a later edit of that outcome cannot leave a stale expression.
+                    // The predicate this writer itself emits for a conditionOutcome is consumed and not
+                    // modeled, so a later edit of that outcome cannot leave a stale expression. An author's
+                    // expression is read into the model, with everything else on it retained.
+                    var sourceExpressions = child.Elements(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName).ToArray();
+                    var authoredExpression = sourceExpressions
+                        .FirstOrDefault(candidate => !BpmnGeneratedCondition.IsLibraryGenerated(candidate, conditionOutcome));
+                    var conditionExpression = authoredExpression is null ? null : context.CaptureConditionExpression(authoredExpression);
+
+                    // BPMN allows at most one conditionExpression on a flow, and the count is of every one the
+                    // source declares, the generated predicate included. The first author's expression is modeled;
+                    // the rest have nowhere to go in the model, so they are dropped and said to be, rather than
+                    // retained for the writer, which emits one expression per flow, to discard without a word.
+                    if (sourceExpressions.Length > 1)
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Sequence flow '{id}' declares {sourceExpressions.Length} conditionExpression elements; BPMN allows at most one, so {(authoredExpression is null ? "the outcome predicate was kept" : "the first author's expression was read")} and the rest were dropped.", id);
+
+                    // The interpreter does not evaluate expressions yet (ADR 0011), so an expression-only
+                    // flow still routes as unconditional. Modeling the expression must not make that silent:
+                    // the finding stays until evaluation lands and replaces it with a capability refusal.
+                    if (conditionOutcome is null && conditionExpression is not null)
+                        context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Body.Trim()}'); expression conditions are not evaluated yet, so the flow read as unconditional.", id);
+
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
-                        extensions: context.Capture(child, grandchild => BpmnConditionExpression.IsLibraryGenerated(grandchild, conditionOutcome))));
+                        extensions: context.Capture(child, grandchild => BpmnGeneratedCondition.IsModelElement(grandchild.Name)))
+                    {
+                        ConditionExpression = conditionExpression
+                    });
                     break;
                 }
                 case "laneSet":
@@ -709,7 +736,10 @@ public sealed class BpmnXmlReader
             connectedFlows,
             lanes,
             declaredVariables,
-            extensions);
+            extensions)
+        {
+            ExpressionLanguage = context.ExpressionLanguage
+        };
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -1836,9 +1866,16 @@ public sealed class BpmnXmlReader
 
         public string BindingRefFor(string elementId) => $"{_bindingRefPrefix}-{elementId}";
 
+        /// <summary>The document's <c>expressionLanguage</c>, copied onto every process this read builds.</summary>
+        public string? ExpressionLanguage { get; set; }
+
         /// <summary>Captures one element's retained content, against this read's fidelity and vendor namespace.</summary>
         public BpmnExtensions Capture(XElement source, Func<XElement, bool> isConsumed) =>
             BpmnExtensionCapture.Capture(source, Fidelity, Vendor, isConsumed, Retention);
+
+        /// <summary>Reads an author's <c>conditionExpression</c>, against this read's fidelity and vendor namespace.</summary>
+        public BpmnConditionExpression CaptureConditionExpression(XElement source) =>
+            BpmnExtensionCapture.CaptureConditionExpression(source, Fidelity, Vendor, Retention);
 
         public string Bind(BpmnWorkBinding binding)
         {
