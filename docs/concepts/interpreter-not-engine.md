@@ -42,7 +42,10 @@ any time. That is a stronger property than it sounds, and several useful things 
 
 **Bug reports are reproducible.** An evaluation is fully determined by definition, state, snapshot and
 event. All four serialize to JSON. A report is a paste of those values, and a regression test is
-written directly from it — no host, no scheduler, no clock.
+written directly from it — no host, no scheduler, no clock. Once a host evaluates condition
+expressions ([ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)),
+the evaluator's answers are a fifth input: the evaluation's diagnostics record each answer, and the
+guarantee holds only while the host's evaluator is itself a function of its inputs.
 
 **Tests are cheap.** Feed a definition and an event, assert on state, continuation and commands.
 BPMN's hardest constructs — inclusive-gateway joins, non-interrupting boundary events on
@@ -78,9 +81,9 @@ exist here. BPMN does not define them, so the library does not have them.
 Sequence-flow conditions are **not** evaluated by this library. There is no FEEL, no JUEL, no
 JavaScript, and no plan to embed one.
 
-A conditional sequence flow carries a `ConditionOutcome`: a name. The flow is taken when the source
-element's completing work reported that outcome. The host decides what an outcome is and how it was
-arrived at.
+An outcome-based conditional sequence flow carries a `ConditionOutcome`: a name. The flow is taken
+when the source element's completing work reported that outcome. The host decides what an outcome is
+and how it was arrived at. Expression-based flows are covered below.
 
 ```csharp
 new BpmnSequenceFlow("to-ship", "gate", "ship", conditionOutcome: "Approved");
