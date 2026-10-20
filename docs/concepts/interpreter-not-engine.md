@@ -42,7 +42,10 @@ any time. That is a stronger property than it sounds, and several useful things 
 
 **Bug reports are reproducible.** An evaluation is fully determined by definition, state, snapshot and
 event. All four serialize to JSON. A report is a paste of those values, and a regression test is
-written directly from it — no host, no scheduler, no clock.
+written directly from it — no host, no scheduler, no clock. Once a host evaluates condition
+expressions ([ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)),
+the evaluator's answers are a fifth input: the evaluation's diagnostics record each answer, and the
+guarantee holds only while the host's evaluator is itself a function of its inputs.
 
 **Tests are cheap.** Feed a definition and an event, assert on state, continuation and commands.
 BPMN's hardest constructs — inclusive-gateway joins, non-interrupting boundary events on
@@ -78,9 +81,9 @@ exist here. BPMN does not define them, so the library does not have them.
 Sequence-flow conditions are **not** evaluated by this library. There is no FEEL, no JUEL, no
 JavaScript, and no plan to embed one.
 
-A conditional sequence flow carries a `ConditionOutcome`: a name. The flow is taken when the source
-element's completing work reported that outcome. The host decides what an outcome is and how it was
-arrived at.
+An outcome-based conditional sequence flow carries a `ConditionOutcome`: a name. The flow is taken
+when the source element's completing work reported that outcome. The host decides what an outcome is
+and how it was arrived at. Expression-based flows are covered below.
 
 ```csharp
 new BpmnSequenceFlow("to-ship", "gate", "ship", conditionOutcome: "Approved");
@@ -98,9 +101,13 @@ shipped package here has zero external dependencies, and that is a constraint th
 **It would break determinism.** An arbitrary expression can read a clock, call out, or observe
 mutable state, and the pure-function property would be gone the first time someone used it.
 
-If sequence-flow condition expressions are supported later, they arrive as a second host-supplied
-reader of the same shape as `IBpmnVariableReader` — not as an embedded engine and not as an async
-escape hatch.
+Routing on expression conditions does not need an embedded engine.
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) records
+the decision: the host evaluates them through a second host-supplied reader of the same shape as
+`IBpmnVariableReader`. It is not an embedded engine and not an async escape hatch. The library
+decides which conditions are asked, in what order, and what the answers mean for routing. Each of
+the three reasons above still holds. Until that interpreter work lands, an expression-only flow
+reads as unconditional, with an import finding that says so.
 
 ## Where the line is drawn, precisely
 
