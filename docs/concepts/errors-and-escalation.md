@@ -28,9 +28,10 @@ interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     { FaultedIterationId = work.IterationId });   // null unless a multi-instance instance failed
 ```
 
-Which error a catcher matches is a property of the model, not of the report. An error boundary event
-declares the code it catches, and a code-less one catches anything. The host supplies a
-human-readable message; BPMN supplies the matching.
+Today an error catcher catches any reported failure, whatever code it declares. The host supplies a
+human-readable message, and no code. [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)
+changes this in 0.4.0. The host names the error its work raised, error end events throw, and a
+catcher that declares a code catches only that code.
 
 ### Error boundary events are always interrupting
 
@@ -42,9 +43,9 @@ the model documents it as fixed. There is no such thing as a non-interrupting er
 and there is no coherent meaning for one: the activity has failed, so there is nothing left to
 continue alongside.
 
-An error boundary event with no code matches **any** error. A boundary event with a code matches only
-that code. Leaving the code off is a catch-all, and like every catch-all it is occasionally what you
-want and usually not.
+An error boundary event with no code matches **any** error. From 0.4.0, a boundary event with a code
+matches only that code (ADR 0012); until then it matches any error too. Leaving the code off is a
+catch-all, and like every catch-all it is occasionally what you want and usually not.
 
 ### Error start events in event subprocesses
 

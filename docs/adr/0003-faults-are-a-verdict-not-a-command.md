@@ -1,7 +1,12 @@
 # ADR 0003: Faults are a verdict, not a command
 
-**Status**: Accepted; amended 2026-10-15 for 0.4.0
+**Status**: Accepted; amended 2026-10-15 for 0.4.0; error codes amended by
+[ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md)
 **Date**: 2026-08-09
+
+ADR 0012 supersedes this record's position that a fault request carries no error code. In 0.4.0
+the host names the BPMN error its work raised, error end events throw, and a coded catcher catches
+only its own code. The verdict described here is unchanged.
 
 ## Current decision: 0.4.0 amendment (2026-10-15)
 

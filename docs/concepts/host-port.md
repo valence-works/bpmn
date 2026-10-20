@@ -292,8 +292,9 @@ activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a s
 field and is unchanged.
 
 Note what `BpmnWorkFaultedRequest` does not carry: an error code. The host reports that work failed
-and describes why in human terms; which BPMN error a catcher matches is a property of the model, not
-something the host names.
+and describes why in human terms. Today every error catcher takes any failure. This changes in 0.4.0:
+[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) adds an error code to the
+fault request and to the `Fault` continuation, and makes a coded catcher catch only its own code.
 
 This is the only place the library says anything about failure policy, and it says the minimum: what
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
