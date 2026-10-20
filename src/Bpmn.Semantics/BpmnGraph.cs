@@ -87,6 +87,12 @@ public sealed class BpmnGraph
     /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, including one with
     /// a cycle that can never wait, and <see cref="BpmnCapabilityException"/> when the definition needs a host
     /// capability <paramref name="capabilities"/> does not declare.
+    /// <para>
+    /// A nested body is built on its own, when its subprocess starts. What a body cannot run should still be refused
+    /// before the root runs, so this also refuses an error end event in any body <paramref name="boundWork"/>
+    /// carries in <see cref="BpmnBoundWork.NestedProcess"/>. Bodies nested deeper are resolved by the host, not
+    /// carried here: a host that runs them should build each one before it runs the root.
+    /// </para>
     /// </summary>
     /// <param name="definition">The process to execute.</param>
     /// <param name="boundWork">
@@ -117,6 +123,7 @@ public sealed class BpmnGraph
         var variableNames = definition.Variables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
+        RefuseErrorEndEventsInCarriedBodies(elements, boundWorkByRef);
 
         var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
         graph.RefuseCyclesThatCannotWait();
@@ -631,6 +638,27 @@ public sealed class BpmnGraph
     }
 
     /// <summary>
+    /// Refuses an error end event in a body this definition's bound work carries, embedded or event subprocess
+    /// alike. A body's own graph is built only when its subprocess starts, so without this the refusal would surface
+    /// mid-run, after earlier work had already happened. A body carries no bound work of its own, so the bodies
+    /// nested inside it are not visible here: the host resolves those, and must build each one before running the
+    /// root to refuse them up front too.
+    /// </summary>
+    private static void RefuseErrorEndEventsInCarriedBodies(
+        IReadOnlyCollection<BpmnElement> elements,
+        IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef)
+    {
+        foreach (var element in elements)
+        {
+            if (element.BindingRef is null || boundWorkByRef[element.BindingRef].NestedProcess is not { } body)
+                continue;
+
+            if (body.Elements.FirstOrDefault(BpmnElementFamilies.IsErrorEndEvent) is { } thrower)
+                throw BpmnElementFamilies.ErrorEndEventRefusal(thrower, element.ElementId);
+        }
+    }
+
+    /// <summary>
     /// Event subprocess rules. A <c>TriggeredByEvent</c> element is a flow-less <c>subProcess</c>
     /// binding a body: it participates in no sequence flows, carries no loop characteristics, hosts no attached
     /// boundary, is not a compensation handler, not referenced as one, and is neither a compensation handler nor a
@@ -735,8 +763,8 @@ public sealed class BpmnGraph
             else if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Error))
             {
                 // An error-triggered event subprocess catches the fault of work started in this scope and then runs
-                // its body. Interrupting only (per BPMN) and catch-all (no error-code matching); a scope carries at
-                // most one.
+                // its body. Interrupting only (per BPMN), and a scope carries at most one. Its code is recorded so a
+                // catch reports what the catcher declares, but selection does not yet narrow on it.
                 if (element.ListenerBindingRef is not null)
                     throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by a work fault, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
                 if (!interrupting)
@@ -745,7 +773,7 @@ public sealed class BpmnGraph
                     throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
                 hasError = true;
 
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, Code: null, Interrupting: true));
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, ReadErrorCode(bodyStart), Interrupting: true));
             }
             else if (ExternalTriggerKind(definitionType) is { } externalTriggerKind)
             {
@@ -970,6 +998,9 @@ public sealed class BpmnGraph
             }
         }
     }
+
+    /// <summary>The code an error event definition declares, or <c>null</c> for a catch-all. Errors keep their code under the same key as escalations.</summary>
+    private static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
 
     /// <summary>The non-empty escalation code an escalation throw/end/boundary declares, or <c>null</c> when absent/blank (a code-less boundary is the catch-all).</summary>
     private static string? ReadEscalationCode(BpmnElement element) =>
@@ -1235,7 +1266,8 @@ public sealed record BpmnEventSubprocessCatcher(
 /// <param name="NestedProcess">
 /// The process definition this work runs, when the work is a nested BPMN process. Required for an event
 /// subprocess body, whose start-event trigger the graph validator reads; <c>null</c> for every other kind of
-/// work, including subprocesses whose body the host resolves on its own.
+/// work, including subprocesses whose body the host resolves on its own. A body carried here is checked when the
+/// enclosing graph builds; one the host resolves on its own is checked only when the host builds it.
 /// </param>
 public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null)
 {

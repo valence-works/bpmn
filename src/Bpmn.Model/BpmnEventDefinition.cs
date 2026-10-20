@@ -55,6 +55,11 @@ public static class BpmnEventDefinitionProperties
     /// the matching key. <b>Required</b> and non-empty on an escalation throw/end event (a throw must say what
     /// it escalates); <b>optional</b> on an escalation boundary event — a code-less boundary is the code-less
     /// catch-all that matches any escalation whose specific code no other boundary on the host claims.
+    /// <para>
+    /// The same key carries an <see cref="BpmnEventDefinitionTypes.Error"/> definition's code: the code its
+    /// <c>errorRef</c> resolves to, which is the referenced error's <c>errorCode</c>, or its id when it declares
+    /// none. An error catcher without a code is a catch-all.
+    /// </para>
     /// </summary>
     public const string Code = "code";
 }

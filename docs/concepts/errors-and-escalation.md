@@ -18,8 +18,12 @@ An error is declared at the document root and identified by a code:
 ```
 
 In the model, that is a `BpmnErrorDeclaration` with `Id`, `Name` and `ErrorCode`. The code is what
-matching happens on, never the name. From 0.4.0 an `<error>` without an `errorCode` uses its `id` as
-the code ([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)).
+identifies an error — not the id, not the name. An `<error>` that declares no `errorCode` is identified
+by its `id`, which then serves as its code ([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)).
+
+An event names an error by `errorRef`. The reader resolves that ref to the error's code and records it
+on the event definition, under `BpmnEventDefinitionProperties.Code`, with the error's name under
+`BpmnEventDefinitionProperties.Name`. An event definition without a ref carries no code.
 
 A host reports that work failed; it does not name the error:
 
@@ -29,12 +33,17 @@ interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     { FaultedIterationId = work.IterationId });   // null unless a multi-instance instance failed
 ```
 
-Today an error catcher catches any reported failure, whatever code it declares. The host supplies a
-human-readable message, and no code. [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)
-changes this in 0.4.0. The host names the error its work raised, error end events throw, and a
-catcher that declares a code catches only that code. For a call activity, the child's error code is
-reported only with the `Faulted` outcome; `DispatchFailed` and `Cancelled` are uncoded failures of the
-call itself and reach only catch-alls.
+Which catcher handles a failure is a property of the model, not of the report. The host supplies a
+human-readable message; BPMN supplies the routing.
+
+A catcher's code is recorded, not yet matched on. An error boundary event or error event subprocess
+that declares a code reports it in `Caught.ErrorCode` when it catches, but selection does not narrow
+on it: today every error catcher catches any failure, which is why a host carries at most one error
+boundary and a scope at most one error event subprocess. [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) changes this in 0.4.0
+(#66). The host names the error its work raised, error end events throw, and a catcher that declares a
+code catches only that code. For a call activity, the child's error code is reported only with the
+`Faulted` outcome; `DispatchFailed` and `Cancelled` are uncoded failures of the call itself and reach
+only catch-alls.
 
 ### Error boundary events are always interrupting
 
@@ -46,10 +55,12 @@ the model documents it as fixed. There is no such thing as a non-interrupting er
 and there is no coherent meaning for one: the activity has failed, so there is nothing left to
 continue alongside.
 
-An error boundary event without an `errorRef` is a catch-all and matches **any** error. From 0.4.0, a
-boundary event whose `errorRef` resolves to a code matches only that code (ADR 0012); until then it
-matches any error too. Leaving the `errorRef` off is a catch-all, and like every catch-all it is
-occasionally what you want and usually not.
+An error boundary event with no code is a catch-all: it catches **any** error, and reports a null
+code. A boundary event with a code reports that code when it catches, but it still catches any error
+for now; narrowing it to only that code arrives with error-code matching in 0.4.0 (#66, ADR 0012).
+Declaring the code today keeps the model honest about what the boundary is for, so its meaning does
+not change when matching lands. Like every catch-all, a boundary without a code is occasionally what
+you want and usually not.
 
 ### Error start events in event subprocesses
 
@@ -63,6 +74,22 @@ contains it.
 Error-triggered event subprocesses are dormant catchers: unlike message, signal and timer triggers,
 they need no armed listener, so their `ListenerBindingRef` is null. Nothing has to be running for
 them to catch.
+
+### Error end events are read, not yet executed
+
+An error end event ends its scope by throwing an error. The reader keeps it as an end event carrying
+its error definition, and the writer writes it back, so a document that throws errors survives a round
+trip. One without an `errorRef` throws an error with no code.
+
+The interpreter does not execute it yet. `BpmnGraph.Build` refuses a definition that contains one,
+because the only other reading is a plain end event, which would complete a scope the document says has
+failed. Until it does, raise the error by faulting the bound work.
+
+The refusal covers subprocess bodies too, so it comes before anything runs rather than when a token
+first reaches the subprocess. `BpmnGraph.Build` checks every body the bound work carries in
+`NestedProcess`, embedded or event subprocess. Bodies nested deeper are resolved by your host, so your
+host refuses those by building each one before it runs the root, as the reference host does. See
+[Hosting the interpreter](../guides/hosting-the-interpreter.md).
 
 ### Propagation
 

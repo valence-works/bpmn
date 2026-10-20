@@ -355,7 +355,8 @@ without it, subprocesses are written empty. Retained foreign content lives on th
 The single-process overload wraps the process in minimal definitions and uses the same writer. It
 synthesizes message and signal declarations from known names (including event bindings), and escalation
 declarations from known event-definition codes. A recorded `errorRef` gets a matching error
-declaration, but its original name and error code cannot be recovered from that reference alone.
+declaration carrying the code and name the reader resolved onto the event definition, and an error
+event definition that carries only a code gets a declaration for that code.
 Use the definitions overload when you need explicit root declaration metadata, document metadata,
 collaboration, or retained diagrams. The single-process overload generates layout instead of retaining
 document-level diagrams.
