@@ -96,6 +96,7 @@ public sealed class BpmnXmlReader
         var messages = ReadNamedDeclarations(root, "message").Select(entry => new BpmnMessageDeclaration(entry.Key, entry.Value)).ToArray();
         var signals = ReadNamedDeclarations(root, "signal").Select(entry => new BpmnSignalDeclaration(entry.Key, entry.Value)).ToArray();
         var errors = ReadErrorDeclarations(root);
+        var errorDeclarations = IndexErrorDeclarations(errors);
         var escalationDeclarations = ReadEscalationDeclarations(root);
         var escalations = escalationDeclarations
             .Select(entry => new BpmnEscalationDeclaration(entry.Key, entry.Value.Name, entry.Value.Code))
@@ -110,7 +111,7 @@ public sealed class BpmnXmlReader
         {
             var processId = IdOf(processElement) ?? "process";
             var isExecutable = string.Equals((string?)processElement.Attribute("isExecutable"), "true", StringComparison.OrdinalIgnoreCase);
-            var definition = BuildProcess(processElement, processId, isExecutable, messageSignalNames, escalationDeclarations, context);
+            var definition = BuildProcess(processElement, processId, isExecutable, messageSignalNames, escalationDeclarations, errorDeclarations, context);
             if (!isExecutable)
                 context.Report(BpmnImportIssueSeverity.Info, $"Process '{processId}' is not executable (isExecutable=\"false\"); it read as a documentation-only pool.", processId: processId);
             built.Add(new BuiltProcess(processId, definition, isExecutable));
@@ -270,6 +271,7 @@ public sealed class BpmnXmlReader
         bool isExecutable,
         IReadOnlyDictionary<string, string> messageSignalNames,
         IReadOnlyDictionary<string, EscalationDeclaration> escalationDeclarations,
+        IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations,
         ReadContext context,
         bool isTransaction = false,
         bool isEventSubprocessBody = false,
@@ -328,10 +330,10 @@ public sealed class BpmnXmlReader
                             cancelActivity: (bool?)child.Attribute("isInterrupting") ?? true));
                         break;
                     }
-                    if (child.Element(BpmnXmlNames.Model + "errorEventDefinition") is not null)
+                    if (child.Element(BpmnXmlNames.Model + "errorEventDefinition") is { } startErrorDefinition)
                     {
                         elements.Add(new BpmnElement(id, BpmnElementTypes.StartEvent, name: NameOf(child),
-                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Error)],
+                            eventDefinitions: [ErrorDefinition(startErrorDefinition, errorDeclarations)],
                             cancelActivity: (bool?)child.Attribute("isInterrupting") ?? true));
                         break;
                     }
@@ -483,7 +485,7 @@ public sealed class BpmnXmlReader
                         ? null
                         : ResolveLoopCharacteristics(child, id, isActivity: true, declaredVariableNames, context);
                     var bindingMark = context.Bindings.Count;
-                    var nested = BuildProcess(child, id, isExecutable, messageSignalNames, escalationDeclarations, context,
+                    var nested = BuildProcess(child, id, isExecutable, messageSignalNames, escalationDeclarations, errorDeclarations, context,
                         isTransaction: isTransactionHost, isEventSubprocessBody: isEventSubprocess,
                         consumeInterpretedLoopCharacteristics: loopCharacteristics is not null);
                     context.CurrentProcessId = processId;
@@ -627,7 +629,7 @@ public sealed class BpmnXmlReader
         var escalationCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
         foreach (var boundaryXml in pendingBoundaries)
         {
-            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, context);
+            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, errorDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, context);
             if (boundary is null)
                 continue; // Dropped, with a finding; its sequence flows cascade-drop as unresolved refs.
             elements.Add(boundary);
@@ -739,6 +741,15 @@ public sealed class BpmnXmlReader
             result.Add(new BpmnErrorDeclaration(id, NameOf(declaration), string.IsNullOrWhiteSpace(code) ? null : code));
         }
 
+        return result;
+    }
+
+    /// <summary>The root <c>&lt;error&gt;</c> declarations by id, which is what an <c>errorRef</c> names. The first of a duplicated id wins.</summary>
+    private static IReadOnlyDictionary<string, BpmnErrorDeclaration> IndexErrorDeclarations(IReadOnlyList<BpmnErrorDeclaration> errors)
+    {
+        var result = new Dictionary<string, BpmnErrorDeclaration>(StringComparer.Ordinal);
+        foreach (var error in errors)
+            result.TryAdd(error.Id, error);
         return result;
     }
 
@@ -932,6 +943,30 @@ public sealed class BpmnXmlReader
 
         return new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(element),
             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Escalation, EscalationProperties(code, ResolveEscalationRefName(definition, escalationDeclarations)))]);
+    }
+
+    /// <summary>
+    /// An error event definition carrying the code its <c>errorRef</c> resolves to, under
+    /// <see cref="BpmnEventDefinitionProperties.Code"/>, which is the key the interpreter reads a catcher's code
+    /// from. A definition without a ref carries no code: a catcher without one is a catch-all.
+    /// </summary>
+    private static BpmnEventDefinition ErrorDefinition(XElement definition, IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations) =>
+        ResolveErrorRefCode(definition, errorDeclarations) is { } code
+            ? new BpmnEventDefinition(BpmnEventDefinitionTypes.Error, new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Code] = code })
+            : new BpmnEventDefinition(BpmnEventDefinitionTypes.Error);
+
+    /// <summary>
+    /// The code an <c>errorRef</c> names: the referenced <c>&lt;error&gt;</c>'s <c>errorCode</c>, or its id when it
+    /// declares none. A ref naming no declaration is its own code, as an unresolved escalation ref is.
+    /// </summary>
+    private static string? ResolveErrorRefCode(XElement definition, IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations)
+    {
+        if (((string?)definition.Attribute("errorRef"))?.Trim() is not { Length: > 0 } errorRef)
+            return null;
+
+        return errorDeclarations.TryGetValue(errorRef, out var declaration)
+            ? declaration.ErrorCode ?? declaration.Id
+            : errorRef;
     }
 
     /// <summary>The listener binding an event subprocess arms, for a message, signal, or timer trigger; <c>null</c> for escalation and error, which are dormant catchers.</summary>
@@ -1201,6 +1236,7 @@ public sealed class BpmnXmlReader
         IReadOnlyDictionary<string, BpmnElement> elementsById,
         IReadOnlyDictionary<string, string> messageSignalNames,
         IReadOnlyDictionary<string, EscalationDeclaration> escalationDeclarations,
+        IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations,
         IReadOnlyList<(string Source, string Target)> associations,
         IReadOnlySet<string> flowParticipantIds,
         HashSet<string> transactionHostsWithCancelBoundary,
@@ -1330,7 +1366,7 @@ public sealed class BpmnXmlReader
                 if (((string?)definition.Attribute("errorRef"))?.Trim() is { Length: > 0 } errorRef)
                     properties[ErrorRefPropertyKey] = errorRef;
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element),
-                    eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Error)],
+                    eventDefinitions: [ErrorDefinition(definition, errorDeclarations)],
                     properties: properties.Count == 0 ? null : properties,
                     attachedToRef: attachedToRef, cancelActivity: true);
             }

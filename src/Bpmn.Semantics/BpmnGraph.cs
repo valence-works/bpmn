@@ -735,8 +735,8 @@ public sealed class BpmnGraph
             else if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Error))
             {
                 // An error-triggered event subprocess catches the fault of work started in this scope and then runs
-                // its body. Interrupting only (per BPMN) and catch-all (no error-code matching); a scope carries at
-                // most one.
+                // its body. Interrupting only (per BPMN), and a scope carries at most one. Its code is recorded so a
+                // catch reports what the catcher declares, but selection does not yet narrow on it.
                 if (element.ListenerBindingRef is not null)
                     throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by a work fault, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
                 if (!interrupting)
@@ -745,7 +745,7 @@ public sealed class BpmnGraph
                     throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
                 hasError = true;
 
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, Code: null, Interrupting: true));
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, ReadErrorCode(bodyStart), Interrupting: true));
             }
             else if (ExternalTriggerKind(definitionType) is { } externalTriggerKind)
             {
@@ -970,6 +970,9 @@ public sealed class BpmnGraph
             }
         }
     }
+
+    /// <summary>The code an error event definition declares, or <c>null</c> for a catch-all. Errors keep their code under the same key as escalations.</summary>
+    private static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
 
     /// <summary>The non-empty escalation code an escalation throw/end/boundary declares, or <c>null</c> when absent/blank (a code-less boundary is the catch-all).</summary>
     private static string? ReadEscalationCode(BpmnElement element) =>
