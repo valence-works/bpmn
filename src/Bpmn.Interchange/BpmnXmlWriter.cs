@@ -250,8 +250,10 @@ public sealed class BpmnXmlWriter
                 new XAttribute("targetRef", flow.TargetRef));
             if (flow.Name is not null) flowElement.SetAttributeValue("name", flow.Name);
             var extensions = WithoutLibraryConditionExpression(flow.Extensions, flow.ConditionOutcome);
-            var authoredExpression = flow.ConditionOutcome is not null && flow.ConditionExpression is { } candidate
-                && BpmnGeneratedCondition.IsLibraryGeneratedShape(candidate)
+            // Only the exact predicate for this flow's own outcome is the library's. An expression of the same
+            // shape that names another outcome is the author's, and is written back (ADR 0011).
+            var authoredExpression = flow.ConditionExpression is { } candidate
+                && BpmnGeneratedCondition.IsLibraryGenerated(candidate, flow.ConditionOutcome)
                     ? null
                     : flow.ConditionExpression;
             if (authoredExpression is { } conditionExpression)
@@ -269,8 +271,8 @@ public sealed class BpmnXmlWriter
                 // synthesized conditionExpression is only for models that never had one — typically a
                 // process built in code — so other modelers still see a readable predicate. An author's
                 // expression is written above, or restored below when an older payload retained it as a
-                // foreign child. The library's own generated predicate is stripped first, so a changed or
-                // cleared outcome is not written next to a stale outcome == '…' body.
+                // foreign child; either way it is the flow's one conditionExpression. The library's own
+                // predicate for this outcome is stripped first and written here once.
                 flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
                 if (authoredExpression is null && !HasAuthorConditionExpression(extensions))
                     flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnGeneratedCondition.GeneratedBody(flow.ConditionOutcome)));
@@ -736,15 +738,12 @@ public sealed class BpmnXmlWriter
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Drops a retained <c>conditionExpression</c> that has the library's generated shape, so a write
-    /// after the outcome changed does not emit a contradictory body.
+    /// Drops a retained <c>conditionExpression</c> that is exactly the library's predicate for
+    /// <paramref name="conditionOutcome"/>, so it is written once rather than twice.
     /// <para>
-    /// An author expression that only looks like the generated predicate — <c>outcome == '…'</c> with
-    /// no attributes or children, but a body that is not <c>outcome == '&lt;current outcome&gt;'</c> —
-    /// is kept on read and dropped here while the flow still has a <c>conditionOutcome</c>. A
-    /// mismatched expression of that shape survives clearing the outcome, because this method does
-    /// nothing when <paramref name="conditionOutcome"/> is null; an expression-only flow may
-    /// legitimately carry the same text.
+    /// A retained child of the same shape that names another outcome is the author's and is kept: the
+    /// reader that serialized it had already consumed the predicate for the outcome it read, so what it
+    /// retained was never the library's own.
     /// </para>
     /// </summary>
     private static BpmnExtensions WithoutLibraryConditionExpression(BpmnExtensions? extensions, string? conditionOutcome)
@@ -757,7 +756,7 @@ public sealed class BpmnXmlWriter
             return extensions;
 
         var kept = extensions.ForeignChildren
-            .Where(child => !BpmnGeneratedCondition.IsLibraryGeneratedShape(child.Element))
+            .Where(child => !BpmnGeneratedCondition.IsLibraryGenerated(child.Element, conditionOutcome))
             .ToList();
         return kept.Count == extensions.ForeignChildren.Count
             ? extensions

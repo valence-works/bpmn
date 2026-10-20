@@ -79,10 +79,12 @@ public sealed class BpmnSequenceFlow
     /// only. The <c>outcome == '…'</c> predicate this library writes for an outcome is not an author's
     /// expression: a read consumes an expression whose body is exactly <c>outcome == '&lt;outcome&gt;'</c>
     /// for this flow's own outcome and carries no attributes or children, and does not model it. Any other
-    /// expression is modeled, including one of the same shape that names a different outcome; while the
-    /// flow keeps an outcome, a write replaces that lookalike with the predicate for the current outcome. The interpreter does not evaluate an expression yet: a flow
-    /// whose only condition is an expression is routed as unconditional, which the XML reader reports as a
-    /// <c>Degraded</c> finding. See ADR 0011.
+    /// expression is the author's, including one of the same shape that names a different outcome: it is
+    /// modeled and written back as the flow's one <c>&lt;conditionExpression&gt;</c>, with no generated
+    /// predicate beside it, while the outcome still decides. The writer treats an expression as its own
+    /// only when it is exactly the predicate for the flow's current outcome. The interpreter does not
+    /// evaluate an expression yet: a flow whose only condition is an expression is routed as
+    /// unconditional, which the XML reader reports as a <c>Degraded</c> finding. See ADR 0011.
     /// </para>
     /// <para>
     /// Additive in payload format 1.3.0, and init-only rather than a constructor parameter so the

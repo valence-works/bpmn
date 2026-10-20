@@ -549,16 +549,17 @@ public sealed class BpmnXmlReader
                     // The predicate this writer itself emits for a conditionOutcome is consumed and not
                     // modeled, so a later edit of that outcome cannot leave a stale expression. An author's
                     // expression is read into the model, with everything else on it retained.
-                    var authoredExpressions = child.Elements(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName)
-                        .Where(candidate => !BpmnGeneratedCondition.IsLibraryGenerated(candidate, conditionOutcome))
-                        .ToArray();
-                    var conditionExpression = authoredExpressions.Length == 0 ? null : context.CaptureConditionExpression(authoredExpressions[0]);
+                    var sourceExpressions = child.Elements(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName).ToArray();
+                    var authoredExpression = sourceExpressions
+                        .FirstOrDefault(candidate => !BpmnGeneratedCondition.IsLibraryGenerated(candidate, conditionOutcome));
+                    var conditionExpression = authoredExpression is null ? null : context.CaptureConditionExpression(authoredExpression);
 
-                    // BPMN allows at most one conditionExpression on a flow. The first is modeled; the rest have
-                    // nowhere to go in the model, so they are dropped and said to be, rather than retained for the
-                    // writer, which emits one expression per flow, to discard without a word.
-                    if (authoredExpressions.Length > 1)
-                        context.Report(BpmnImportIssueSeverity.Dropped, $"Sequence flow '{id}' declares {authoredExpressions.Length} conditionExpression elements; BPMN allows at most one, so the first was read and the rest were dropped.", id);
+                    // BPMN allows at most one conditionExpression on a flow, and the count is of every one the
+                    // source declares, the generated predicate included. The first author's expression is modeled;
+                    // the rest have nowhere to go in the model, so they are dropped and said to be, rather than
+                    // retained for the writer, which emits one expression per flow, to discard without a word.
+                    if (sourceExpressions.Length > 1)
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Sequence flow '{id}' declares {sourceExpressions.Length} conditionExpression elements; BPMN allows at most one, so {(authoredExpression is null ? "the outcome predicate was kept" : "the first author's expression was read")} and the rest were dropped.", id);
 
                     // The interpreter does not evaluate expressions yet (ADR 0011), so an expression-only
                     // flow still routes as unconditional. Modeling the expression must not make that silent:

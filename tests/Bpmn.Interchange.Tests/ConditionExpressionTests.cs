@@ -105,6 +105,18 @@ public sealed class ConditionExpressionTests
         </bpmn:definitions>
         """;
 
+    private static string OutcomeFlowDocument(string conditionOutcome, string flowContent) => $"""
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:vw="https://bpmn.valenceworks.io/schema/bpmn"
+                          id="Defs" targetNamespace="http://example.test/orders">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:startEvent id="Start" />
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done" vw:conditionOutcome="{conditionOutcome}">{flowContent}</bpmn:sequenceFlow>
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
     private static BpmnProcessDefinition NestedBody(BpmnImportResult result, string elementId) =>
         result.Bindings.OfType<BpmnWorkBinding.NestedProcess>().Single(binding => binding.ElementId == elementId).Definition;
 
@@ -362,6 +374,29 @@ public sealed class ConditionExpressionTests
             && issue.Message.Contains("conditionExpression", StringComparison.Ordinal));
 
         WrittenExpression(firstXml, "F").Value.ShouldBe("a");
+        second.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+        Model(second).ShouldBe(Model(first));
+    }
+
+    [Theory]
+    [InlineData("""<bpmn:conditionExpression>outcome == 'Approved'</bpmn:conditionExpression><bpmn:conditionExpression>amount &gt; 5</bpmn:conditionExpression>""")]
+    [InlineData("""<bpmn:conditionExpression>amount &gt; 5</bpmn:conditionExpression><bpmn:conditionExpression>outcome == 'Approved'</bpmn:conditionExpression>""")]
+    public void A_generated_predicate_beside_an_author_expression_counts_as_a_second_expression(string expressions)
+    {
+        // The generated predicate is consumed rather than modeled, but the source still declares two
+        // conditionExpression elements, which BPMN does not allow; the finding counts both.
+        var (first, firstXml, second, _) = RoundTrip(OutcomeFlowDocument("Approved", expressions));
+
+        var flow = Flow(Process(first), "F");
+        flow.ConditionOutcome.ShouldBe("Approved");
+        flow.ConditionExpression.ShouldNotBeNull().Body.ShouldBe("amount > 5");
+        flow.Extensions.ForeignChildren.ShouldBeEmpty();
+        first.Analysis.Issues.ShouldContain(issue =>
+            issue.Severity == BpmnImportIssueSeverity.Dropped
+            && issue.ElementId == "F"
+            && issue.Message.Contains("2 conditionExpression elements", StringComparison.Ordinal));
+
+        WrittenExpression(firstXml, "F").Value.ShouldBe("amount > 5");
         second.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
         Model(second).ShouldBe(Model(first));
     }

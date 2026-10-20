@@ -383,8 +383,9 @@ A few rules keep "read, write, read again" giving the same model:
   differs from the document's, typically a process built in code and written into a document declaring
   another default. BPMN has no per-process expression language, so the next read gives the process the
   document's default and models the language as the expression's own. The meaning is unchanged.
-- BPMN allows at most one `<conditionExpression>` per flow. If a document has more, the first is
-  modeled and the rest are dropped with a `Dropped` finding naming the flow.
+- BPMN allows at most one `<conditionExpression>` per flow. If a document has more, counting a
+  generated `outcome == '…'` predicate among them, the first author's expression is modeled and the
+  rest are dropped with a `Dropped` finding naming the flow and the number it declares.
 
 > **Upgrading from payload format 1.2.0.** An author's `<conditionExpression>` used to be retained as a
 > foreign child of the flow, in `flow.Extensions.ForeignChildren`. It is now read into
@@ -395,7 +396,11 @@ A few rules keep "read, write, read again" giving the same model:
 A generated `outcome == '…'` expression is written only when the model has a `conditionOutcome` and
 no author's expression, typically for a process built in code. That generated predicate is consumed
 on the next read rather than modeled, so changing or clearing the outcome does not leave a stale
-expression.
+expression. Only the exact predicate for the flow's own outcome counts as generated. An expression of
+the same shape that names another outcome, such as `outcome == 'Rejected'` on a flow whose
+`conditionOutcome` is `Approved`, is the author's: it is modeled, written back as the flow's one
+`<conditionExpression>` with no generated predicate beside it, and never evaluated, while
+`vw:conditionOutcome` still decides the route.
 
 What the writer does not do is reproduce the source byte for byte.
 
