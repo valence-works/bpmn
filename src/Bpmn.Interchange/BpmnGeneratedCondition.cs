@@ -8,7 +8,7 @@ namespace Bpmn.Interchange;
 /// <c>conditionOutcome</c>. The generated form is exactly <c>outcome == 'X'</c> with no attributes and
 /// no child elements — the only shape <see cref="BpmnXmlWriter"/> emits on its own.
 /// </summary>
-internal static class BpmnConditionExpression
+internal static class BpmnGeneratedCondition
 {
     public const string ElementLocalName = "conditionExpression";
 
@@ -54,6 +54,15 @@ internal static class BpmnConditionExpression
             return false;
         return IsGeneratedBody(element.Value);
     }
+
+    /// <summary>
+    /// The modeled counterpart of <see cref="IsLibraryGeneratedShape(BpmnExtensionElement)"/>: an expression
+    /// with no language, no retained content, and a generated-shaped body. The writer drops one while the
+    /// flow still has an outcome, exactly as it drops the retained form, so an outcome edited outside this
+    /// library is not written beside the predicate for the outcome it replaced.
+    /// </summary>
+    public static bool IsLibraryGeneratedShape(BpmnConditionExpression expression) =>
+        expression.Language is null && expression.Extensions.IsEmpty && IsGeneratedBody(expression.Body);
 
     public static bool IsGeneratedBody(string? value)
     {

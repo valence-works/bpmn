@@ -77,6 +77,7 @@ public sealed class BpmnXmlWriter
         if (!string.IsNullOrWhiteSpace(exporter)) root.SetAttributeValue("exporter", exporter);
         var exporterVersion = options?.ExporterVersion ?? definitions.ExporterVersion;
         if (!string.IsNullOrWhiteSpace(exporterVersion)) root.SetAttributeValue("exporterVersion", exporterVersion);
+        if (context.ExpressionLanguage is { } expressionLanguage) root.SetAttributeValue("expressionLanguage", expressionLanguage);
 
         AppendCollaboration(root, definitions, context);
 
@@ -249,17 +250,29 @@ public sealed class BpmnXmlWriter
                 new XAttribute("targetRef", flow.TargetRef));
             if (flow.Name is not null) flowElement.SetAttributeValue("name", flow.Name);
             var extensions = WithoutLibraryConditionExpression(flow.Extensions, flow.ConditionOutcome);
+            var authoredExpression = flow.ConditionOutcome is not null && flow.ConditionExpression is { } candidate
+                && BpmnGeneratedCondition.IsLibraryGeneratedShape(candidate)
+                    ? null
+                    : flow.ConditionExpression;
+            if (authoredExpression is { } conditionExpression)
+            {
+                // BPMN allows one conditionExpression. The modeled one wins over a copy a pre-1.3.0 payload
+                // still carries as a retained foreign child, which would otherwise be written beside it.
+                extensions = WithoutRetainedConditionExpression(extensions);
+                flowElement.Add(ConditionExpressionElement(conditionExpression, process.ExpressionLanguage, context));
+            }
+
             if (flow.ConditionOutcome is not null)
             {
                 // BPMN has no outcome-matched condition, so the match rides a vendor attribute. A
                 // synthesized conditionExpression is only for models that never had one — typically a
                 // process built in code — so other modelers still see a readable predicate. An author's
-                // original expression is retained as a foreign child and restored below. The library's
-                // own generated predicate is stripped first, so a changed or cleared outcome is not
-                // written next to a stale outcome == '…' body.
+                // expression is written above, or restored below when an older payload retained it as a
+                // foreign child. The library's own generated predicate is stripped first, so a changed or
+                // cleared outcome is not written next to a stale outcome == '…' body.
                 flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
-                if (!HasAuthorConditionExpression(extensions))
-                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnConditionExpression.GeneratedBody(flow.ConditionOutcome)));
+                if (authoredExpression is null && !HasAuthorConditionExpression(extensions))
+                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnGeneratedCondition.GeneratedBody(flow.ConditionOutcome)));
             }
 
             ApplyExtensions(flowElement, extensions, context.Vendor);
@@ -743,7 +756,7 @@ public sealed class BpmnXmlWriter
             return extensions;
 
         var kept = extensions.ForeignChildren
-            .Where(child => !BpmnConditionExpression.IsLibraryGeneratedShape(child.Element))
+            .Where(child => !BpmnGeneratedCondition.IsLibraryGeneratedShape(child.Element))
             .ToList();
         return kept.Count == extensions.ForeignChildren.Count
             ? extensions
@@ -751,13 +764,62 @@ public sealed class BpmnXmlWriter
     }
 
     /// <summary>
-    /// Whether the flow already carries the author's <c>conditionExpression</c>, so the writer must not
-    /// invent a second one. The element lives in BPMN's own namespace and is retained rather than
-    /// interpreted, because this library never evaluates it.
+    /// Writes a modeled <c>conditionExpression</c>: body, <c>language</c>, and the retained rest.
+    /// <para>
+    /// Two attributes are supplied when the model does not carry them. A <c>language</c> is written for an
+    /// expression that inherits one, when its process's default differs from the document's, so the
+    /// expression keeps its meaning after the process is written into a document declaring another default.
+    /// And BPMN only allows <c>language</c> on a formal expression, so an expression that has a language but
+    /// no retained <c>xsi:type</c> is written as <c>bpmn:tFormalExpression</c>. An expression with neither,
+    /// typically one built in code, is written as a plain expression, exactly as modeled.
+    /// </para>
+    /// </summary>
+    private static XElement ConditionExpressionElement(BpmnConditionExpression expression, string? processExpressionLanguage, WriteContext context)
+    {
+        var element = new XElement(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName);
+
+        var inherited = string.IsNullOrWhiteSpace(processExpressionLanguage) ? null : processExpressionLanguage.Trim();
+        var language = expression.Language
+            ?? (inherited is not null && !StringComparer.Ordinal.Equals(inherited, context.ExpressionLanguage) ? inherited : null);
+        if (language is not null)
+            element.SetAttributeValue("language", language);
+
+        foreach (var attribute in expression.Extensions.ForeignAttributes)
+            BpmnExtensionCapture.WriteAttribute(element, attribute);
+
+        if (language is not null && element.Attribute(BpmnXmlNames.SchemaInstance + "type") is null)
+            BpmnExtensionCapture.WriteTypeAttribute(element, "bpmn:tFormalExpression");
+
+        ApplyExtensions(element, expression.Extensions with { ForeignAttributes = [] }, context.Vendor);
+        element.Add(new XText(expression.Body));
+        return element;
+    }
+
+    /// <summary>
+    /// Drops a <c>conditionExpression</c> a pre-1.3.0 payload retained as a foreign child, for a flow whose
+    /// expression is now modeled.
+    /// </summary>
+    private static BpmnExtensions WithoutRetainedConditionExpression(BpmnExtensions extensions)
+    {
+        if (!HasAuthorConditionExpression(extensions))
+            return extensions;
+
+        return extensions with
+        {
+            ForeignChildren = extensions.ForeignChildren
+                .Where(child => !BpmnGeneratedCondition.IsModelElement(child.Element.Name))
+                .ToList()
+        };
+    }
+
+    /// <summary>
+    /// Whether the flow carries an author's <c>conditionExpression</c> as a retained foreign child, so the
+    /// writer must not invent a second one. Only a payload serialized before format 1.3.0 has one there; a
+    /// read now models it as <see cref="BpmnSequenceFlow.ConditionExpression"/>.
     /// </summary>
     private static bool HasAuthorConditionExpression(BpmnExtensions? extensions) =>
         extensions is not null
-        && extensions.ForeignChildren.Any(child => BpmnConditionExpression.IsModelElement(child.Element.Name));
+        && extensions.ForeignChildren.Any(child => BpmnGeneratedCondition.IsModelElement(child.Element.Name));
 
     /// <summary>Adds a child at the position its name takes in the canonical order, rather than at the end.</summary>
     private static void InsertByRank(XElement parent, XElement child)
@@ -852,6 +914,7 @@ public sealed class BpmnXmlWriter
         public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, BpmnVendorNames vendor)
         {
             Vendor = vendor;
+            ExpressionLanguage = DocumentExpressionLanguage(definitions);
 
             foreach (var binding in bindings ?? [])
             {
@@ -902,6 +965,27 @@ public sealed class BpmnXmlWriter
 
         /// <summary>The vendor namespace this write emits the library's own non-standard names in.</summary>
         public BpmnVendorNames Vendor { get; }
+
+        /// <summary>The <c>expressionLanguage</c> this write declares on <c>&lt;definitions&gt;</c>, if any.</summary>
+        public string? ExpressionLanguage { get; }
+
+        /// <summary>
+        /// The document's own value, else the one default every process agrees on. The second case is a
+        /// process written on its own, or processes built in code into a fresh document. When processes
+        /// disagree, none is declared; each process's expressions then carry their language themselves.
+        /// </summary>
+        private static string? DocumentExpressionLanguage(BpmnDefinitions definitions)
+        {
+            if (!string.IsNullOrWhiteSpace(definitions.ExpressionLanguage))
+                return definitions.ExpressionLanguage.Trim();
+
+            var declared = definitions.Processes
+                .Select(process => process.ExpressionLanguage?.Trim())
+                .Where(language => !string.IsNullOrEmpty(language))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return declared.Length == 1 ? declared[0] : null;
+        }
 
         public IReadOnlyList<SynthesizedDeclaration> SynthesizedDeclarations => _synthesized;
 

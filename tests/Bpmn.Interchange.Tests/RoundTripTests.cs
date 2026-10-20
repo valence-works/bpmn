@@ -699,17 +699,25 @@ public sealed class RoundTripTests
         return expressions[0];
     }
 
-    private static BpmnExtensionElement RetainedExpression(BpmnImportResult result, string flowId)
+    /// <summary>
+    /// The author's expression, read into the model. It must not also be retained as a foreign child, or
+    /// the writer would have two to choose from.
+    /// </summary>
+    private static BpmnConditionExpression ModeledExpression(BpmnImportResult result, string flowId)
     {
-        var child = Process(result).SequenceFlows.Single(flow => flow.FlowId == flowId)
-            .Extensions.ForeignChildren
-            .Single(foreign => foreign.Element.Name.LocalName == "conditionExpression");
-        child.Element.Name.Namespace.ShouldBe(BpmnXmlNames.Model.NamespaceName);
-        return child.Element;
+        var flow = Process(result).SequenceFlows.Single(candidate => candidate.FlowId == flowId);
+        flow.Extensions.ForeignChildren.ShouldNotContain(foreign => foreign.Element.Name.LocalName == "conditionExpression");
+        return flow.ConditionExpression.ShouldNotBeNull();
     }
 
     private static string? Attribute(BpmnExtensionElement element, string? ns, string localName) =>
-        element.Attributes.SingleOrDefault(attribute =>
+        Attribute(element.Attributes, ns, localName);
+
+    private static string? Attribute(BpmnConditionExpression expression, string? ns, string localName) =>
+        Attribute(expression.Extensions.ForeignAttributes, ns, localName);
+
+    private static string? Attribute(IEnumerable<BpmnForeignAttribute> attributes, string? ns, string localName) =>
+        attributes.SingleOrDefault(attribute =>
             string.Equals(attribute.Name.LocalName, localName, StringComparison.Ordinal)
             && string.Equals(attribute.Name.Namespace, ns, StringComparison.Ordinal))?.Value;
 
@@ -726,9 +734,9 @@ public sealed class RoundTripTests
 
         foreach (var generation in new[] { first, second })
         {
-            var expression = RetainedExpression(generation, "toReject");
-            expression.Value.ShouldBe("amount >= 1000");
-            Attribute(expression, null, "language").ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
+            var expression = ModeledExpression(generation, "toReject");
+            expression.Body.ShouldBe("amount >= 1000");
+            expression.Language.ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
             Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
         }
 
@@ -751,9 +759,9 @@ public sealed class RoundTripTests
             var flow = Process(generation).SequenceFlows.Single(candidate => candidate.FlowId == "toApprove");
             flow.ConditionOutcome.ShouldBe("Approved");
 
-            var expression = RetainedExpression(generation, "toApprove");
-            expression.Value.ShouldBe("amount < 1000");
-            Attribute(expression, null, "language").ShouldBe("http://www.w3.org/1999/XPath");
+            var expression = ModeledExpression(generation, "toApprove");
+            expression.Body.ShouldBe("amount < 1000");
+            expression.Language.ShouldBe("http://www.w3.org/1999/XPath");
             Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
             Attribute(expression, Triso.NamespaceName, "unparsed").ShouldBe("false");
         }
@@ -781,6 +789,8 @@ public sealed class RoundTripTests
         var flow = Process(read).SequenceFlows.Single();
         flow.ConditionOutcome.ShouldBe("approved");
         flow.Extensions.ForeignChildren.ShouldBeEmpty();
+        flow.ConditionExpression.ShouldBeNull("the generated predicate is consumed, not modeled");
+        read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "f1");
     }
 
     [Fact]
@@ -851,7 +861,7 @@ public sealed class RoundTripTests
             """;
 
         var (first, firstXml, _, _) = RoundTrip(authored);
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'approved'");
+        ModeledExpression(first, "F").Body.ShouldBe("outcome == 'approved'");
         WrittenExpression(firstXml, "F").Value.ShouldBe("outcome == 'approved'");
         Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBeNull();
     }
@@ -865,7 +875,7 @@ public sealed class RoundTripTests
     {
         var first = Read(MismatchedLookalike);
         Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBe("Approved");
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+        ModeledExpression(first, "F").Body.ShouldBe("outcome == 'Rejected'");
 
         var xml = _writer.Write(first);
         WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Approved'");
@@ -880,7 +890,7 @@ public sealed class RoundTripTests
     public void A_mismatched_lookalike_survives_clearing_the_outcome()
     {
         var first = Read(MismatchedLookalike);
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+        ModeledExpression(first, "F").Body.ShouldBe("outcome == 'Rejected'");
 
         var xml = _writer.Write(WithFlowOutcome(first.Definitions, conditionOutcome: null));
         WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Rejected'");
@@ -908,9 +918,10 @@ public sealed class RoundTripTests
 
         var (first, firstXml, _, secondXml) = RoundTrip(prefixed);
 
-        var retained = RetainedExpression(first, "F");
-        retained.Value.ShouldBe("amount < 1000");
-        Attribute(retained, Xsi.NamespaceName, "type").ShouldBe("bpmn:tFormalExpression");
+        var modeled = ModeledExpression(first, "F");
+        modeled.Body.ShouldBe("amount < 1000");
+        modeled.Language.ShouldBeNull();
+        Attribute(modeled, Xsi.NamespaceName, "type").ShouldBe("bpmn:tFormalExpression");
 
         var written = WrittenExpression(firstXml, "F");
         written.Value.ShouldBe("amount < 1000");
@@ -1005,6 +1016,9 @@ public sealed class RoundTripTests
                     SequenceFlows =
                     [
                         new BpmnSequenceFlow(flow.FlowId, flow.SourceRef, flow.TargetRef, flow.Name, conditionOutcome, flow.IsDefault, flow.Extensions)
+                        {
+                            ConditionExpression = flow.ConditionExpression
+                        }
                     ]
                 }
             ]

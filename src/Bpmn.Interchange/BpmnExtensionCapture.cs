@@ -83,6 +83,40 @@ internal static class BpmnExtensionCapture
         return extensions.IsEmpty ? BpmnExtensions.Empty : extensions;
     }
 
+    /// <summary>
+    /// Reads an author's <c>conditionExpression</c> into the model. The body is the element's own text, CDATA
+    /// included; <c>language</c> is modeled; everything else is retained on the expression's own
+    /// <see cref="BpmnConditionExpression.Extensions"/>. That includes the two things an ordinary capture
+    /// skips, the unqualified attributes BPMN gives every base element (<c>id</c>) or every formal expression
+    /// (<c>evaluatesToTypeRef</c>), and <c>xsi:type</c>, because whether an expression is formal is part of
+    /// what its author wrote.
+    /// </summary>
+    public static BpmnConditionExpression CaptureConditionExpression(
+        XElement source,
+        BpmnFidelity fidelity,
+        BpmnVendorNames vendor,
+        RetentionLog log)
+    {
+        var body = string.Concat(source.Nodes().OfType<XText>().Select(text => text.Value));
+        var language = (string?)source.Attribute("language");
+        var extensions = Capture(source, fidelity, vendor, _ => false, log);
+
+        if (fidelity == BpmnFidelity.Semantic)
+            return new BpmnConditionExpression(body, language, extensions);
+
+        var ownAttributes = source.Attributes()
+            .Where(attribute => !attribute.IsNamespaceDeclaration)
+            .Where(attribute => attribute.Name == BpmnXmlNames.SchemaInstance + "type"
+                || (attribute.Name.Namespace == XNamespace.None && attribute.Name.LocalName != "language"))
+            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(source, attribute)))
+            .ToArray();
+
+        if (ownAttributes.Length > 0)
+            extensions = extensions with { ForeignAttributes = [.. ownAttributes, .. extensions.ForeignAttributes] };
+
+        return new BpmnConditionExpression(body, language, extensions);
+    }
+
     /// <summary>Rebuilds a retained subtree as live XML.</summary>
     public static XElement ToXml(BpmnExtensionElement element)
     {
@@ -141,7 +175,8 @@ internal static class BpmnExtensionCapture
             : value;
     }
 
-    private static void WriteAttribute(XElement xml, BpmnForeignAttribute attribute)
+    /// <summary>Writes one retained attribute, restoring the <c>bpmn</c> prefix an <c>xsi:type</c> value needs.</summary>
+    public static void WriteAttribute(XElement xml, BpmnForeignAttribute attribute)
     {
         var name = ToXName(attribute.Name);
         if (name == BpmnXmlNames.SchemaInstance + "type")
@@ -159,7 +194,7 @@ internal static class BpmnExtensionCapture
     /// other prefix is written as stored and is not rebound — a leftover <c>model:</c> came from a
     /// prefix that was not bound to BPMN, and must not steal a vendor <c>xmlns:model</c>.
     /// </summary>
-    private static void WriteTypeAttribute(XElement xml, string value)
+    public static void WriteTypeAttribute(XElement xml, string value)
     {
         var colon = value.IndexOf(':');
         if (colon > 0 && value[..colon] == "bpmn")

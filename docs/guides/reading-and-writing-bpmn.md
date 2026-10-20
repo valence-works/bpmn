@@ -365,11 +365,19 @@ sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints
 synthesized from the endpoint boxes when the source carried none. A flow that runs backwards is
 routed as an elbow below the row, so a cyclic graph does not render as a pile of overlapping lines.
 
-A sequence flow's `<conditionExpression>` is part of that retained content. The library does not
-evaluate it, but a read then write keeps the author's body, `language`, `xsi:type`, and vendor
-attributes. A generated `outcome == '…'` expression is written only when the model has a
-`conditionOutcome` and no original expression — typically a process built in code. That generated
-predicate is consumed on the next read, so changing or clearing the outcome does not leave a stale
+A sequence flow's `<conditionExpression>` is modeled as `BpmnSequenceFlow.ConditionExpression`:
+the `Body` exactly as authored (text and CDATA read the same), its own `Language`, and its remaining
+content (`xsi:type`, `id`, vendor attributes, documentation) retained on the expression. The
+document's `expressionLanguage` is `BpmnDefinitions.ExpressionLanguage`, copied onto every process
+and nested body as `BpmnProcessDefinition.ExpressionLanguage`. The library does not evaluate an
+expression yet (see
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)), but a
+read then write reproduces both. An expression that has a `language` but no `xsi:type` is written as
+`bpmn:tFormalExpression`, because BPMN allows a language only on a formal expression.
+
+A generated `outcome == '…'` expression is written only when the model has a `conditionOutcome` and
+no author's expression, typically for a process built in code. That generated predicate is consumed
+on the next read rather than modeled, so changing or clearing the outcome does not leave a stale
 expression.
 
 What the writer does not do is reproduce the source byte for byte.

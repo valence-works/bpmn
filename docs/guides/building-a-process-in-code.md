@@ -51,7 +51,10 @@ do not check that the graph hangs together; that is the graph builder's job. See
 A sequence flow is conditional when it carries a `conditionOutcome`. The flow is taken when the
 source element's completed work reported that outcome name. The library evaluates no expressions:
 outcomes are strings the host supplies on completion. See
-[Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
+[Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). A flow can also
+carry a BPMN `ConditionExpression`, set with an initializer, which the writer emits as a
+`<conditionExpression>`. The interpreter does not evaluate it yet: see
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
 
 ```csharp
 var elements = new List<BpmnElement>
