@@ -18,7 +18,8 @@ An error is declared at the document root and identified by a code:
 ```
 
 In the model, that is a `BpmnErrorDeclaration` with `Id`, `Name` and `ErrorCode`. The code is what
-matching happens on — not the id, not the name.
+matching happens on, never the name. From 0.4.0 an `<error>` without an `errorCode` uses its `id` as
+the code ([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)).
 
 A host reports that work failed; it does not name the error:
 

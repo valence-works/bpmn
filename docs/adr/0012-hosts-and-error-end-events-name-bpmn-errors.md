@@ -117,7 +117,8 @@ already true of work faults and of escalation. When a child scope ends with a `F
 for an embedded subprocess, or as `BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for
 a call activity. The parent then runs the same ladder.
 
-The reference host, `Bpmn.Runtime.InMemory`, does exactly this, so the behavior is tested end to end.
+The reference host, `Bpmn.Runtime.InMemory`, will do exactly this in the interpreter step (#66), so the
+behavior is tested end to end. It does not pass codes through yet.
 No new command or capability is needed. A fault is a verdict, not a command (ADR 0003), and the host
 already acts on that verdict.
 
