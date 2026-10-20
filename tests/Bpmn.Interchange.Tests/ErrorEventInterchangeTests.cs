@@ -220,4 +220,67 @@ public sealed class ErrorEventInterchangeTests
             ErrorRefOf(Element(reread, elementId)).ShouldBe(ErrorRefOf(Element(read, elementId)), elementId);
         }
     }
+
+    [Fact]
+    public void Codes_that_sanitize_to_the_same_id_get_distinct_declarations()
+    {
+        // Both codes become error-A-B once the characters an id cannot hold are replaced. Sharing that id would
+        // leave two declarations under one id, and both throwers would reread with the first one's code.
+        var process = new BpmnProcessBuilder("P")
+            .StartEvent("Start")
+            .ExclusiveGateway("Check")
+            .EndEvent("FailedDot", null, Coded("A.B"))
+            .EndEvent("FailedSlash", null, Coded("A/B"))
+            .Connect("Start", "Check")
+            .Connect("Check", "FailedDot")
+            .Connect("Check", "FailedSlash")
+            .Build();
+
+        var written = _writer.Write(new BpmnDefinitionsBuilder().Process(process).Build());
+        var reread = _reader.Read(written);
+
+        CodeOf(Element(reread, "FailedDot")).ShouldBe("A.B");
+        CodeOf(Element(reread, "FailedSlash")).ShouldBe("A/B");
+        ErrorRefOf(Element(reread, "FailedDot")).ShouldNotBe(ErrorRefOf(Element(reread, "FailedSlash")));
+        DeclaredErrorIds(written).ShouldBeUnique();
+        _writer.Write(reread).ShouldBe(written);
+    }
+
+    [Fact]
+    public void A_generated_error_id_does_not_take_an_id_the_document_already_uses()
+    {
+        // error-A-B is already a declaration for another code, and the recorded ref error-A-C names an error the
+        // write has to declare; the generated ids for A.B and A.C must step around both.
+        var process = new BpmnProcessBuilder("P")
+            .StartEvent("Start")
+            .ExclusiveGateway("Check")
+            .EndEvent("FailedAB", null, Coded("A.B"))
+            .EndEvent("FailedAC", null, Coded("A.C"))
+            .Element(new BpmnElement("FailedRecorded", BpmnElementTypes.EndEvent, eventDefinitions: [Coded("RECORDED")],
+                properties: new Dictionary<string, string> { [BpmnXmlReader.ErrorRefPropertyKey] = "error-A-C" }))
+            .Connect("Start", "Check")
+            .Connect("Check", "FailedAB")
+            .Connect("Check", "FailedAC")
+            .Connect("Check", "FailedRecorded")
+            .Build();
+        var definitions = new BpmnDefinitionsBuilder()
+            .Process(process)
+            .Error("error-A-B", null, "OTHER")
+            .Build();
+
+        var written = _writer.Write(definitions);
+        var reread = _reader.Read(written);
+
+        CodeOf(Element(reread, "FailedAB")).ShouldBe("A.B");
+        CodeOf(Element(reread, "FailedAC")).ShouldBe("A.C");
+        CodeOf(Element(reread, "FailedRecorded")).ShouldBe("RECORDED");
+        ErrorRefOf(Element(reread, "FailedRecorded")).ShouldBe("error-A-C");
+        DeclaredErrorIds(written).ShouldBeUnique();
+    }
+
+    private static BpmnEventDefinition Coded(string code) =>
+        new(BpmnEventDefinitionTypes.Error, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Code] = code });
+
+    private static IReadOnlyList<string?> DeclaredErrorIds(string written) =>
+        XDocument.Parse(written).Root!.Elements(Model + "error").Select(error => (string?)error.Attribute("id")).ToArray();
 }

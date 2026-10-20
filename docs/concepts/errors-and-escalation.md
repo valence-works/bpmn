@@ -18,7 +18,7 @@ An error is declared at the document root and identified by a code:
 ```
 
 In the model, that is a `BpmnErrorDeclaration` with `Id`, `Name` and `ErrorCode`. The code is what
-matching happens on — not the id, not the name. An `<error>` that declares no `errorCode` is identified
+identifies an error — not the id, not the name. An `<error>` that declares no `errorCode` is identified
 by its `id`, which then serves as its code.
 
 An event names an error by `errorRef`. The reader resolves that ref to the error's code and records it
@@ -33,9 +33,14 @@ interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     { FaultedIterationId = work.IterationId });   // null unless a multi-instance instance failed
 ```
 
-Which error a catcher matches is a property of the model, not of the report. An error boundary event
-declares the code it catches, and a code-less one catches anything. The host supplies a
-human-readable message; BPMN supplies the matching.
+Which catcher handles a failure is a property of the model, not of the report. The host supplies a
+human-readable message; BPMN supplies the routing.
+
+A catcher's code is recorded, not yet matched on. An error boundary event or error event subprocess
+that declares a code reports it in `Caught.ErrorCode` when it catches, but selection does not narrow
+on it: today every error catcher catches any failure, which is why a host carries at most one error
+boundary and a scope at most one error event subprocess. Matching a failure against the code a
+catcher declares is planned (#66).
 
 ### Error boundary events are always interrupting
 
@@ -47,9 +52,11 @@ the model documents it as fixed. There is no such thing as a non-interrupting er
 and there is no coherent meaning for one: the activity has failed, so there is nothing left to
 continue alongside.
 
-An error boundary event with no code matches **any** error. A boundary event with a code matches only
-that code. Leaving the code off is a catch-all, and like every catch-all it is occasionally what you
-want and usually not.
+An error boundary event with no code is a catch-all: it catches **any** error, and reports a null
+code. A boundary event with a code reports that code when it catches, but it still catches any error
+for now; narrowing it to only that code arrives with error-code matching (#66). Declaring the code
+today keeps the model honest about what the boundary is for, so its meaning does not change when
+matching lands.
 
 ### Error start events in event subprocesses
 
@@ -73,6 +80,12 @@ trip. One without an `errorRef` throws an error with no code.
 The interpreter does not execute it yet. `BpmnGraph.Build` refuses a definition that contains one,
 because the only other reading is a plain end event, which would complete a scope the document says has
 failed. Until it does, raise the error by faulting the bound work.
+
+The refusal covers subprocess bodies too, so it comes before anything runs rather than when a token
+first reaches the subprocess. `BpmnGraph.Build` checks every body the bound work carries in
+`NestedProcess`, embedded or event subprocess. Bodies nested deeper are resolved by your host, so your
+host refuses those by building each one before it runs the root, as the reference host does. See
+[Hosting the interpreter](../guides/hosting-the-interpreter.md).
 
 ### Propagation
 

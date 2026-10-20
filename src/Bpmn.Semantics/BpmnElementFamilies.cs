@@ -275,14 +275,26 @@ public static class BpmnElementFamilies
             // An error end event is read and written with its error, but nothing executes it yet. Running it as
             // a plain end event would complete a scope the document says has failed, so it is refused instead.
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Error))
-                throw new BpmnExecutionException(
-                    $"BPMN error end event '{element.ElementId}' throws {DescribeError(element.EventDefinitions.Single())}, but error end events are not executable yet; "
-                    + "the definition is refused rather than run with the event as a plain end event. Fault the bound work to raise the error instead.");
+                throw ErrorEndEventRefusal(element);
         }
 
         throw new BpmnExecutionException(
             $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, and message end events are supported.");
     }
+
+    /// <summary>True when <paramref name="element"/> is an end event that throws an error, which nothing executes yet.</summary>
+    internal static bool IsErrorEndEvent(BpmnElement element) =>
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) &&
+        element.EventDefinitions.Count == 1 &&
+        StringComparer.Ordinal.Equals(element.EventDefinitions.Single().Type, BpmnEventDefinitionTypes.Error);
+
+    /// <summary>
+    /// The refusal for an error end event. <paramref name="enclosingElementId"/> names the element whose body
+    /// declares it, when the event was found in a nested body rather than in the definition being built.
+    /// </summary>
+    internal static BpmnExecutionException ErrorEndEventRefusal(BpmnElement element, string? enclosingElementId = null) =>
+        new($"BPMN error end event '{element.ElementId}'{(enclosingElementId is null ? "" : $" in the body of '{enclosingElementId}'")} throws {DescribeError(element.EventDefinitions.Single())}, but error end events are not executable yet; "
+            + "the definition is refused rather than run with the event as a plain end event. Fault the bound work to raise the error instead.");
 
     private static string DescribeError(BpmnEventDefinition definition) =>
         definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code)

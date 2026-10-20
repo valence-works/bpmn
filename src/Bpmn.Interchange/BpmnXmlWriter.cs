@@ -860,6 +860,7 @@ public sealed class BpmnXmlWriter
         private readonly Dictionary<string, string> _signalIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _errorIdByCode = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _takenErrorIds = new(StringComparer.Ordinal);
         private readonly List<SynthesizedDeclaration> _synthesized = [];
 
         public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, BpmnVendorNames vendor)
@@ -886,6 +887,17 @@ public sealed class BpmnXmlWriter
             // An <error> without an errorCode is matched on its id, so the id is its code here too.
             foreach (var error in definitions.Errors)
                 _errorIdByCode.TryAdd((error.ErrorCode ?? error.Id).Trim(), error.Id);
+
+            // A generated error id has to step around every id the document already gives a declaration, and
+            // around each recorded errorRef, which keeps its own id whenever the loop below reaches it.
+            _takenErrorIds.UnionWith(definitions.Messages.Select(message => message.Id));
+            _takenErrorIds.UnionWith(definitions.Signals.Select(signal => signal.Id));
+            _takenErrorIds.UnionWith(definitions.Escalations.Select(escalation => escalation.Id));
+            _takenErrorIds.UnionWith(definitions.Errors.Select(error => error.Id));
+            foreach (var process in AllProcesses(definitions))
+                foreach (var element in process.Elements)
+                    if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var recordedRef) && !string.IsNullOrWhiteSpace(recordedRef))
+                        _takenErrorIds.Add(recordedRef.Trim());
 
             var declaredErrorIds = definitions.Errors.Select(error => error.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var process in AllProcesses(definitions))
@@ -1016,10 +1028,18 @@ public sealed class BpmnXmlWriter
                 EnsureError(code, name);
         }
 
+        /// <summary>
+        /// The declaration for <paramref name="code"/>, synthesized when none exists. Sanitizing is lossy, so two
+        /// codes such as <c>A.B</c> and <c>A/B</c> share a stem; a numeric suffix keeps the second id distinct,
+        /// and the order the model is walked in decides which gets it, so the same model writes the same ids.
+        /// </summary>
         private string EnsureError(string code, string? name)
         {
             if (_errorIdByCode.TryGetValue(code, out var id)) return id;
-            id = $"error-{SanitizeId(code)}";
+            var stem = $"error-{SanitizeId(code)}";
+            id = stem;
+            for (var suffix = 2; !_takenErrorIds.Add(id); suffix++)
+                id = $"{stem}-{suffix}";
             _errorIdByCode[code] = id;
             _synthesized.Add(new SynthesizedDeclaration("error", id, string.IsNullOrWhiteSpace(name) ? null : name.Trim(), "errorCode", code));
             return id;

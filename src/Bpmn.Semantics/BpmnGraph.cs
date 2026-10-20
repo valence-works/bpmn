@@ -87,6 +87,12 @@ public sealed class BpmnGraph
     /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, including one with
     /// a cycle that can never wait, and <see cref="BpmnCapabilityException"/> when the definition needs a host
     /// capability <paramref name="capabilities"/> does not declare.
+    /// <para>
+    /// A nested body is built on its own, when its subprocess starts. What a body cannot run should still be refused
+    /// before the root runs, so this also refuses an error end event in any body <paramref name="boundWork"/>
+    /// carries in <see cref="BpmnBoundWork.NestedProcess"/>. Bodies nested deeper are resolved by the host, not
+    /// carried here: a host that runs them should build each one before it runs the root.
+    /// </para>
     /// </summary>
     /// <param name="definition">The process to execute.</param>
     /// <param name="boundWork">
@@ -117,6 +123,7 @@ public sealed class BpmnGraph
         var variableNames = definition.Variables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
+        RefuseErrorEndEventsInCarriedBodies(elements, boundWorkByRef);
 
         var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
         graph.RefuseCyclesThatCannotWait();
@@ -628,6 +635,27 @@ public sealed class BpmnGraph
         // wait, and that needs the built graph: see RefuseCyclesThatCannotWait.
 
         return eventSubprocesses;
+    }
+
+    /// <summary>
+    /// Refuses an error end event in a body this definition's bound work carries, embedded or event subprocess
+    /// alike. A body's own graph is built only when its subprocess starts, so without this the refusal would surface
+    /// mid-run, after earlier work had already happened. A body carries no bound work of its own, so the bodies
+    /// nested inside it are not visible here: the host resolves those, and must build each one before running the
+    /// root to refuse them up front too.
+    /// </summary>
+    private static void RefuseErrorEndEventsInCarriedBodies(
+        IReadOnlyCollection<BpmnElement> elements,
+        IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef)
+    {
+        foreach (var element in elements)
+        {
+            if (element.BindingRef is null || boundWorkByRef[element.BindingRef].NestedProcess is not { } body)
+                continue;
+
+            if (body.Elements.FirstOrDefault(BpmnElementFamilies.IsErrorEndEvent) is { } thrower)
+                throw BpmnElementFamilies.ErrorEndEventRefusal(thrower, element.ElementId);
+        }
     }
 
     /// <summary>
@@ -1238,7 +1266,8 @@ public sealed record BpmnEventSubprocessCatcher(
 /// <param name="NestedProcess">
 /// The process definition this work runs, when the work is a nested BPMN process. Required for an event
 /// subprocess body, whose start-event trigger the graph validator reads; <c>null</c> for every other kind of
-/// work, including subprocesses whose body the host resolves on its own.
+/// work, including subprocesses whose body the host resolves on its own. A body carried here is checked when the
+/// enclosing graph builds; one the host resolves on its own is checked only when the host builds it.
 /// </param>
 public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null)
 {

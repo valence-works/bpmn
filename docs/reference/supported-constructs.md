@@ -73,7 +73,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
-| **Error** | Read, not executed | Read and written with its error: the code its `errorRef` resolves to, or no code when it has no ref. `BpmnGraph.Build` **refuses** a definition containing one, because running it as a plain end event would complete a scope the document says has failed. Raise an error by faulting the bound work instead. |
+| **Error** | Read, not executed | Read and written with its error: the code its `errorRef` resolves to, or no code when it has no ref. `BpmnGraph.Build` **refuses** a definition containing one, including in a subprocess body its bound work carries, because running it as a plain end event would complete a scope the document says has failed. A host refuses deeper bodies by building them before the root runs. Raise an error by faulting the bound work instead. |
 | Signal, conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
 
 ### Intermediate events

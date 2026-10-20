@@ -78,6 +78,18 @@ var boundWork = result.Bindings
 `BpmnCapabilityException` when the definition needs a capability you did not declare — see
 [Host capabilities](../concepts/capabilities.md).
 
+#### Nested bodies
+
+Each subprocess body runs as its own scope with its own graph, which you build when the subprocess
+starts. A body that cannot run would then be refused mid-run, after earlier work has already happened.
+`Build` prevents that for the bodies it can see: it refuses an error end event, which nothing executes
+yet, in any body your bound work carries in `NestedProcess`.
+
+A body carries no bound work of its own, so the bodies nested inside it, at any depth, are visible only
+to you. Build the graph of every body the root can reach before you run the root, and discard or cache
+the result: the refusal then reaches the caller up front, wherever the body sits. The reference host,
+`InMemoryBpmnHost`, does this whenever it starts a root.
+
 #### Recurring timer starts
 
 Graph construction refuses a timer start unless it declares exactly one nonblank `interval` or
