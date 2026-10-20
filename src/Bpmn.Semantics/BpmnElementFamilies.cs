@@ -272,11 +272,22 @@ public static class BpmnElementFamilies
                 return EndEventEscalation;
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Message))
                 return EndEventMessage;
+            // An error end event is read and written with its error, but nothing executes it yet. Running it as
+            // a plain end event would complete a scope the document says has failed, so it is refused instead.
+            if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Error))
+                throw new BpmnExecutionException(
+                    $"BPMN error end event '{element.ElementId}' throws {DescribeError(element.EventDefinitions.Single())}, but error end events are not executable yet; "
+                    + "the definition is refused rather than run with the event as a plain end event. Fault the bound work to raise the error instead.");
         }
 
         throw new BpmnExecutionException(
             $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, and message end events are supported.");
     }
+
+    private static string DescribeError(BpmnEventDefinition definition) =>
+        definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code)
+            ? $"error code '{code.Trim()}'"
+            : "an error with no code";
 
     /// <summary>
     /// Resolves an intermediate throw event. Exactly one

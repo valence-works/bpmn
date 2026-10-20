@@ -320,6 +320,8 @@ public sealed class BpmnXmlWriter
             endEvent.Add(new XElement(BpmnXmlNames.Model + "cancelEventDefinition"));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Escalation) is { } escalation)
             endEvent.Add(BuildEscalationEventDefinition(escalation, context));
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Error) is { } error)
+            endEvent.Add(BuildErrorEventDefinition(element, error, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(endEvent, element, message, context, isCatch: false);
         return endEvent;
@@ -344,6 +346,21 @@ public sealed class BpmnXmlWriter
         if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code))
             escalation.SetAttributeValue("escalationRef", context.EscalationDeclarationId(code.Trim()));
         return escalation;
+    }
+
+    /// <summary>
+    /// An <c>&lt;errorEventDefinition&gt;</c>. The <c>errorRef</c> a read recorded on the element wins, so an
+    /// author's declaration ids survive; a model built in code that carries only a code points at the root
+    /// declaration for that code. Ref-less when there is neither: a catch-all catcher or an uncoded throw.
+    /// </summary>
+    private static XElement BuildErrorEventDefinition(BpmnElement element, BpmnEventDefinition definition, WriteContext context)
+    {
+        var error = new XElement(BpmnXmlNames.Model + "errorEventDefinition");
+        if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
+            error.SetAttributeValue("errorRef", errorRef.Trim());
+        else if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code))
+            error.SetAttributeValue("errorRef", context.ErrorDeclarationId(code.Trim()));
+        return error;
     }
 
     private static XElement BuildCompensateEventDefinition(BpmnEventDefinition definition)
@@ -372,7 +389,7 @@ public sealed class BpmnXmlWriter
             }
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
             {
-                xmlElement.Add(new XElement(BpmnXmlNames.Model + "errorEventDefinition"));
+                xmlElement.Add(BuildErrorEventDefinition(element, definition, context));
                 if (!element.CancelActivity) xmlElement.SetAttributeValue("isInterrupting", "false");
             }
             else if (isEventSubprocessBodyStart)
@@ -404,12 +421,7 @@ public sealed class BpmnXmlWriter
         if (element.EventDefinitions.FirstOrDefault() is { } definition)
         {
             if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
-            {
-                var error = new XElement(BpmnXmlNames.Model + "errorEventDefinition");
-                if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
-                    error.SetAttributeValue("errorRef", errorRef.Trim());
-                boundary.Add(error);
-            }
+                boundary.Add(BuildErrorEventDefinition(element, definition, context));
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Escalation))
                 boundary.Add(BuildEscalationEventDefinition(definition, context));
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Compensation))
@@ -847,6 +859,7 @@ public sealed class BpmnXmlWriter
         private readonly Dictionary<string, string> _messageIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _signalIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _errorIdByCode = new(StringComparer.Ordinal);
         private readonly List<SynthesizedDeclaration> _synthesized = [];
 
         public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, BpmnVendorNames vendor)
@@ -870,6 +883,10 @@ public sealed class BpmnXmlWriter
                 _escalationIdByCode.TryAdd(code.Trim(), escalation.Id);
             }
 
+            // An <error> without an errorCode is matched on its id, so the id is its code here too.
+            foreach (var error in definitions.Errors)
+                _errorIdByCode.TryAdd((error.ErrorCode ?? error.Id).Trim(), error.Id);
+
             var declaredErrorIds = definitions.Errors.Select(error => error.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var process in AllProcesses(definitions))
                 foreach (var element in process.Elements)
@@ -890,9 +907,8 @@ public sealed class BpmnXmlWriter
                     if (element.Properties.TryGetValue(BpmnXmlReader.MessageNamePropertyKey, out var taskMessage) && !string.IsNullOrWhiteSpace(taskMessage))
                         EnsureMessage(taskMessage.Trim());
 
-                    if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef)
-                        && !string.IsNullOrWhiteSpace(errorRef) && declaredErrorIds.Add(errorRef.Trim()))
-                        _synthesized.Add(new SynthesizedDeclaration("error", errorRef.Trim(), null, null, null));
+                    if (element.EventDefinitions.FirstOrDefault(definition => StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error)) is { } errorDefinition)
+                        DeclareError(element, errorDefinition, declaredErrorIds);
                 }
 
             foreach (var flow in definitions.Collaboration?.MessageFlows ?? [])
@@ -934,6 +950,7 @@ public sealed class BpmnXmlWriter
         public string MessageDeclarationId(string name) => EnsureMessage(name.Trim());
         public string SignalDeclarationId(string name) => EnsureSignal(name.Trim());
         public string EscalationDeclarationId(string code) => EnsureEscalation(code.Trim(), null);
+        public string ErrorDeclarationId(string code) => EnsureError(code.Trim(), null);
 
         /// <summary>Every process in the document, top-level first and each subprocess body after its parent.</summary>
         public IEnumerable<BpmnProcessDefinition> AllProcesses(BpmnDefinitions definitions)
@@ -970,6 +987,41 @@ public sealed class BpmnXmlWriter
             id = $"signal-{SanitizeId(name)}";
             _signalIdByName[name] = id;
             _synthesized.Add(new SynthesizedDeclaration("signal", id, name, null, null));
+            return id;
+        }
+
+        /// <summary>
+        /// Makes sure the <c>&lt;error&gt;</c> an error event definition will point at exists. A recorded
+        /// <c>errorRef</c> naming no declaration gets one with that id, carrying the definition's code when it
+        /// differs from the id (an id is its own code). A definition with only a code gets the declaration for
+        /// that code.
+        /// </summary>
+        private void DeclareError(BpmnElement element, BpmnEventDefinition definition, HashSet<string> declaredErrorIds)
+        {
+            var code = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var codeValue) && !string.IsNullOrWhiteSpace(codeValue) ? codeValue.Trim() : null;
+            var name = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var nameValue) && !string.IsNullOrWhiteSpace(nameValue) ? nameValue.Trim() : null;
+            if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
+            {
+                var id = errorRef.Trim();
+                if (declaredErrorIds.Add(id))
+                {
+                    var declaredCode = code is not null && !StringComparer.Ordinal.Equals(code, id) ? code : null;
+                    _synthesized.Add(new SynthesizedDeclaration("error", id, name, "errorCode", declaredCode));
+                    _errorIdByCode.TryAdd(code ?? id, id);
+                }
+                return;
+            }
+
+            if (code is not null)
+                EnsureError(code, name);
+        }
+
+        private string EnsureError(string code, string? name)
+        {
+            if (_errorIdByCode.TryGetValue(code, out var id)) return id;
+            id = $"error-{SanitizeId(code)}";
+            _errorIdByCode[code] = id;
+            _synthesized.Add(new SynthesizedDeclaration("error", id, string.IsNullOrWhiteSpace(name) ? null : name.Trim(), "errorCode", code));
             return id;
         }
 

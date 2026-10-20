@@ -58,7 +58,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | None (plain) | Supported | |
 | Message, signal | Supported | Matched on the resolved message or signal **name**. An unresolvable `messageRef` / `signalRef` degrades to a plain start. |
 | Timer | Supported | Must be a **recurring schedule**: exactly one nonblank ISO-8601 `interval` or `cron` expression. Graph build rejects a missing or ambiguous choice; `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts. A timer start that is not recurring degrades on import. |
-| Error (event subprocess body only) | Supported | An error-triggered event subprocess. |
+| Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code the subprocess reports when it catches; selection does not yet narrow on it. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |
 | Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. |
@@ -73,7 +73,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
-| **Error** | Degraded | There is no error end event. It reads as a plain end event with a finding. Raise an error by faulting the bound work instead. |
+| **Error** | Read, not executed | Read and written with its error: the code its `errorRef` resolves to, or no code when it has no ref. `BpmnGraph.Build` **refuses** a definition containing one, because running it as a plain end event would complete a scope the document says has failed. Raise an error by faulting the bound work instead. |
 | Signal, conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
 
 ### Intermediate events
@@ -94,7 +94,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | Interrupting (`cancelActivity: true`) | Supported | The BPMN default. Terminates the host activity and routes the boundary path. |
 | Non-interrupting (`cancelActivity: false`) | Supported | The boundary path runs alongside the still-running activity. |
-| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. A boundary with no code catches any error. |
+| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. Its `errorRef` resolves to the code it reports when it catches. Every error boundary currently catches any error; one with no code is the catch-all. |
 | Escalation | Supported | May be non-interrupting. A code-less boundary is the catch-all; a second code-less one on the same host, or a duplicate code, is dropped. |
 | Timer | Supported | Requires a one-shot `<timeDuration>`; without one it is dropped. |
 | Message, signal | Supported | Dropped when the name cannot be resolved. |
@@ -168,7 +168,7 @@ graph-build time.
 | Construct | Status | Notes |
 | --- | --- | --- |
 | `<definitions>` metadata | Supported | Id, target namespace, exporter, exporter version. |
-| Root `<message>`, `<signal>`, `<error>`, `<escalation>` | Supported | Matching is on the **name** for messages and signals, and on the **code** for errors and escalations. |
+| Root `<message>`, `<signal>`, `<error>`, `<escalation>` | Supported | Matching is on the **name** for messages and signals, and on the **code** for errors and escalations. An `<error>` without an `errorCode` is identified by its `id`. |
 | `<documentation>` | Supported | Retained, with `textFormat`. |
 | `extensionElements` (any vendor) | Supported | `camunda:*`, `zeebe:*`, `flowable:*` and anything else are retained verbatim as data and written back at their recorded position. |
 | Foreign attributes | Supported | Retained with their qualified names. |

@@ -18,7 +18,12 @@ An error is declared at the document root and identified by a code:
 ```
 
 In the model, that is a `BpmnErrorDeclaration` with `Id`, `Name` and `ErrorCode`. The code is what
-matching happens on — not the id, not the name.
+matching happens on — not the id, not the name. An `<error>` that declares no `errorCode` is identified
+by its `id`, which then serves as its code.
+
+An event names an error by `errorRef`. The reader resolves that ref to the error's code and records it
+on the event definition, under `BpmnEventDefinitionProperties.Code`, with the error's name under
+`BpmnEventDefinitionProperties.Name`. An event definition without a ref carries no code.
 
 A host reports that work failed; it does not name the error:
 
@@ -58,6 +63,16 @@ contains it.
 Error-triggered event subprocesses are dormant catchers: unlike message, signal and timer triggers,
 they need no armed listener, so their `ListenerBindingRef` is null. Nothing has to be running for
 them to catch.
+
+### Error end events are read, not yet executed
+
+An error end event ends its scope by throwing an error. The reader keeps it as an end event carrying
+its error definition, and the writer writes it back, so a document that throws errors survives a round
+trip. One without an `errorRef` throws an error with no code.
+
+The interpreter does not execute it yet. `BpmnGraph.Build` refuses a definition that contains one,
+because the only other reading is a plain end event, which would complete a scope the document says has
+failed. Until it does, raise the error by faulting the bound work.
 
 ### Propagation
 

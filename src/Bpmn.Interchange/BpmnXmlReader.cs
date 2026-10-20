@@ -36,7 +36,11 @@ public sealed class BpmnXmlReader
     /// </summary>
     public const string MessageNamePropertyKey = "bpmn.messageName";
 
-    /// <summary>The element property key carrying an error event definition's <c>errorRef</c>, kept for round-trip and error-code matching.</summary>
+    /// <summary>
+    /// The element property key carrying an error event definition's <c>errorRef</c>, on an error boundary, an
+    /// error start event and an error end event. The writer emits it as the <c>errorRef</c>; the code the ref
+    /// resolves to is on the event definition, under <see cref="BpmnEventDefinitionProperties.Code"/>.
+    /// </summary>
     public const string ErrorRefPropertyKey = "bpmn.errorRef";
 
     /// <summary>The default prefix for generated binding refs.</summary>
@@ -334,6 +338,7 @@ public sealed class BpmnXmlReader
                     {
                         elements.Add(new BpmnElement(id, BpmnElementTypes.StartEvent, name: NameOf(child),
                             eventDefinitions: [ErrorDefinition(startErrorDefinition, errorDeclarations)],
+                            properties: ErrorRefProperties(startErrorDefinition),
                             cancelActivity: (bool?)child.Attribute("isInterrupting") ?? true));
                         break;
                     }
@@ -388,6 +393,15 @@ public sealed class BpmnXmlReader
                     if (child.Element(BpmnXmlNames.Model + "escalationEventDefinition") is { } escalationEndDefinition)
                     {
                         elements.Add(ResolveEscalationEnd(id, child, escalationEndDefinition, escalationDeclarations, context));
+                        break;
+                    }
+                    // An error end event keeps its error. Unlike an escalation end, a ref-less one is not
+                    // degraded: it throws an error with no code, which only a catch-all catches.
+                    if (child.Element(BpmnXmlNames.Model + "errorEventDefinition") is { } errorEndDefinition)
+                    {
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(child),
+                            eventDefinitions: [ErrorDefinition(errorEndDefinition, errorDeclarations)],
+                            properties: ErrorRefProperties(errorEndDefinition)));
                         break;
                     }
                     // A message end event publishes and then ends. A message it cannot name degrades to a
@@ -948,12 +962,30 @@ public sealed class BpmnXmlReader
     /// <summary>
     /// An error event definition carrying the code its <c>errorRef</c> resolves to, under
     /// <see cref="BpmnEventDefinitionProperties.Code"/>, which is the key the interpreter reads a catcher's code
-    /// from. A definition without a ref carries no code: a catcher without one is a catch-all.
+    /// from, and the declared error's name under <see cref="BpmnEventDefinitionProperties.Name"/>. A definition
+    /// without a ref carries no code: a catcher without one is a catch-all, and a throw without one is uncoded.
     /// </summary>
-    private static BpmnEventDefinition ErrorDefinition(XElement definition, IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations) =>
-        ResolveErrorRefCode(definition, errorDeclarations) is { } code
-            ? new BpmnEventDefinition(BpmnEventDefinitionTypes.Error, new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Code] = code })
-            : new BpmnEventDefinition(BpmnEventDefinitionTypes.Error);
+    private static BpmnEventDefinition ErrorDefinition(XElement definition, IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations)
+    {
+        if (ResolveErrorRefCode(definition, errorDeclarations) is not { } code)
+            return new BpmnEventDefinition(BpmnEventDefinitionTypes.Error);
+
+        var properties = new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Code] = code };
+        if (ErrorRefOf(definition) is { } errorRef
+            && errorDeclarations.TryGetValue(errorRef, out var declaration)
+            && !string.IsNullOrWhiteSpace(declaration.Name))
+            properties[BpmnEventDefinitionProperties.Name] = declaration.Name.Trim();
+        return new BpmnEventDefinition(BpmnEventDefinitionTypes.Error, properties);
+    }
+
+    /// <summary>The element properties recording an error event definition's <c>errorRef</c> for the writer, or <c>null</c> when it has none.</summary>
+    private static IReadOnlyDictionary<string, string>? ErrorRefProperties(XElement definition) =>
+        ErrorRefOf(definition) is { } errorRef
+            ? new Dictionary<string, string>(StringComparer.Ordinal) { [ErrorRefPropertyKey] = errorRef }
+            : null;
+
+    private static string? ErrorRefOf(XElement definition) =>
+        ((string?)definition.Attribute("errorRef"))?.Trim() is { Length: > 0 } errorRef ? errorRef : null;
 
     /// <summary>
     /// The code an <c>errorRef</c> names: the referenced <c>&lt;error&gt;</c>'s <c>errorCode</c>, or its id when it
@@ -961,7 +993,7 @@ public sealed class BpmnXmlReader
     /// </summary>
     private static string? ResolveErrorRefCode(XElement definition, IReadOnlyDictionary<string, BpmnErrorDeclaration> errorDeclarations)
     {
-        if (((string?)definition.Attribute("errorRef"))?.Trim() is not { Length: > 0 } errorRef)
+        if (ErrorRefOf(definition) is not { } errorRef)
             return null;
 
         return errorDeclarations.TryGetValue(errorRef, out var declaration)
@@ -1362,12 +1394,9 @@ public sealed class BpmnXmlReader
                     return null;
                 }
 
-                var properties = new Dictionary<string, string>(StringComparer.Ordinal);
-                if (((string?)definition.Attribute("errorRef"))?.Trim() is { Length: > 0 } errorRef)
-                    properties[ErrorRefPropertyKey] = errorRef;
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element),
                     eventDefinitions: [ErrorDefinition(definition, errorDeclarations)],
-                    properties: properties.Count == 0 ? null : properties,
+                    properties: ErrorRefProperties(definition),
                     attachedToRef: attachedToRef, cancelActivity: true);
             }
             case "messageEventDefinition":

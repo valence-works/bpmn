@@ -79,4 +79,26 @@ public sealed class ErrorCodeConformanceTests
 
         faulted.ErrorDisposition.ShouldBe(new BpmnErrorDisposition.Caught(catchingElementId, expectedCode));
     }
+
+    [Fact]
+    public void An_error_end_event_read_from_a_document_never_runs_as_a_plain_end_event()
+    {
+        var imported = _reader.Read($"""
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs" targetNamespace="http://example.test/errors">
+              {Declarations}
+              <bpmn:process id="P" isExecutable="true">
+                <bpmn:startEvent id="Start" />
+                <bpmn:endEvent id="Failed"><bpmn:errorEventDefinition errorRef="Error_Credit" /></bpmn:endEvent>
+                <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Failed" />
+              </bpmn:process>
+            </bpmn:definitions>
+            """);
+        var definition = imported.Definitions.Processes.Single();
+
+        var refusal = Should.Throw<BpmnExecutionException>(() =>
+            BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.Full));
+
+        refusal.Message.ShouldContain("'Failed'");
+        refusal.Message.ShouldContain("'CREDIT_DECLINED'");
+    }
 }
