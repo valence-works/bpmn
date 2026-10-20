@@ -9,8 +9,8 @@ namespace Bpmn.Interchange.Tests;
 /// <summary>
 /// <c>&lt;conditionExpression&gt;</c> and <c>definitions/@expressionLanguage</c> are modeled, not retained
 /// as foreign XML (ADR 0011). These tests hold the reader and writer to a lossless round trip of both, at
-/// every nesting depth, and to the rule that an expression-only flow is never silently unconditional
-/// while the interpreter does not evaluate it.
+/// every nesting depth. An expression-only flow reads without a finding: whether a host can evaluate it is
+/// a capability graph build checks.
 /// </summary>
 public sealed class ConditionExpressionTests
 {
@@ -218,19 +218,14 @@ public sealed class ConditionExpressionTests
     }
 
     [Fact]
-    public void An_expression_only_flow_still_reports_that_it_reads_as_unconditional()
+    public void An_expression_only_flow_reads_without_a_finding()
     {
-        // The interpreter does not evaluate expressions yet, so modeling one must not make the
-        // unconditional routing silent. The finding stays until evaluation replaces it (ADR 0011).
+        // An expression condition is a supported construct: the host evaluates it, and a host that cannot is
+        // refused at graph build by the ConditionEvaluation capability, not warned at import (ADR 0011).
         var read = _reader.Read(Document);
 
-        foreach (var flowId in new[] { "toApprove", "toBatch", "toBatchSmall", "toBatchLarge" })
-            read.Analysis.Issues.ShouldContain(issue =>
-                issue.Severity == BpmnImportIssueSeverity.Degraded
-                && issue.ElementId == flowId
-                && issue.Message.Contains("unconditional", StringComparison.Ordinal));
-
-        read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "toManual");
+        foreach (var flowId in new[] { "toApprove", "toBatch", "toBatchSmall", "toBatchLarge", "toManual" })
+            read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == flowId);
     }
 
     [Fact]

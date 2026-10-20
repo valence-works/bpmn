@@ -577,12 +577,9 @@ public sealed class BpmnXmlReader
                     if (sourceExpressions.Length > 1)
                         context.Report(BpmnImportIssueSeverity.Dropped, $"Sequence flow '{id}' declares {sourceExpressions.Length} conditionExpression elements; BPMN allows at most one, so {(authoredExpression is null ? "the outcome predicate was kept" : "the first author's expression was read")} and the rest were dropped.", id);
 
-                    // The interpreter does not evaluate expressions yet (ADR 0011), so an expression-only
-                    // flow still routes as unconditional. Modeling the expression must not make that silent:
-                    // the finding stays until evaluation lands and replaces it with a capability refusal.
-                    if (conditionOutcome is null && conditionExpression is not null)
-                        context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Body.Trim()}'); expression conditions are not evaluated yet, so the flow read as unconditional.", id);
-
+                    // An expression-only flow is a supported construct: the host evaluates it through the
+                    // condition port (ADR 0011). Whether a host can is a capability, which graph build checks
+                    // and refuses, so the read reports nothing about it.
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
                         extensions: context.Capture(child, grandchild => BpmnGeneratedCondition.IsModelElement(grandchild.Name)))
                     {

@@ -727,10 +727,7 @@ public sealed class RoundTripTests
         var (first, firstXml, second, secondXml) = RoundTrip(ConditionalDocument);
 
         Process(first).SequenceFlows.Single(flow => flow.FlowId == "toReject").ConditionOutcome.ShouldBeNull();
-        first.Analysis.Issues.ShouldContain(issue =>
-            issue.Severity == BpmnImportIssueSeverity.Degraded
-            && issue.ElementId == "toReject"
-            && issue.Message.Contains("amount >= 1000", StringComparison.Ordinal));
+        first.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "toReject");
 
         foreach (var generation in new[] { first, second })
         {
