@@ -133,9 +133,9 @@ new kinds are an additive revision of the execution-state payload format
 
 The decision ships in two steps after this record. The interchange step comes first. It resolves an
 `errorRef` to its code on the event definition, keeps error end events in the model and writes them
-back, and fixes `Caught.ErrorCode`, which was always `null` for a document read from XML. Until the
-interpreter step lands, `BpmnGraph.Build` refuses a definition containing an error end event, so it
-never runs as a plain end event. The interpreter step then adds the request and fault fields, strict
+back, and fixes `Caught.ErrorCode`, which was always `null` for a document read from XML. From the
+interchange step until the interpreter step lands, `BpmnGraph.Build` refuses a definition containing an
+error end event, so it never runs as a plain end event. The interpreter step then adds the request and fault fields, strict
 matching, the ladder, `ThrowError`, the diagnostics, the cardinality change, and the reference host's
 pass-through.
 
