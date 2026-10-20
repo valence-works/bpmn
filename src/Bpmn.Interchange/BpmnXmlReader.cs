@@ -549,9 +549,16 @@ public sealed class BpmnXmlReader
                     // The predicate this writer itself emits for a conditionOutcome is consumed and not
                     // modeled, so a later edit of that outcome cannot leave a stale expression. An author's
                     // expression is read into the model, with everything else on it retained.
-                    var authored = child.Elements(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName)
-                        .FirstOrDefault(candidate => !BpmnGeneratedCondition.IsLibraryGenerated(candidate, conditionOutcome));
-                    var conditionExpression = authored is null ? null : context.CaptureConditionExpression(authored);
+                    var authoredExpressions = child.Elements(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName)
+                        .Where(candidate => !BpmnGeneratedCondition.IsLibraryGenerated(candidate, conditionOutcome))
+                        .ToArray();
+                    var conditionExpression = authoredExpressions.Length == 0 ? null : context.CaptureConditionExpression(authoredExpressions[0]);
+
+                    // BPMN allows at most one conditionExpression on a flow. The first is modeled; the rest have
+                    // nowhere to go in the model, so they are dropped and said to be, rather than retained for the
+                    // writer, which emits one expression per flow, to discard without a word.
+                    if (authoredExpressions.Length > 1)
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Sequence flow '{id}' declares {authoredExpressions.Length} conditionExpression elements; BPMN allows at most one, so the first was read and the rest were dropped.", id);
 
                     // The interpreter does not evaluate expressions yet (ADR 0011), so an expression-only
                     // flow still routes as unconditional. Modeling the expression must not make that silent:
@@ -560,8 +567,7 @@ public sealed class BpmnXmlReader
                         context.Report(BpmnImportIssueSeverity.Degraded, $"Sequence flow '{id}' carries an expression condition ('{conditionExpression.Body.Trim()}'); expression conditions are not evaluated yet, so the flow read as unconditional.", id);
 
                     flows.Add(new BpmnSequenceFlow(id, sourceRef, targetRef, name: NameOf(child), conditionOutcome: conditionOutcome,
-                        extensions: context.Capture(child, grandchild =>
-                            BpmnGeneratedCondition.IsLibraryGenerated(grandchild, conditionOutcome) || ReferenceEquals(grandchild, authored)))
+                        extensions: context.Capture(child, grandchild => BpmnGeneratedCondition.IsModelElement(grandchild.Name)))
                     {
                         ConditionExpression = conditionExpression
                     });

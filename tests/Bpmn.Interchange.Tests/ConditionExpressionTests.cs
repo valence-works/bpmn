@@ -79,6 +79,32 @@ public sealed class ConditionExpressionTests
 
     private static BpmnProcessDefinition Process(BpmnImportResult result) => result.Definitions.Processes.Single();
 
+    /// <summary>
+    /// The semantic model a read produced, in the payload format: every process with its flows and their
+    /// expressions, the document's expression language, and the bindings. Two reads that serialize the
+    /// same are the same model, which is the round-trip check the guide recommends. Diagrams and root
+    /// metadata are left out because a write synthesizes layout and a target namespace a hand-written
+    /// source may not carry.
+    /// </summary>
+    private static string Model(BpmnImportResult result) =>
+        JsonSerializer.Serialize(result.Definitions.Processes)
+        + result.Definitions.ExpressionLanguage
+        + JsonSerializer.Serialize(result.Bindings);
+
+    private static string FlowDocument(string flowContent) => $"""
+        <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:model="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                          xmlns:v="urn:vendor:expressions"
+                          id="Defs" targetNamespace="http://example.test/orders">
+          <bpmn:process id="P" isExecutable="true">
+            <bpmn:startEvent id="Start" />
+            <bpmn:endEvent id="Done" />
+            <bpmn:sequenceFlow id="F" sourceRef="Start" targetRef="Done">{flowContent}</bpmn:sequenceFlow>
+          </bpmn:process>
+        </bpmn:definitions>
+        """;
+
     private static BpmnProcessDefinition NestedBody(BpmnImportResult result, string elementId) =>
         result.Bindings.OfType<BpmnWorkBinding.NestedProcess>().Single(binding => binding.ElementId == elementId).Definition;
 
@@ -234,9 +260,11 @@ public sealed class ConditionExpressionTests
         ((string?)written.Attribute(Xsi + "type")).ShouldBe("bpmn:tFormalExpression", "BPMN allows a language only on a formal expression");
         written.Elements().ShouldBeEmpty();
 
-        var reread = Flow(Process(_reader.Read(xml)), "f1").ConditionExpression.ShouldNotBeNull();
-        reread.Body.ShouldBe("x > 1");
-        reread.Language.ShouldBe(JavaScript);
+        var reread = _reader.Read(xml);
+        Flow(Process(reread), "f1").ConditionExpression.ShouldBe(new BpmnConditionExpression("x > 1", JavaScript),
+            "the xsi:type the writer supplied is supplied again on the next write, so it is not retained");
+        var (_, _, again, _) = RoundTrip(xml);
+        Model(again).ShouldBe(Model(reread));
     }
 
     [Fact]
@@ -276,6 +304,82 @@ public sealed class ConditionExpressionTests
         var written = WrittenExpression(xml, "f1");
         ((string?)written.Attribute("language")).ShouldBe(JavaScript);
         ((string?)written.Attribute(Xsi + "type")).ShouldBe("bpmn:tFormalExpression");
+
+        // BPMN has no per-process expression language, so the read takes the document's default for the
+        // process and models the language the writer made explicit as the expression's own. The meaning
+        // is unchanged, and from that read on every read, write and read again gives the same model.
+        var (first, _, second, _) = RoundTrip(xml);
+        Process(first).ExpressionLanguage.ShouldBe(Feel);
+        Flow(Process(first), "f1").ConditionExpression.ShouldBe(new BpmnConditionExpression("x > 1", JavaScript));
+        Model(second).ShouldBe(Model(first));
+    }
+
+    [Theory]
+    [InlineData("""<bpmn:conditionExpression language="urn:js">x</bpmn:conditionExpression>""")]
+    [InlineData("""<bpmn:conditionExpression xsi:type="bpmn:tFormalExpression" language="urn:js">x</bpmn:conditionExpression>""")]
+    [InlineData("""<bpmn:conditionExpression xsi:type="model:tFormalExpression" language="urn:js">x</bpmn:conditionExpression>""")]
+    [InlineData("""<bpmn:conditionExpression language="urn:js" id="C" v:origin="imported">x</bpmn:conditionExpression>""")]
+    public void A_formal_expression_with_a_language_reads_the_same_model_after_a_write(string expression)
+    {
+        var (first, firstXml, second, _) = RoundTrip(FlowDocument(expression));
+
+        ((string?)WrittenExpression(firstXml, "F").Attribute(Xsi + "type")).ShouldBe("bpmn:tFormalExpression");
+        var modeled = Flow(Process(first), "F").ConditionExpression.ShouldNotBeNull();
+        modeled.Language.ShouldBe("urn:js");
+        Attribute(modeled, Xsi.NamespaceName, "type").ShouldBeNull("the writer supplies it for any expression with a language");
+        Model(second).ShouldBe(Model(first));
+    }
+
+    [Theory]
+    [InlineData("""<bpmn:conditionExpression xsi:type="v:Script" language="urn:js">x</bpmn:conditionExpression>""", "v:Script")]
+    [InlineData("""<bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">x</bpmn:conditionExpression>""", "bpmn:tFormalExpression")]
+    [InlineData("""<bpmn:conditionExpression xsi:type="tFormalExpression" language="urn:js">x</bpmn:conditionExpression>""", "tFormalExpression")]
+    public void An_xsi_type_the_writer_would_not_reproduce_is_retained(string expression, string type)
+    {
+        var (first, firstXml, second, _) = RoundTrip(FlowDocument(expression));
+
+        Attribute(Flow(Process(first), "F").ConditionExpression.ShouldNotBeNull(), Xsi.NamespaceName, "type").ShouldBe(type);
+        ((string?)WrittenExpression(firstXml, "F").Attribute(Xsi + "type")).ShouldBe(type);
+        Model(second).ShouldBe(Model(first));
+    }
+
+    [Fact]
+    public void A_second_condition_expression_on_one_flow_is_dropped_with_a_finding()
+    {
+        // BPMN allows at most one conditionExpression per flow. The first is modeled; the rest cannot be
+        // represented, so they are reported rather than retained for the writer to drop without a word.
+        var (first, firstXml, second, _) = RoundTrip(FlowDocument("""
+            <bpmn:conditionExpression>a</bpmn:conditionExpression>
+            <bpmn:conditionExpression>b</bpmn:conditionExpression>
+            """));
+
+        var flow = Flow(Process(first), "F");
+        flow.ConditionExpression.ShouldNotBeNull().Body.ShouldBe("a");
+        flow.Extensions.ForeignChildren.ShouldBeEmpty();
+        first.Analysis.Issues.ShouldContain(issue =>
+            issue.Severity == BpmnImportIssueSeverity.Dropped
+            && issue.ElementId == "F"
+            && issue.Message.Contains("conditionExpression", StringComparison.Ordinal));
+
+        WrittenExpression(firstXml, "F").Value.ShouldBe("a");
+        second.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+        Model(second).ShouldBe(Model(first));
+    }
+
+    [Fact]
+    public void Whitespace_inside_the_text_is_kept_and_whitespace_around_a_cdata_section_is_not()
+    {
+        // Pins the rule BpmnConditionExpression.Body documents: the reader drops whitespace-only text
+        // nodes, so indentation around a CDATA section is not part of the body.
+        var text = _reader.Read(FlowDocument("""<bpmn:conditionExpression>  x &gt; 1  </bpmn:conditionExpression>"""));
+        Flow(Process(text), "F").ConditionExpression.ShouldNotBeNull().Body.ShouldBe("  x > 1  ");
+
+        var cdata = _reader.Read(FlowDocument("""
+            <bpmn:conditionExpression>
+              <![CDATA[ y ]]>
+            </bpmn:conditionExpression>
+            """));
+        Flow(Process(cdata), "F").ConditionExpression.ShouldNotBeNull().Body.ShouldBe(" y ");
     }
 
     [Fact]
@@ -298,9 +402,13 @@ public sealed class ConditionExpressionTests
         written.Value.ShouldBe("amount > 5");
         ((string?)written.Attribute("language")).ShouldBe(Feel);
 
-        var upgraded = Flow(Process(_reader.Read(legacyXml)), "f1");
+        var upgradedRead = _reader.Read(legacyXml);
+        var upgraded = Flow(Process(upgradedRead), "f1");
         upgraded.ConditionExpression.ShouldNotBeNull().Body.ShouldBe("amount > 5");
         upgraded.Extensions.ForeignChildren.ShouldBeEmpty();
+        upgradedRead.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+        var (_, _, again, _) = RoundTrip(legacyXml);
+        Model(again).ShouldBe(Model(upgradedRead));
     }
 
     [Fact]

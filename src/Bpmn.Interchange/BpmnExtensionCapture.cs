@@ -90,6 +90,13 @@ internal static class BpmnExtensionCapture
     /// skips, the unqualified attributes BPMN gives every base element (<c>id</c>) or every formal expression
     /// (<c>evaluatesToTypeRef</c>), and <c>xsi:type</c>, because whether an expression is formal is part of
     /// what its author wrote.
+    /// <para>
+    /// One <c>xsi:type</c> is not retained: <c>tFormalExpression</c> under any prefix bound to the BPMN model
+    /// namespace, on an expression that declares a <c>language</c>. BPMN allows a language only on a formal
+    /// expression, so the writer supplies exactly that type for every expression with a language. Retaining
+    /// it as well would make the model depend on whether the source spelled out what the writer adds, and
+    /// a read, write and read again would give two different models.
+    /// </para>
     /// </summary>
     public static BpmnConditionExpression CaptureConditionExpression(
         XElement source,
@@ -104,10 +111,12 @@ internal static class BpmnExtensionCapture
         if (fidelity == BpmnFidelity.Semantic)
             return new BpmnConditionExpression(body, language, extensions);
 
+        var hasLanguage = !string.IsNullOrWhiteSpace(language);
         var ownAttributes = source.Attributes()
             .Where(attribute => !attribute.IsNamespaceDeclaration)
             .Where(attribute => attribute.Name == BpmnXmlNames.SchemaInstance + "type"
-                || (attribute.Name.Namespace == XNamespace.None && attribute.Name.LocalName != "language"))
+                ? !(hasLanguage && IsFormalExpressionType(source, attribute.Value))
+                : attribute.Name.Namespace == XNamespace.None && attribute.Name.LocalName != "language")
             .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(source, attribute)))
             .ToArray();
 
@@ -115,6 +124,20 @@ internal static class BpmnExtensionCapture
             extensions = extensions with { ForeignAttributes = [.. ownAttributes, .. extensions.ForeignAttributes] };
 
         return new BpmnConditionExpression(body, language, extensions);
+    }
+
+    /// <summary>
+    /// Whether an <c>xsi:type</c> value is <c>tFormalExpression</c> under a prefix bound to the BPMN model
+    /// namespace in <paramref name="scope"/>: exactly what capture stores as <c>bpmn:tFormalExpression</c>.
+    /// An unprefixed value is kept as authored, as <see cref="CaptureAttributeValue"/> keeps it, because
+    /// what it resolves to depends on a default namespace the writer does not reproduce.
+    /// </summary>
+    private static bool IsFormalExpressionType(XElement scope, string value)
+    {
+        var colon = value.IndexOf(':');
+        return colon > 0
+            && scope.GetNamespaceOfPrefix(value[..colon]) == BpmnXmlNames.Model
+            && StringComparer.Ordinal.Equals(value[(colon + 1)..], "tFormalExpression");
     }
 
     /// <summary>Rebuilds a retained subtree as live XML.</summary>

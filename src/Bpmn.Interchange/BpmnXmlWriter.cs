@@ -257,7 +257,8 @@ public sealed class BpmnXmlWriter
             if (authoredExpression is { } conditionExpression)
             {
                 // BPMN allows one conditionExpression. The modeled one wins over a copy a pre-1.3.0 payload
-                // still carries as a retained foreign child, which would otherwise be written beside it.
+                // still carries as a retained foreign child, which would otherwise be written beside it. A read
+                // never retains one: it models the first and reports any further one as dropped.
                 extensions = WithoutRetainedConditionExpression(extensions);
                 flowElement.Add(ConditionExpressionElement(conditionExpression, process.ExpressionLanguage, context));
             }
@@ -770,8 +771,10 @@ public sealed class BpmnXmlWriter
     /// expression that inherits one, when its process's default differs from the document's, so the
     /// expression keeps its meaning after the process is written into a document declaring another default.
     /// And BPMN only allows <c>language</c> on a formal expression, so an expression that has a language but
-    /// no retained <c>xsi:type</c> is written as <c>bpmn:tFormalExpression</c>. An expression with neither,
-    /// typically one built in code, is written as a plain expression, exactly as modeled.
+    /// no retained <c>xsi:type</c> is written as <c>bpmn:tFormalExpression</c>. The reader does not retain
+    /// that type on an expression with a language, so the next read models what this one was given. An
+    /// expression with neither, typically one built in code, is written as a plain expression, exactly as
+    /// modeled.
     /// </para>
     /// </summary>
     private static XElement ConditionExpressionElement(BpmnConditionExpression expression, string? processExpressionLanguage, WriteContext context)

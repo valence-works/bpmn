@@ -77,7 +77,10 @@ public sealed class BpmnSequenceFlow
     /// <para>
     /// When <see cref="ConditionOutcome"/> is also set, the outcome decides and the expression is retained
     /// only. The <c>outcome == '…'</c> predicate this library writes for an outcome is not an author's
-    /// expression and is never modeled here. The interpreter does not evaluate an expression yet: a flow
+    /// expression: a read consumes an expression whose body is exactly <c>outcome == '&lt;outcome&gt;'</c>
+    /// for this flow's own outcome and carries no attributes or children, and does not model it. Any other
+    /// expression is modeled, including one of the same shape that names a different outcome; while the
+    /// flow keeps an outcome, a write replaces that lookalike with the predicate for the current outcome. The interpreter does not evaluate an expression yet: a flow
     /// whose only condition is an expression is routed as unconditional, which the XML reader reports as a
     /// <c>Degraded</c> finding. See ADR 0011.
     /// </para>
@@ -93,8 +96,9 @@ public sealed class BpmnSequenceFlow
     /// Foreign XML retained from this flow: its <c>&lt;documentation&gt;</c>, its
     /// <c>&lt;extensionElements&gt;</c> children, unrecognized children, and any attributes from
     /// namespaces the reader does not own. An author's <c>&lt;conditionExpression&gt;</c> is read into
-    /// <see cref="ConditionExpression"/> instead; a model serialized before payload format 1.3.0 may still
-    /// carry one here, and the writer honors it. The predicate this library writes for a
+    /// <see cref="ConditionExpression"/> instead, and a second one on the same flow, which BPMN does not
+    /// allow, is dropped with a finding; a model serialized before payload format 1.3.0 may still carry one
+    /// here, and the writer honors it. The predicate this library writes for a
     /// <see cref="ConditionOutcome"/> is not retained, so a later edit of that outcome cannot leave
     /// a stale expression.
     /// <para>
