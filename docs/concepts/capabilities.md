@@ -18,6 +18,7 @@ public enum BpmnHostCapabilities
     ScopeSignalling = 2,
     IterationScopes = 4,
     ScopeVariables = 8,
+    ConditionEvaluation = 16,
     Full = SubtreeCancellation | ScopeSignalling | IterationScopes | ScopeVariables
 }
 ```
@@ -28,9 +29,18 @@ public enum BpmnHostCapabilities
 | `ScopeSignalling` | It can deliver a notification from a child scope to its enclosing scope. |
 | `IterationScopes` | It can run the same bound work several times, keeping each instance's frame distinct. |
 | `ScopeVariables` | It can hold and read container-scoped variables through `IBpmnVariableReader`. |
+| `ConditionEvaluation` | It can answer sequence-flow condition expressions through the `IBpmnConditionEvaluator` it puts on `BpmnHostSnapshot.Conditions`. |
 
-`Full` is every capability. It is a claim, not a default. `None` is a legitimate declaration and runs
-a large fraction of real BPMN correctly.
+`Full` is every capability a host can provide without an expression language. It is a claim, not a
+default. `None` is a legitimate declaration and runs a large fraction of real BPMN correctly.
+
+`ConditionEvaluation` is deliberately **not** part of `Full`. Declaring `Full` promises the machinery
+a host can build without embedding a language; evaluating expressions means taking on a language, its
+sandboxing and an evaluator. A host that declared `Full` before the capability existed made no such
+promise, and adding it to `Full` would have made it silently on that host's behalf, to be discovered as
+a null evaluator at run time instead of a refusal at build time. A host that evaluates expressions
+declares `Full | ConditionEvaluation`. See
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
 
 You declare capabilities twice, and they must agree: once when building the graph, and once in each
 `BpmnHostSnapshot`.
@@ -62,7 +72,7 @@ if (missing != BpmnHostCapabilities.None)
 ```
 
 `Required` is the union of everything the definition needs; `DrivingElementIds` says which elements
-drive each capability. That is enough to produce a good error at import time, in your own vocabulary,
+drive each capability. For `ConditionEvaluation` the ids are those of the sequence flows that need it. That is enough to produce a good error at import time, in your own vocabulary,
 pointing at the elements in the document the user just uploaded — rather than an exception at
 deployment.
 
@@ -136,6 +146,7 @@ The build-time refusal converts an invisible correctness problem into a visible 
 ## What this means in practice
 
 **If you can implement everything, declare `Full` and stop thinking about this.** Most hosts can.
+Add `ConditionEvaluation` if, and only if, you supply a condition evaluator.
 
 **If you cannot, you are not locked out.** A large fraction of real BPMN uses none of these
 capabilities: linear processes, exclusive, parallel and inclusive gateways, tasks, plain start and
@@ -168,9 +179,10 @@ day it does not.
 | Escalation throw or end event, escalation boundary event | `ScopeSignalling` | A throw signals the enclosing scope, and a scope re-signals what it cannot match itself. |
 | Multi-instance activity | `IterationScopes` | Each instance needs its own frame. |
 | Collection-mode multi-instance | `ScopeVariables` | Its instance count and items come from a declared variable. |
+| Sequence flow whose only condition is a `<conditionExpression>` | `ConditionEvaluation` | The host evaluates the expression; the library has no language. A flow that also has a `conditionOutcome` is matched on the outcome and needs nothing, and a default flow is never evaluated. |
 | Compensation boundary event | nothing | It arms no listener. |
 | Exclusive, parallel and inclusive gateways | nothing | |
-| Tasks, plain start and end events, sequence flows | nothing | |
+| Tasks, plain start and end events, unconditional and outcome-conditioned sequence flows | nothing | |
 
 Note the second row. A *non-interrupting* catch boundary event still needs subtree cancellation,
 because the listener it arms has to be retired when its host finishes. It is easy to assume only

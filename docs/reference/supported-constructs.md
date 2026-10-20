@@ -109,9 +109,11 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Construct | Status | Notes |
 | --- | --- | --- |
 | `sequenceFlow` | Supported | Dropped when it is missing `sourceRef` / `targetRef`, or when either endpoint was dropped. |
-| Default flow | Supported | Taken only when no conditional flow matched. Declared on both sides: `defaultFlowId` on the element, `isDefault` on the flow. |
-| Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. |
-| Conditional flow, **expression-based** | Degraded | A `<conditionExpression>` is modeled as `BpmnSequenceFlow.ConditionExpression` (body, `language`, and the rest retained: `xsi:type`, `id`, vendor attributes) and written back, but not evaluated yet. A flow whose only condition is an expression reads as unconditional, and the finding quotes the expression. A flow with a `conditionOutcome` as well is outcome-matched, and its expression is retained only. The library will never evaluate an expression itself; [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) records how a host will evaluate it through a synchronous port. Once that lands, a host that does not declare the capability will be refused at graph build; today nothing is refused. |
+| Default flow | Supported | Taken only when no other flow was, and never evaluated. Marked by `defaultFlowId` on the element, `isDefault` on the flow, or both; a read document marks it on the element. |
+| Unconditional flow | Supported | Always taken from an activity or an inclusive gateway. On an exclusive gateway it counts as true in declaration order, so it is taken unless a flow declared before it holds first. Before 0.4.0 an exclusive gateway passed over it. |
+| Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. A token arriving at an element that binds no work reports none. |
+| Conditional flow, **expression-based** | Supported, requires `ConditionEvaluation` | A `<conditionExpression>` is modeled as `BpmnSequenceFlow.ConditionExpression` (body, `language`, and the rest retained: `xsi:type`, `id`, vendor attributes) and written back. The host evaluates it through `IBpmnConditionEvaluator`; the library never does. An exclusive gateway evaluates in declaration order and stops at the first true; an inclusive gateway and an activity evaluate every one. A failed answer faults the scope. A host that does not declare the [capability](../concepts/capabilities.md) is refused at graph build, naming the flows. A flow with a `conditionOutcome` as well is outcome-matched, and its expression is retained only and needs no capability. See [The host port](../concepts/host-port.md#conditions) and [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md). |
+| No flow taken | Faults | An exclusive or inclusive gateway faults the scope with `bpmn.gateway.no-flow-selected`, and any other element with outgoing flows with `bpmn.flow.none-taken`, including an unbound task when a token arrives (before 0.4.0 that consumed the token silently). An element with no outgoing flow is an implicit end. |
 | Cyclic flow (loop-backs) | Supported | A token traversing a backward flow mints a fresh iteration key; join accounting groups arrivals by element *and* iteration, so a revisited join never conflates one pass with the next. A cycle through a join, a compensate throw or a multi-instance activity can go around without waiting on some runs, with an empty collection for example; one evaluation stops after 10,000 dispatches and faults with `bpmn.propagation.limit`. |
 | Cyclic flow on which nothing can wait | Not supported | A cycle made only of elements that pass a token straight on (unbound tasks and splits, parallel splits, escalation throws nothing interrupting catches) would circulate forever within one evaluation, so the graph build throws and names the cycle. See [A cycle must be able to wait](../concepts/host-port.md#a-cycle-must-be-able-to-wait). |
 | `association` | Supported | Read to associate a compensation boundary event with its handler. |
@@ -182,7 +184,8 @@ graph-build time.
 
 - **DMN.** Business rule tasks are modeled; decisions are not evaluated.
 - **CMMN.**
-- **Expression and script languages.** FEEL, JUEL, JavaScript, Groovy — none, permanently.
+- **Expression and script languages.** FEEL, JUEL, JavaScript, Groovy — none, permanently. A host
+  evaluates condition expressions through `IBpmnConditionEvaluator` in its own language.
 - **Rendering.** Layout is preserved and synthesized, not drawn.
 - **Vendor server protocols.** This is not a client for anyone's engine.
 

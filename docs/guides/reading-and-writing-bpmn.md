@@ -371,9 +371,12 @@ the `Body` (the text and CDATA content as authored; whitespace-only text around 
 between child elements is not kept), its own `Language`, and its remaining content (`xsi:type`, `id`,
 vendor attributes, documentation) retained on the expression. The document's `expressionLanguage` is
 `BpmnDefinitions.ExpressionLanguage`, copied onto every process and nested body as
-`BpmnProcessDefinition.ExpressionLanguage`. The library does not evaluate an expression yet (see
-[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)), but a
-read then write reproduces both.
+`BpmnProcessDefinition.ExpressionLanguage`. A read then write reproduces both. The library never
+evaluates an expression itself: a host does, through `IBpmnConditionEvaluator`, and a read reports no
+finding for an expression-only flow, because whether a host can evaluate it is the
+`ConditionEvaluation` capability that graph build checks (see
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)). Before
+0.4.0 such a flow read as unconditional with a `Degraded` finding.
 
 A few rules keep "read, write, read again" giving the same model:
 

@@ -6,11 +6,11 @@ namespace Bpmn.Model;
 /// A sequence flow's <c>&lt;conditionExpression&gt;</c>: an expression body in some expression language,
 /// carried as data.
 /// <para>
-/// This library never parses or evaluates <see cref="Body"/>. ADR 0011 records how a host evaluates it
-/// through a synchronous port. Until the interpreter asks that port, a flow whose only condition is an
-/// expression is routed as unconditional, and the XML reader reports a <c>Degraded</c> finding saying so.
-/// A flow that also carries a <see cref="BpmnSequenceFlow.ConditionOutcome"/> is matched by that outcome,
-/// and its expression is retained only.
+/// This library never parses or evaluates <see cref="Body"/>. The interpreter hands it, with its language,
+/// to the host's condition evaluator through a synchronous port when the flow's source element routes, and
+/// a graph whose flows need that is built only for a host that declares the capability (ADR 0011). A flow
+/// that also carries a <see cref="BpmnSequenceFlow.ConditionOutcome"/> is matched by that outcome, and its
+/// expression is retained only.
 /// </para>
 /// </summary>
 public sealed record BpmnConditionExpression
