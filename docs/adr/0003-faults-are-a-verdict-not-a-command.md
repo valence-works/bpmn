@@ -1,9 +1,44 @@
 # ADR 0003: Faults are a verdict, not a command
 
-**Status**: Accepted
+**Status**: Accepted; amended 2026-10-15 for 0.4.0
 **Date**: 2026-08-09
 
-## Context
+## Current decision: 0.4.0 amendment (2026-10-15)
+
+The owner amended this decision for the breaking 0.4.0 release. The verdict remains the
+interpreter's report of what BPMN did, rather than a command to update host-owned failure records.
+The report now belongs to the common `BpmnEvaluation` shape so a host can handle every evaluation
+uniformly:
+
+```csharp
+public BpmnErrorDisposition? ErrorDisposition { get; init; }
+```
+
+`BpmnFaultEvaluation` is removed. `ErrorDisposition` is populated whenever a host-reported failure
+is routed or absorbed. Routing includes call-activity `Faulted`, `DispatchFailed`, and `Cancelled`
+outcomes handled by `RouteCallActivityFailureOutcome`; absorption covers late failures of stopped
+work or scopes. It remains `null` when no failure was routed or absorbed, including transaction
+cancellation and an event subprocess activated on another path.
+
+The disposition is a closed set:
+
+- `Caught(CatchingElementId, ErrorCode?)` names the catcher that took the error in an evaluation
+  that returned without fault; recovery work may still be running. A null code means the catcher
+  was a catch-all.
+- `Propagated` means the final evaluation continuation is `Fault`: either no catcher took the error,
+  or a catcher's route faulted during this evaluation.
+- `Absorbed` means the failure belonged to work or a scope that had already stopped.
+
+The transcript's `BpmnTranscriptEntry.Disposition` remains unchanged. This amendment changes the
+evaluation property to `ErrorDisposition`; it does not rename or alter the transcript field.
+
+The original decision below records why the command was removed and why incident policy belongs to
+the host. Its choice to put the verdict on a fault-only derived evaluation is superseded by this
+amendment.
+
+## Original decision (2026-08-09; superseded in part for 0.4.0)
+
+### Context
 
 When work bound to a BPMN element fails, the host reports the failure and the interpreter decides
 whether BPMN routes it: an error boundary event on the activity, an error start event in an event
@@ -32,7 +67,7 @@ this" — invented by engine vendors for their operations tooling. Universal amo
 the standard. A concept that every engine has and the specification lacks is, almost by definition,
 on the host's side of this boundary.
 
-## Decision
+### Decision
 
 Delete the command. `OnWorkFaulted` returns a `BpmnFaultEvaluation`, which extends the ordinary
 evaluation with a disposition:
@@ -54,7 +89,7 @@ flag, emitting a metric, or nothing at all.
 The port drops from four commands to three, and the capability flag that existed to cover hosts
 without a failure ledger disappears with it.
 
-## Consequences
+### Consequences
 
 The concept is gone from the library, not renamed. No type, parameter, or comment refers to incidents.
 
@@ -70,7 +105,7 @@ The disposition carries `ErrorCode` even though code-matched catching is not yet
 today a matching error catcher is selected without narrowing on the code. Reserving the field now
 means the shape does not change when that gap closes.
 
-## Alternatives considered
+### Alternatives considered
 
 **Keep the command behind a capability flag.** Rejected. The flag existed only to paper over a concept
 that did not belong in the library. Removing the concept removes the need for the flag.

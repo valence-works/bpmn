@@ -343,12 +343,18 @@ public sealed class BpmnInterpreter
         var completionContext = request;
         var state = request.PriorState ?? new BpmnExecutionState();
 
+        BpmnEvaluation AbsorbedCompletion(BpmnEvaluation evaluation) =>
+            IsCallActivityFailureCompletion(graph.FindElementByBindingRef(completionContext.CompletedBindingRef),
+                completionContext.OutcomeNames, out _)
+                ? evaluation with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance }
+                : evaluation;
+
         if (AbsorbIntoEndedScope(context, graph, state, completionContext.CompletedBindingRef,
                 $"completion of work '{completionContext.CompletedBindingRef}'") is { } absorbedCompletion)
-            return absorbedCompletion;
+            return AbsorbedCompletion(absorbedCompletion);
 
         if (AbsorbStoppedWork(state, completionContext.CompletedHandle, $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
-            return FinishEvaluation(context, lateCompletion);
+            return AbsorbedCompletion(FinishEvaluation(context, lateCompletion));
 
         var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId, "completed work")
             ?? throw UnresolvedWork("completed work", completionContext.CompletedBindingRef, completionContext.CompletedIterationId);
@@ -361,7 +367,7 @@ public sealed class BpmnInterpreter
         if (token.Status == BpmnTokenStatus.Canceled)
         {
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, $"BPMN ignored completion for canceled token '{token.TokenId}'.");
-            return FinishEvaluation(context, new EvaluationResult(state));
+            return AbsorbedCompletion(FinishEvaluation(context, new EvaluationResult(state)));
         }
 
         // The teardowns this evaluation carries, issued only on a non-fault continuation.
@@ -381,7 +387,7 @@ public sealed class BpmnInterpreter
             // call activity completing with a failure outcome, the call-activity ladder routes here composed with
             // the coordinator cascade: RouteCallActivityFailureOutcome resolves the interrupt target to the loop
             // coordinator, so firing an error boundary or error event subprocess interrupts every remaining instance.
-            if (IsCallActivityFailureCompletion(graph, token, completionContext.OutcomeNames, out var instanceFailureOutcome))
+            if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var instanceFailureOutcome))
             {
                 return FinishEvaluation(context, RouteCallActivityFailureOutcome(
                     context, graph, state, token, instanceFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
@@ -434,7 +440,7 @@ public sealed class BpmnInterpreter
         // routes normal outbound; the interpreter routes the error-catcher ladder directly (host error boundary,
         // then scope error event subprocess, then process fault). The multi-instance case is handled above, inside
         // the instance interception, so the coordinator cascade composes first.
-        if (IsCallActivityFailureCompletion(graph, token, completionContext.OutcomeNames, out var callActivityFailureOutcome))
+        if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var callActivityFailureOutcome))
         {
             return FinishEvaluation(context, RouteCallActivityFailureOutcome(
                 context, graph, state, token, callActivityFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
@@ -512,7 +518,7 @@ public sealed class BpmnInterpreter
     /// stopping that work was already decided. One the snapshot contradicts throws, as a completion does.
     /// </para>
     /// </summary>
-    public BpmnFaultEvaluation OnWorkFaulted(BpmnWorkFaultedRequest request)
+    public BpmnEvaluation OnWorkFaulted(BpmnWorkFaultedRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -523,19 +529,9 @@ public sealed class BpmnInterpreter
         // checking the fault against that would refuse a report the completion path accepts.
         if (AbsorbIntoEndedScope(context, request.Graph, request.PriorState ?? new BpmnExecutionState(), request.FaultedBindingRef,
                 $"fault of work '{request.FaultedBindingRef}'") is { } absorbed)
-            return new BpmnFaultEvaluation(absorbed.State, absorbed.Continuation, absorbed.Commands, BpmnErrorDisposition.Propagated.Instance);
+            return absorbed with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance };
 
-        var result = EvaluateWorkFaulted(context, request);
-        var evaluation = FinishEvaluation(context, result);
-
-        // A caught error is only genuinely caught when the evaluation exits cleanly. If routing the catcher's
-        // path itself faults, the whole scope is going down, so the error propagates after all — the same rule
-        // that discards carried-but-unissued teardown on a fault continuation.
-        var disposition = evaluation.Continuation is BpmnContinuation.Fault
-            ? BpmnErrorDisposition.Propagated.Instance
-            : result.ErrorDisposition ?? BpmnErrorDisposition.Propagated.Instance;
-
-        return new BpmnFaultEvaluation(evaluation.State, evaluation.Continuation, evaluation.Commands, disposition);
+        return FinishEvaluation(context, EvaluateWorkFaulted(context, request));
     }
 
     private EvaluationResult EvaluateWorkFaulted(BpmnEvaluationContext context, BpmnWorkFaultedRequest request)
@@ -550,7 +546,7 @@ public sealed class BpmnInterpreter
         // with a consumed token absorbed the fault as late.
         var faultedBindingRef = request.FaultedBindingRef;
         if (AbsorbStoppedWork(state, request.FaultedHandle, $"fault of work '{faultedBindingRef}'") is { } lateFault)
-            return lateFault;
+            return lateFault with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance };
 
         var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, "faulted work");
         if (faultedWork is not null)
@@ -570,7 +566,7 @@ public sealed class BpmnInterpreter
                 state = RemoveActiveWork(state, faultedWork.TokenId);
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, faultedWork?.ElementId, null, faultedToken?.TokenId,
                 $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled.");
-            return new EvaluationResult(state);
+            return new EvaluationResult(state, ErrorDisposition: BpmnErrorDisposition.Absorbed.Instance);
         }
 
         // Catch the error through an error boundary event attached to the failing work's host.
@@ -600,7 +596,7 @@ public sealed class BpmnInterpreter
         var detail = string.IsNullOrWhiteSpace(request.FaultMessage) ? "" : $" ({request.FaultMessage})";
         var message = $"BPMN process faulted because the work bound to '{faultedBindingRef}' faulted{detail}: failed work cannot complete, so its token — and any downstream join that requires it — can no longer proceed.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, faultedWork?.ElementId, null, faultedWork?.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault("bpmn.work.faulted", message));
+        return new EvaluationResult(state, new BpmnFault("bpmn.work.faulted", message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -703,13 +699,12 @@ public sealed class BpmnInterpreter
     /// (deterministic precedence). <c>Completed</c>/<c>Dispatched</c> return <c>false</c> (normal task-flow routing).
     /// </summary>
     private static bool IsCallActivityFailureCompletion(
-        BpmnGraph graph,
-        BpmnToken token,
+        BpmnElement? element,
         IReadOnlyCollection<string> outcomeNames,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? failureOutcome)
     {
         failureOutcome = null;
-        if (!BpmnElementFamilies.IsCallActivity(graph.GetRequiredElement(token.AtElementId)))
+        if (element is null || !BpmnElementFamilies.IsCallActivity(element))
             return false;
 
         failureOutcome = CallActivityFailureOutcomes.FirstOrDefault(outcome => outcomeNames.Contains(outcome, StringComparer.Ordinal));
@@ -760,7 +755,11 @@ public sealed class BpmnInterpreter
                 $"BPMN error boundary '{errorBoundary.ElementId}' fired and emitted token '{errorToken.TokenId}' to route the call-activity failure path.");
 
             var boundaryResult = Propagate(context, graph, state, completedHandle);
-            return boundaryResult with { PendingTeardowns = pendingCancellations };
+            return boundaryResult with
+            {
+                PendingTeardowns = pendingCancellations,
+                ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, ReadErrorCode(errorBoundary))
+            };
         }
 
         // Ladder tier 2: the scope's error event subprocess activates interrupting — stop all other live
@@ -771,7 +770,11 @@ public sealed class BpmnInterpreter
                 liveWorkHandles, pendingCancellations, completedHandle,
                 $"call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
             var subprocessResult = Propagate(context, graph, activation.State, completedHandle);
-            return subprocessResult with { PendingTeardowns = pendingCancellations };
+            return subprocessResult with
+            {
+                PendingTeardowns = pendingCancellations,
+                ErrorDisposition = new BpmnErrorDisposition.Caught(errorEventSubprocess.ElementId, errorEventSubprocess.Code)
+            };
         }
 
         // Ladder tier 3: no catcher — the process faults deterministically with the per-outcome fault code.
@@ -789,7 +792,7 @@ public sealed class BpmnInterpreter
         };
         var message = $"BPMN call activity '{element.ElementId}' completed with the '{failureOutcome}' outcome, but no error boundary or error event subprocess is available to route it.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, completingToken.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault(faultCode, message));
+        return new EvaluationResult(state, new BpmnFault(faultCode, message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -2158,13 +2161,23 @@ public sealed class BpmnInterpreter
     /// </summary>
     private BpmnEvaluation FinishEvaluation(BpmnEvaluationContext context, EvaluationResult result)
     {
+        // A catcher only handled the failure if its path exits cleanly. Keep this rule at the shared exit
+        // so call-activity completion outcomes and work faults report the same final verdict.
+        BpmnEvaluation Finish(BpmnExecutionState finalState, BpmnContinuation continuation) =>
+            Evaluated(context, finalState, continuation) with
+            {
+                ErrorDisposition = result.ErrorDisposition is BpmnErrorDisposition.Caught && continuation is BpmnContinuation.Fault
+                    ? BpmnErrorDisposition.Propagated.Instance
+                    : result.ErrorDisposition
+            };
+
         var state = result.State;
 
         if (result.Fault is not null)
-            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(result.Fault));
+            return Finish(WithdrawStartedWork(context, state), MakeFault(result.Fault));
 
         if (state.PendingFault is { } pendingFault)
-            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
+            return Finish(WithdrawStartedWork(context, state), MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
 
         if (result.Terminated || state.Terminated)
         {
@@ -2177,7 +2190,7 @@ public sealed class BpmnInterpreter
             // stays there.
             IssueCarriedCommands(context, result with { PendingScopeSignal = null });
             IssueTerminateTeardowns(context);
-            return Evaluated(context, state, new BpmnContinuation.Complete(DoneOutcomeName));
+            return Finish(state, new BpmnContinuation.Complete(DoneOutcomeName));
         }
 
         var liveTokens = state.Tokens.Where(token => token.Status is BpmnTokenStatus.Active or BpmnTokenStatus.AwaitingChild or BpmnTokenStatus.WaitingAtJoin).ToArray();
@@ -2228,7 +2241,7 @@ public sealed class BpmnInterpreter
             var outcomeName = state.Cancelling ? CancelledOutcomeName : DoneOutcomeName;
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Completed, null, null, null,
                 $"BPMN process completed with the '{outcomeName}' outcome because no live tokens remain.");
-            return Evaluated(context, state, new BpmnContinuation.Complete(outcomeName));
+            return Finish(state, new BpmnContinuation.Complete(outcomeName));
         }
 
         // A parked join arrival with nothing live left to produce the missing arrivals can never fire — a
@@ -2243,12 +2256,12 @@ public sealed class BpmnInterpreter
             var joinElementIds = string.Join(", ", nonListenerLiveTokens.Select(token => token.AtElementId).Distinct(StringComparer.Ordinal));
             var message = $"BPMN process deadlocked: token(s) wait at join(s) [{joinElementIds}] but no live token or running work can produce the missing arrival(s).";
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, null, null, null, message);
-            return Evaluated(context, state, MakeFault(new BpmnFault("bpmn.join.deadlock", message)));
+            return Finish(state, MakeFault(new BpmnFault("bpmn.join.deadlock", message)));
         }
 
         // Clean deferral: the carried teardowns may now be issued.
         state = RecordStoppedWork(state, IssueCarriedCommands(context, result));
-        return Evaluated(context, state, BpmnContinuation.Defer.Instance);
+        return Finish(state, BpmnContinuation.Defer.Instance);
     }
 
     /// <summary>
