@@ -58,6 +58,8 @@ values, and a regression test can be written from it without a running host.
 
 ## The one callback
 
+> Historical heading: [ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) adds a second callback of the same shape.
+
 `IBpmnVariableReader` lets the interpreter pull a named variable mid-evaluation. It cannot be hoisted
 into the snapshot, because which variable is needed depends on which element the propagation loop
 reaches, which is not known before the loop runs. It is synchronous, read-only, and side-effect free.
