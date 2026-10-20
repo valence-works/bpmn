@@ -60,6 +60,16 @@ public sealed record BpmnDefinitions(
     [JsonPropertyName("extensions")]
     public BpmnExtensions Extensions { get; init; } = Extensions ?? BpmnExtensions.Empty;
 
+    /// <summary>
+    /// The document's <c>expressionLanguage</c>: the language of every expression that does not declare its
+    /// own, or <c>null</c> when the document is silent. BPMN nominally defaults it to XPath, but tools omit
+    /// the attribute while meaning their own language, so no default is invented here. The reader copies it
+    /// onto every <see cref="BpmnProcessDefinition.ExpressionLanguage"/>, because a graph sees only its
+    /// process. Additive in payload format 1.3.0, and init-only so the constructor is unchanged.
+    /// </summary>
+    [JsonPropertyName("expressionLanguage")]
+    public string? ExpressionLanguage { get; init; }
+
     /// <summary>Finds a process by its BPMN id, or returns <c>null</c>.</summary>
     public BpmnProcessDefinition? FindProcess(string processId) =>
     Processes.FirstOrDefault(p => string.Equals(p.ProcessId, processId, StringComparison.Ordinal));
@@ -107,6 +117,19 @@ public sealed record BpmnProcessDefinition(
     /// <summary>Foreign XML retained from the process element. Never null.</summary>
     [JsonPropertyName("extensions")]
     public BpmnExtensions Extensions { get; init; } = Extensions ?? BpmnExtensions.Empty;
+
+    /// <summary>
+    /// The default language of this process's expressions: what a
+    /// <see cref="BpmnConditionExpression"/> without its own <see cref="BpmnConditionExpression.Language"/>
+    /// is written in, or <c>null</c> when the document declares none.
+    /// <para>
+    /// BPMN declares it once, on <c>&lt;definitions&gt;</c>. The process carries a copy because the graph is
+    /// built from a process alone, and a nested subprocess body carries the same copy for the same reason.
+    /// Additive in payload format 1.3.0, and init-only so the constructor is unchanged.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("expressionLanguage")]
+    public string? ExpressionLanguage { get; init; }
 }
 
 /// <summary>
