@@ -311,11 +311,12 @@ public sealed class BpmnXmlReader
         var declaredVariables = ReadDeclaredVariables(container, context.Vendor);
         var declaredVariableNames = declaredVariables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
-        // Per-scope event-subprocess trackers: escalation codes must be distinct with at most one code-less
-        // catch-all, and a scope carries at most one error-triggered event subprocess.
+        // Per-scope event-subprocess trackers: for escalation and error alike, codes must be distinct with at
+        // most one code-less catch-all.
         var eventSubprocessEscalationCodes = new HashSet<string>(StringComparer.Ordinal);
         var hasEventSubprocessEscalationCatchAll = false;
-        var hasEventSubprocessError = false;
+        var eventSubprocessErrorCodes = new HashSet<string>(StringComparer.Ordinal);
+        var hasEventSubprocessErrorCatchAll = false;
 
         foreach (var child in container.Elements().Where(child => child.Name.Namespace == BpmnXmlNames.Model))
         {
@@ -518,7 +519,7 @@ public sealed class BpmnXmlReader
                     // a scope listener, which is a second binding on the same element.
                     if (isEventSubprocess)
                     {
-                        if (TryResolveEventSubprocess(id, nested, processId, eventSubprocessEscalationCodes, ref hasEventSubprocessEscalationCatchAll, ref hasEventSubprocessError, context) is not { } eventSubprocess)
+                        if (TryResolveEventSubprocess(id, nested, processId, eventSubprocessEscalationCodes, ref hasEventSubprocessEscalationCatchAll, eventSubprocessErrorCodes, ref hasEventSubprocessErrorCatchAll, context) is not { } eventSubprocess)
                         {
                             context.DropBindingsFrom(bindingMark);
                             break; // Dropped, with a finding; its flows cascade-drop.
@@ -665,9 +666,11 @@ public sealed class BpmnXmlReader
         var transactionHostsWithCancelBoundary = new HashSet<string>(StringComparer.Ordinal);
         var escalationCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var escalationCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
+        var errorCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var errorCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
         foreach (var boundaryXml in pendingBoundaries)
         {
-            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, errorDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, context);
+            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, errorDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, errorCodesByHost, errorCatchAllHosts, context);
             if (boundary is null)
                 continue; // Dropped, with a finding; its sequence flows cascade-drop as unresolved refs.
             elements.Add(boundary);
@@ -1034,8 +1037,8 @@ public sealed class BpmnXmlReader
     /// <summary>
     /// Validates an event subprocess before its element is emitted. The body must declare exactly one start
     /// event with exactly one supported trigger; per scope, escalation codes must be distinct with at most one
-    /// code-less catch-all, and at most one error-triggered event subprocess may exist. A message, signal, or
-    /// timer trigger additionally arms a scope listener.
+    /// code-less catch-all, and so must error codes. A message, signal, or timer trigger additionally arms a scope
+    /// listener.
     /// </summary>
     private static EventSubprocessImport? TryResolveEventSubprocess(
         string id,
@@ -1043,7 +1046,8 @@ public sealed class BpmnXmlReader
         string processId,
         HashSet<string> escalationCodes,
         ref bool hasEscalationCatchAll,
-        ref bool hasError,
+        HashSet<string> errorCodes,
+        ref bool hasErrorCatchAll,
         ReadContext context)
     {
         var starts = body.Elements
@@ -1087,19 +1091,31 @@ public sealed class BpmnXmlReader
 
         if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
         {
-            // BPMN makes catching an error always interrupting, and a scope carries at most one error-triggered
-            // event subprocess; either violation would produce a shape no interpreter could run.
+            // BPMN makes catching an error always interrupting. A scope may carry several error event
+            // subprocesses with distinct codes and at most one code-less catch-all, as with escalation; a
+            // violation would produce a shape no interpreter could run.
             if (!interrupting)
             {
                 context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a non-interrupting error event subprocess; error events are always interrupting per BPMN, so it was dropped.", id);
                 return null;
             }
-            if (hasError)
+
+            var errorCode = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var errorCodeValue) && !string.IsNullOrWhiteSpace(errorCodeValue) ? errorCodeValue.Trim() : null;
+            if (errorCode is null)
             {
-                context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a second error-triggered event subprocess in its scope, which may carry at most one; it was dropped.", id);
+                if (hasErrorCatchAll)
+                {
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a second code-less catch-all error event subprocess in its scope, which may carry at most one; it was dropped.", id);
+                    return null;
+                }
+                hasErrorCatchAll = true;
+            }
+            else if (!errorCodes.Add(errorCode))
+            {
+                context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' declares error code '{errorCode}', which another error event subprocess in its scope already claims; it was dropped.", id);
                 return null;
             }
-            hasError = true;
+
             return new EventSubprocessImport(ListenerBindingRef: null);
         }
 
@@ -1301,6 +1317,8 @@ public sealed class BpmnXmlReader
         HashSet<string> transactionHostsWithCancelBoundary,
         Dictionary<string, HashSet<string>> escalationCodesByHost,
         HashSet<string> escalationCatchAllHosts,
+        Dictionary<string, HashSet<string>> errorCodesByHost,
+        HashSet<string> errorCatchAllHosts,
         ReadContext context)
     {
         var id = IdOf(element)!;
@@ -1419,6 +1437,27 @@ public sealed class BpmnXmlReader
                 {
                     context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' is a non-interrupting error boundary, which BPMN does not allow; it was dropped.", id);
                     return null;
+                }
+
+                // A coded error boundary catches only its code, so a host may carry several: distinct codes plus at
+                // most one ref-less catch-all, as with escalation. A code collision or a second catch-all drops.
+                var errorCode = ResolveErrorRefCode(definition, errorDeclarations) is { } resolvedCode && !string.IsNullOrWhiteSpace(resolvedCode) ? resolvedCode.Trim() : null;
+                if (errorCode is null)
+                {
+                    if (!errorCatchAllHosts.Add(attachedToRef))
+                    {
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Error boundary event '{id}' is a second code-less catch-all on host '{attachedToRef}', which may carry at most one; it was dropped.", id);
+                        return null;
+                    }
+                }
+                else
+                {
+                    var errorCodes = errorCodesByHost.TryGetValue(attachedToRef, out var existingErrorCodes) ? existingErrorCodes : errorCodesByHost[attachedToRef] = new HashSet<string>(StringComparer.Ordinal);
+                    if (!errorCodes.Add(errorCode))
+                    {
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Error boundary event '{id}' declares error code '{errorCode}', which another error boundary on host '{attachedToRef}' already claims; it was dropped.", id);
+                        return null;
+                    }
                 }
 
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element),
