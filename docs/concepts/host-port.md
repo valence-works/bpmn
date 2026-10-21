@@ -369,7 +369,9 @@ started it, which has no handle to match. Terminal work's own handle and token I
 `LiveWork`; a snapshot entry for that exact invocation contradicts the report. A different
 invocation on the same binding and iteration is valid when its own explicit `WorkTokenId` resolves.
 Without an ID, the legacy binding/iteration lookup must be unambiguous; it cannot guess between
-siblings that share a slot.
+siblings that share a slot. Ambiguity in a different legacy slot does not prevent unrelated work
+from progressing. Selective teardown still refuses if it needs that ambiguous slot; it never drops
+a required handle silently. Whole-scope termination retains the distinct-handle cleanup rule above.
 A state an earlier version persisted records no handles, so a late callback against it is never
 absorbed. A late completion throws. A late fault faults the scope, or throws when the snapshot still
 lists the resolved invocation under another handle.

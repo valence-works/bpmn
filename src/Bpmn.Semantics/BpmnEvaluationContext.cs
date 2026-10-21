@@ -23,8 +23,8 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     /// <summary>The immutable state used to correlate entries in <see cref="BpmnHostSnapshot.LiveWork"/>.</summary>
     public BpmnExecutionState EntryState { get; } = entryState;
 
-    /// <summary>The lazily resolved host ledger, keyed by this scope's token ids.</summary>
-    public IReadOnlyDictionary<string, BpmnLiveWork>? LiveWorkByTokenId { get; set; }
+    /// <summary>The lazily indexed host ledger for this evaluation's entry state.</summary>
+    public BpmnLiveWorkSnapshotResolver? LiveWorkSnapshotResolver { get; set; }
 
     /// <summary>The graph this evaluation runs.</summary>
     public BpmnGraph Graph { get; } = graph;

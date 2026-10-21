@@ -40,6 +40,11 @@ Live-work lookup uses the explicit token ID to identify a teardown handle. An id
 snapshot is usable only when its slot maps unambiguously to the intended invocation. Duplicate
 handles/IDs or conflicting identity/slot evidence must not silently overwrite a map entry. A live
 sibling on the same binding/iteration is legitimate when it has a different explicit token ID.
+Legacy slot ambiguity is checked when a callback or selective teardown needs that slot, not merely
+because an unrelated callback carries the snapshot. Unrelated work can continue while the host
+migrates. If an interruption needs an ambiguous legacy handle, evaluation refuses rather than
+returning a cancellation that silently omits physical teardown. Whole-scope terminate cleanup
+continues to cancel every distinct reported handle without resolving token identity.
 The live ledger is correlated with the active-work records at evaluation entry. This correlation
 remains valid after the evaluation cancels or replaces work internally; commands have not yet reached
 the host. Terminal reports must already have left the live ledger; explicitly identified escalation

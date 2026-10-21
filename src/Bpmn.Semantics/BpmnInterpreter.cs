@@ -153,13 +153,6 @@ public sealed class BpmnInterpreter
     private static readonly IReadOnlyList<string> CallActivityFailureOutcomes =
         [CallActivityFaultedOutcomeName, CallActivityDispatchFailedOutcomeName, CallActivityCancelledOutcomeName];
 
-    /// <summary>
-    /// An empty live-work map, for a path that stops nothing: a non-interrupting escalation catcher leaves the
-    /// scope's other work alone, so it has no handles to resolve and issues no teardown. Every interrupting path
-    /// passes real handles — see <see cref="BuildLiveWorkHandles"/>.
-    /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> NoLiveWork = new Dictionary<string, string>(StringComparer.Ordinal);
-
     /// <summary>The prefix of a multi-instance instance's minted iteration id; the instance token id it embeds is unique across the process.</summary>
     public const string MultiInstanceIterationIdPrefix = "bpmn-mi:";
 
@@ -373,7 +366,7 @@ public sealed class BpmnInterpreter
 
         // The teardowns this evaluation carries, issued only on a non-fault continuation.
         var pendingCancellations = new List<PendingTeardown>();
-        var liveWorkHandles = BuildLiveWorkHandles(context);
+        var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "teardown lookup");
 
         // A multi-instance instance completed — advance the loop (start the next instance in sequential mode)
         // or, on the last instance, retire the host's listeners and route the host's outbound flows through its
@@ -391,11 +384,11 @@ public sealed class BpmnInterpreter
             if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var instanceFailureOutcome))
             {
                 return FinishEvaluation(context, RouteCallActivityFailureOutcome(
-                    context, graph, state, token, instanceFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
+                    context, graph, state, token, instanceFailureOutcome, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
             }
 
             return FinishEvaluation(context, HandleMultiInstanceInstanceCompletion(
-                context, graph, state, token, loop, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
+                context, graph, state, token, loop, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
         }
 
         // a compensation handler sub-token completed — intercept BEFORE behavior dispatch (the MI-instance
@@ -417,7 +410,7 @@ public sealed class BpmnInterpreter
             && completionContext.OutcomeNames.Contains(CancelledOutcomeName, StringComparer.Ordinal))
         {
             return FinishEvaluation(context, HandleTransactionCancelled(
-                context, graph, state, token, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
+                context, graph, state, token, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
         }
 
         // a completion at a TriggeredByEvent element — intercept BEFORE behavior dispatch (the
@@ -430,7 +423,7 @@ public sealed class BpmnInterpreter
             if (token.Kind == BpmnTokenKind.Listener && graph.EventSubprocessByElementId(token.AtElementId) is { } firedCatcher)
             {
                 return FinishEvaluation(context, HandleScopeListenerFired(
-                    context, graph, state, token, firedCatcher, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
+                    context, graph, state, token, firedCatcher, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
             }
 
             return FinishEvaluation(context, HandleEventSubprocessBodyCompletion(state, token));
@@ -444,7 +437,7 @@ public sealed class BpmnInterpreter
         if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var callActivityFailureOutcome))
         {
             return FinishEvaluation(context, RouteCallActivityFailureOutcome(
-                context, graph, state, token, callActivityFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
+                context, graph, state, token, callActivityFailureOutcome, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
         }
 
         // /D3: if the completing token is a live event-based-gateway race member, it is the winner.
@@ -453,7 +446,7 @@ public sealed class BpmnInterpreter
         var race = state.Races.FirstOrDefault(candidate => !candidate.Resolved && candidate.MemberTokenIds.Contains(token.TokenId, StringComparer.Ordinal));
         if (race is not null)
         {
-            state = ResolveEventRace(context, state, race, token.TokenId, liveWorkHandles, pendingCancellations);
+            state = ResolveEventRace(context, state, race, token.TokenId, liveWorkSnapshot, pendingCancellations);
             token = GetRequiredToken(state, token.TokenId);
         }
 
@@ -461,7 +454,7 @@ public sealed class BpmnInterpreter
         // behavior — a host completion tears down its live listeners, an interrupting listener tears down its
         // host and sibling listeners, a non-interrupting listener leaves both untouched. Purely logical here;
         // the teardowns are carried and issued only on a non-fault continuation.
-        state = ApplyBoundaryCompletionSemantics(context, graph, state, token, liveWorkHandles, pendingCancellations);
+        state = ApplyBoundaryCompletionSemantics(context, graph, state, token, liveWorkSnapshot, pendingCancellations);
 
         var element = graph.GetRequiredElement(token.AtElementId);
         var (dispatchedState, decision) = Dispatch(context, graph, state, token, element, BpmnBehaviorTrigger.WorkCompleted, completionContext.OutcomeNames);
@@ -615,7 +608,7 @@ public sealed class BpmnInterpreter
         string faultedHandle)
     {
         var pendingCancellations = new List<PendingTeardown>();
-        var liveWorkHandles = BuildLiveWorkHandles(context);
+        var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "teardown lookup");
 
         // The interrupt target is the multi-instance loop coordinator when the failing work is an instance,
         // otherwise the failing work's own host token.
@@ -626,9 +619,9 @@ public sealed class BpmnInterpreter
 
         // Cancel the interrupt target (a coordinator cascades to all live instances; a plain host token is a
         // pure token flip, its work record having just been dropped) and its still-armed sibling catch listeners.
-        state = CancelTokenAndWork(context, state, interruptTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
+        state = CancelTokenAndWork(context, state, interruptTokenId, BoundaryHostInterruptedReason, liveWorkSnapshot, pendingCancellations,
             (token, reason) => $"BPMN error boundary '{errorBoundary.ElementId}' caught a work fault of host '{faultedToken.AtElementId}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, BoundaryHostInterruptedReason, liveWorkSnapshot, pendingCancellations);
 
         // Mint an active token at the error boundary so its behavior routes the error path; it inherits the
         // interrupt target's loop-iteration key.
@@ -661,7 +654,7 @@ public sealed class BpmnInterpreter
         string faultedHandle)
     {
         var pendingCancellations = new List<PendingTeardown>();
-        var liveWorkHandles = BuildLiveWorkHandles(context);
+        var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "teardown lookup");
 
         // The failing work is already terminal; drop its record first so the stop-others below (which cancels
         // the failing host token) does not issue a teardown for work that has already gone.
@@ -669,7 +662,7 @@ public sealed class BpmnInterpreter
         state = RemoveActiveWork(state, faultedWork.TokenId);
 
         var activation = ActivateEventSubprocess(context, graph, state, errorEventSubprocess, faultIterationKey,
-            liveWorkHandles, pendingCancellations, faultedHandle,
+            liveWorkSnapshot, pendingCancellations, faultedHandle,
             $"work fault of host '{faultedToken.AtElementId}'");
         state = activation.State;
 
@@ -723,7 +716,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken completingToken,
         string failureOutcome,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -740,9 +733,9 @@ public sealed class BpmnInterpreter
         // Ladder tier 1: a host-attached error boundary fires — mint a token to route its outbound flows.
         if (graph.AttachedErrorBoundary(element.ElementId) is { } errorBoundary)
         {
-            state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkSnapshot, pendingCancellations,
                 (token, reason) => $"BPMN error boundary '{errorBoundary.ElementId}' routed a call-activity '{failureOutcome}' outcome of host '{element.ElementId}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
+            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkSnapshot, pendingCancellations);
 
             var errorToken = NewToken(state, errorBoundary.ElementId, flowId: null, parentTokenId: interruptTokenId, BpmnTokenStatus.Active, producingWorkHandle: completedHandle, iterationKey: interruptIterationKey);
             state = AddToken(state, errorToken);
@@ -762,7 +755,7 @@ public sealed class BpmnInterpreter
         if (graph.ErrorEventSubprocess() is { } errorEventSubprocess)
         {
             var activation = ActivateEventSubprocess(context, graph, state, errorEventSubprocess, interruptIterationKey,
-                liveWorkHandles, pendingCancellations, completedHandle,
+                liveWorkSnapshot, pendingCancellations, completedHandle,
                 $"call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
             var subprocessResult = Propagate(context, graph, activation.State, completedHandle);
             return subprocessResult with
@@ -775,9 +768,9 @@ public sealed class BpmnInterpreter
         // Ladder tier 3: no catcher — the process faults deterministically with the per-outcome fault code.
         // Consume the interrupt target (coordinator cascade or host token) and its listeners; a fault continuation
         // discards the carried teardowns, because the whole process is going down.
-        state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations,
+        state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkSnapshot, pendingCancellations,
             (token, reason) => $"BPMN call activity '{element.ElementId}' faulted and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, CallActivityFailureRoutedReason, liveWorkSnapshot, pendingCancellations);
 
         var faultCode = failureOutcome switch
         {
@@ -848,7 +841,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnEventSubprocessCatcher catcher,
         string? triggerIterationKey,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string producedBy,
         string triggerDescription)
@@ -861,7 +854,7 @@ public sealed class BpmnInterpreter
 
         // Interrupting: stop all OTHER live work in the scope, keeping the activation token alive as the scope's work.
         if (catcher.Interrupting)
-            state = StopOtherLiveWork(context, state, activationToken.TokenId, EventSubprocessScopeInterruptedReason, liveWorkHandles, pendingCancellations,
+            state = StopOtherLiveWork(context, state, activationToken.TokenId, EventSubprocessScopeInterruptedReason, liveWorkSnapshot, pendingCancellations,
                 (stoppedToken, reason) => $"BPMN event subprocess '{catcher.ElementId}' interrupted the scope and cancelled token '{stoppedToken.TokenId}' at '{stoppedToken.AtElementId}' ({reason}).").State;
 
         state = StartWork(context, state, catcher.BindingRef, catcher.ElementId, activationToken.TokenId,
@@ -901,7 +894,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken listenerToken,
         BpmnEventSubprocessCatcher catcher,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -915,7 +908,7 @@ public sealed class BpmnInterpreter
             state = ArmScopeListener(context, state, catcher, scopeInstanceId);
 
         var activation = ActivateEventSubprocess(context, graph, state, catcher, listenerToken.IterationKey,
-            liveWorkHandles, pendingCancellations, completedHandle, $"scope listener '{catcher.ElementId}' fired");
+            liveWorkSnapshot, pendingCancellations, completedHandle, $"scope listener '{catcher.ElementId}' fired");
         state = activation.State;
 
         var result = Propagate(context, graph, state, scopeInstanceId);
@@ -1151,8 +1144,8 @@ public sealed class BpmnInterpreter
         string escalationCode)
     {
         var pendingCancellations = new List<PendingTeardown>();
-        var liveWorkHandles = catcher.Interrupting ? BuildLiveWorkHandles(context) : NoLiveWork;
-        var activation = ActivateEventSubprocess(context, graph, state, catcher, hostToken?.IterationKey, liveWorkHandles,
+        var liveWorkSnapshot = catcher.Interrupting ? GetLiveWorkSnapshotResolver(context, "teardown lookup") : null;
+        var activation = ActivateEventSubprocess(context, graph, state, catcher, hostToken?.IterationKey, liveWorkSnapshot,
             pendingCancellations, signal.SignallingHandle, $"escalation code '{escalationCode}'");
 
         var result = Propagate(context, graph, activation.State, context.Host.ScopeInstanceId);
@@ -1181,10 +1174,10 @@ public sealed class BpmnInterpreter
 
         if (interruptTokenId is not null)
         {
-            var liveWorkHandles = BuildLiveWorkHandles(context);
-            state = CancelTokenAndWork(context, state, interruptTokenId, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations,
+            var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "teardown lookup");
+            state = CancelTokenAndWork(context, state, interruptTokenId, EscalationHostInterruptedReason, liveWorkSnapshot, pendingCancellations,
                 (token, reason) => $"BPMN interrupting escalation boundary '{boundary.ElementId}' matched code '{escalationCode}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
-            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, EscalationHostInterruptedReason, liveWorkHandles, pendingCancellations);
+            state = CancelHostListeners(context, graph, state, interruptTokenId, listenerTokenToSkip: null, EscalationHostInterruptedReason, liveWorkSnapshot, pendingCancellations);
         }
 
         var iterationKey = hostToken?.IterationKey;
@@ -1303,7 +1296,7 @@ public sealed class BpmnInterpreter
         BpmnGraph graph,
         BpmnExecutionState state,
         BpmnToken hostToken,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -1311,7 +1304,7 @@ public sealed class BpmnInterpreter
 
         // Retire the host's still-armed catch listeners (the host-completion teardown, reused), then consume the
         // host token: no compensable is registered (the nested scope compensated itself) and nothing is routed.
-        state = CancelHostListeners(context, graph, state, hostToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
+        state = CancelHostListeners(context, graph, state, hostToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkSnapshot, pendingCancellations);
         state = UpdateToken(state, hostToken with { Status = BpmnTokenStatus.Consumed });
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.TransactionCancelled, hostElement.ElementId, null, hostToken.TokenId,
             $"BPMN transaction '{hostElement.ElementId}' completed with the '{CancelledOutcomeName}' outcome; routing the cancellation path.");
@@ -1514,7 +1507,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken instanceToken,
         BpmnLoopState loop,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
@@ -1542,7 +1535,7 @@ public sealed class BpmnInterpreter
         // Last instance: the loop is done — the coordinator "completes" and routes.
         state = RemoveLoop(state, loop.LoopId);
         var coordinator = GetRequiredToken(state, loop.TokenId);
-        state = ApplyBoundaryCompletionSemantics(context, graph, state, coordinator, liveWorkHandles, pendingCancellations);
+        state = ApplyBoundaryCompletionSemantics(context, graph, state, coordinator, liveWorkSnapshot, pendingCancellations);
 
         var result = RouteMultiInstanceCoordinatorOutbound(context, graph, state, graph.GetRequiredElement(loop.ElementId), coordinator, completedHandle);
         return result with { PendingTeardowns = pendingCancellations };
@@ -1935,7 +1928,7 @@ public sealed class BpmnInterpreter
         if (ownScopeActivation is { } catcher)
         {
             var ownScopeCancellations = new List<PendingTeardown>();
-            var activation = ActivateEventSubprocess(context, graph, state, catcher, token.IterationKey, BuildLiveWorkHandles(context),
+            var activation = ActivateEventSubprocess(context, graph, state, catcher, token.IterationKey, GetLiveWorkSnapshotResolver(context, "teardown lookup"),
                 ownScopeCancellations, producedBy, $"own-scope escalation code '{ReadEscalation(element).Code}'");
 
             // This evaluation rides the propagation loop, whose result never reaches the caller intact, so the
@@ -2076,7 +2069,7 @@ public sealed class BpmnInterpreter
         // handler on the same (binding ref, iteration id) slot, so leaving the old unit live would put two of them
         // in one slot. The stop-others loop is shared with an interrupting event-subprocess activation.
         var pendingCancellations = new List<PendingTeardown>();
-        var (stoppedState, stoppedCount) = StopOtherLiveWork(context, state, cancelEndToken.TokenId, TransactionCancelledStopReason, BuildLiveWorkHandles(context), pendingCancellations,
+        var (stoppedState, stoppedCount) = StopOtherLiveWork(context, state, cancelEndToken.TokenId, TransactionCancelledStopReason, GetLiveWorkSnapshotResolver(context, "teardown lookup"), pendingCancellations,
             (token, reason) => $"BPMN cancel end event '{cancelEndElement.ElementId}' stopped live token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
         state = stoppedState;
 
@@ -2345,11 +2338,11 @@ public sealed class BpmnInterpreter
             if (liveListenerTokenIds.Length > 0)
             {
                 var pending = new List<PendingTeardown>(result.PendingTeardowns ?? []);
-                var liveWorkHandles = BuildLiveWorkHandles(context);
+                var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "teardown lookup");
                 foreach (var listenerTokenId in liveListenerTokenIds)
                 {
                     var listenerElementId = GetRequiredToken(state, listenerTokenId).AtElementId;
-                    state = CancelTokenAndWork(context, state, listenerTokenId, EventSubprocessListenerSupersededByCompletionReason, liveWorkHandles, pending,
+                    state = CancelTokenAndWork(context, state, listenerTokenId, EventSubprocessListenerSupersededByCompletionReason, liveWorkSnapshot, pending,
                         (token, reason) => $"BPMN scope listener token '{token.TokenId}' at '{token.AtElementId}' was retired because the scope completed ({reason}).");
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ScopeListenerRetired, listenerElementId, null, listenerTokenId,
                         $"BPMN event subprocess '{listenerElementId}' scope listener '{listenerTokenId}' was retired when the scope completed.");
@@ -2399,11 +2392,11 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnEventRace race,
         string winnerTokenId,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations)
     {
         foreach (var loserTokenId in race.MemberTokenIds.Where(id => !StringComparer.Ordinal.Equals(id, winnerTokenId)))
-            state = CancelTokenAndWork(context, state, loserTokenId, EventGatewayRaceCancellationReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, loserTokenId, EventGatewayRaceCancellationReason, liveWorkSnapshot, pendingCancellations,
                 (token, reason) => $"BPMN event-based gateway '{race.GatewayElementId}' cancelled losing race member token '{token.TokenId}' at '{token.AtElementId}' after the first catch won.");
 
         return MarkRaceResolved(state, race.RaceId);
@@ -2421,7 +2414,7 @@ public sealed class BpmnInterpreter
         BpmnGraph graph,
         BpmnExecutionState state,
         BpmnToken completingToken,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations)
     {
         var completingElement = graph.GetRequiredElement(completingToken.AtElementId);
@@ -2437,9 +2430,9 @@ public sealed class BpmnInterpreter
                 return state; // the host already routed/was cancelled — nothing to interrupt.
 
             // Cancel the host token and its bound work, then the host's other listeners (skip the firing one).
-            state = CancelTokenAndWork(context, state, hostTokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, hostTokenId, BoundaryHostInterruptedReason, liveWorkSnapshot, pendingCancellations,
                 (token, reason) => $"BPMN interrupting boundary '{completingElement.ElementId}' cancelled host token '{token.TokenId}' at '{token.AtElementId}'.");
-            return CancelHostListeners(context, graph, state, hostTokenId, listenerTokenToSkip: completingToken.TokenId, BoundaryHostInterruptedReason, liveWorkHandles, pendingCancellations);
+            return CancelHostListeners(context, graph, state, hostTokenId, listenerTokenToSkip: completingToken.TokenId, BoundaryHostInterruptedReason, liveWorkSnapshot, pendingCancellations);
         }
 
         // Case B — the completing token is a boundary host.
@@ -2458,7 +2451,7 @@ public sealed class BpmnInterpreter
         if (graph.AttachedCatchBoundaries(completingElement.ElementId).Count == 0)
             return state;
 
-        return CancelHostListeners(context, graph, state, completingToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkHandles, pendingCancellations);
+        return CancelHostListeners(context, graph, state, completingToken.TokenId, listenerTokenToSkip: null, BoundarySupersededByHostCompletionReason, liveWorkSnapshot, pendingCancellations);
     }
 
     /// <summary>Arms the host's catch boundaries: one <c>AwaitingChild</c> listener token per catch boundary, parented to the host token, each starting its listener work. Error boundaries arm nothing.</summary>
@@ -2496,7 +2489,7 @@ public sealed class BpmnInterpreter
         string hostTokenId,
         string? listenerTokenToSkip,
         string reason,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations)
     {
         var listenerTokenIds = state.Tokens
@@ -2508,7 +2501,7 @@ public sealed class BpmnInterpreter
             .ToArray();
 
         foreach (var listenerTokenId in listenerTokenIds)
-            state = CancelTokenAndWork(context, state, listenerTokenId, reason, liveWorkHandles, pendingCancellations,
+            state = CancelTokenAndWork(context, state, listenerTokenId, reason, liveWorkSnapshot, pendingCancellations,
                 (token, cancellationReason) => $"BPMN boundary listener token '{token.TokenId}' at '{token.AtElementId}' was cancelled ({cancellationReason}).");
 
         return state;
@@ -2538,7 +2531,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         string tokenId,
         string reason,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         Func<BpmnToken, string, string> diagnosticMessage)
     {
@@ -2550,7 +2543,7 @@ public sealed class BpmnInterpreter
         if (FindLoopByCoordinator(state, tokenId) is { } loop)
         {
             foreach (var instanceTokenId in InstanceTokenIds(state, loop))
-                state = CancelTokenAndWork(context, state, instanceTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+                state = CancelTokenAndWork(context, state, instanceTokenId, reason, liveWorkSnapshot, pendingCancellations, diagnosticMessage);
             state = RemoveLoop(state, loop.LoopId);
             token = GetRequiredToken(state, tokenId);
         }
@@ -2561,7 +2554,7 @@ public sealed class BpmnInterpreter
         if (FindCompensationRun(state, tokenId) is { } compensationRun)
         {
             foreach (var handlerTokenId in CompensationHandlerTokenIds(state, tokenId))
-                state = CancelTokenAndWork(context, state, handlerTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+                state = CancelTokenAndWork(context, state, handlerTokenId, reason, liveWorkSnapshot, pendingCancellations, diagnosticMessage);
 
             foreach (var compensableId in compensationRun.PendingCompensableIds)
                 if (state.Compensables.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.CompensableId, compensableId)) is { Status: BpmnCompensableStatus.Claimed } claimed)
@@ -2577,8 +2570,9 @@ public sealed class BpmnInterpreter
         if (work is not null)
         {
             state = RemoveActiveWork(state, tokenId);
-            if (withdrawn is null && liveWorkHandles.TryGetValue(work.TokenId, out var handle))
-                pendingCancellations.Add(new PendingTeardown(handle, token.AtElementId, reason, token.TokenId));
+            if (withdrawn is null
+                && liveWorkSnapshot?.ResolveForToken(work.TokenId, "teardown lookup") is { } live)
+                pendingCancellations.Add(new PendingTeardown(live.Handle, token.AtElementId, reason, token.TokenId));
         }
 
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, diagnosticMessage(token, reason));
@@ -2594,7 +2588,7 @@ public sealed class BpmnInterpreter
     /// compensation-run coordinator cascades tear loops, races, and replays down consistently. Shared by the
     /// cancel-transaction path (which keeps the cancel-end coordinator) and by an interrupting event-subprocess
     /// activation (which keeps the activation token). Whether the stopped work is torn down on the host or only
-    /// dropped logically is the caller's call, made by what it passes as <paramref name="liveWorkHandles"/>.
+    /// dropped logically is the caller's call, made by whether it passes a live-work snapshot resolver.
     /// Returns the count of stopped tokens for the caller's diagnostic.
     /// </summary>
     private static (BpmnExecutionState State, int StoppedCount) StopOtherLiveWork(
@@ -2602,7 +2596,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         string keepTokenId,
         string reason,
-        IReadOnlyDictionary<string, string> liveWorkHandles,
+        BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         Func<BpmnToken, string, string> diagnosticMessage)
     {
@@ -2612,7 +2606,7 @@ public sealed class BpmnInterpreter
             .Select(candidate => candidate.TokenId)
             .ToArray();
         foreach (var liveTokenId in otherLiveTokenIds)
-            state = CancelTokenAndWork(context, state, liveTokenId, reason, liveWorkHandles, pendingCancellations, diagnosticMessage);
+            state = CancelTokenAndWork(context, state, liveTokenId, reason, liveWorkSnapshot, pendingCancellations, diagnosticMessage);
         return (state, otherLiveTokenIds.Length);
     }
 
@@ -2668,13 +2662,13 @@ public sealed class BpmnInterpreter
         return AddActiveWork(state, new BpmnActiveWork(bindingRef, elementId, tokenId, schedulingCause, iterationScope?.IterationId));
     }
 
-    /// <summary>
-    /// Resolves host handles by this scope's local work-token id. Legacy snapshot entries without an id are
-    /// usable only when their binding and iteration identify one active work record.
-    /// </summary>
-    private static IReadOnlyDictionary<string, string> BuildLiveWorkHandles(BpmnEvaluationContext context) =>
-        ResolveLiveWorkSnapshot(context, "teardown lookup")
-            .ToDictionary(pair => pair.Key, pair => pair.Value.Handle, StringComparer.Ordinal);
+    /// <summary>Gets the per-evaluation snapshot resolver and validates globally contradictory evidence.</summary>
+    private static BpmnLiveWorkSnapshotResolver GetLiveWorkSnapshotResolver(BpmnEvaluationContext context, string callback)
+    {
+        var resolver = context.LiveWorkSnapshotResolver ??= new BpmnLiveWorkSnapshotResolver(context.Host, context.EntryState);
+        resolver.ValidateGlobalEvidence(callback);
+        return resolver;
+    }
 
     /// <summary>
     /// Issues each carried teardown and the re-signalled escalation, if any. Only called from a non-fault
@@ -2781,116 +2775,6 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// Resolves the live snapshot by invocation identity and rejects duplicate or contradictory host evidence.
-    /// Handles already marked stopped are excluded before active correlation, but a supplied identity must
-    /// still agree with the stopped token. This allows a host to stage teardown without rebinding old work.
-    /// An ID-less snapshot entry uses the legacy binding/iteration slot only when that slot identifies one
-    /// active work record. Unknown ID-less entries remain available to terminate teardown, but cannot resolve a
-    /// token cancellation.
-    /// </summary>
-    private static IReadOnlyDictionary<string, BpmnLiveWork> ResolveLiveWorkSnapshot(BpmnEvaluationContext context, string callback)
-    {
-        if (context.LiveWorkByTokenId is { } cached)
-            return cached;
-
-        var host = context.Host;
-        var state = context.EntryState;
-        var stoppedByHandle = state.Tokens
-            .Where(token => token.StoppedHandle is not null)
-            .ToLookup(token => token.StoppedHandle!, StringComparer.Ordinal);
-        var liveWork = new List<BpmnLiveWork>(host.LiveWork.Count);
-        foreach (var live in host.LiveWork)
-        {
-            var stoppedTokens = stoppedByHandle[live.Handle].ToArray();
-            if (stoppedTokens.Length == 0)
-            {
-                liveWork.Add(live);
-                continue;
-            }
-
-            if (stoppedTokens.Length > 1)
-                throw new BpmnExecutionException($"BPMN {callback} found more than one stopped token for handle '{live.Handle}'.");
-            if (live.WorkTokenId is not null
-                && (string.IsNullOrWhiteSpace(live.WorkTokenId)
-                    || !StringComparer.Ordinal.Equals(live.WorkTokenId, stoppedTokens[0].TokenId)))
-                throw new BpmnExecutionException($"BPMN {callback} found live handle '{live.Handle}' with WorkTokenId '{live.WorkTokenId}' conflicting with stopped token '{stoppedTokens[0].TokenId}'.");
-        }
-
-        ValidateUniqueLiveWorkEvidence(liveWork, callback);
-
-        var activeByTokenId = new Dictionary<string, BpmnActiveWork>(StringComparer.Ordinal);
-        foreach (var work in state.ActiveWork)
-            if (!activeByTokenId.TryAdd(work.TokenId, work))
-                throw new BpmnExecutionException($"BPMN {callback} cannot resolve duplicate active work token id '{work.TokenId}'.");
-
-        var liveByTokenId = new Dictionary<string, BpmnLiveWork>(StringComparer.Ordinal);
-        foreach (var live in liveWork)
-        {
-            string? tokenId = live.WorkTokenId;
-            if (tokenId is not null)
-            {
-                if (string.IsNullOrWhiteSpace(tokenId))
-                    throw new BpmnExecutionException($"BPMN {callback} found a blank WorkTokenId on live work '{live.BindingRef}'.");
-                if (!activeByTokenId.TryGetValue(tokenId, out var active))
-                    throw new BpmnExecutionException($"BPMN {callback} found live work '{live.BindingRef}' with unknown WorkTokenId '{tokenId}'.");
-                if (!StringComparer.Ordinal.Equals(active.NodeId, live.BindingRef)
-                    || !StringComparer.Ordinal.Equals(active.IterationId, live.IterationId))
-                    throw new BpmnExecutionException($"BPMN {callback} found live work token '{tokenId}' whose binding or iteration contradicts its active work record.");
-            }
-            else
-            {
-                var candidates = state.ActiveWork.Where(work =>
-                    StringComparer.Ordinal.Equals(work.NodeId, live.BindingRef)
-                    && StringComparer.Ordinal.Equals(work.IterationId, live.IterationId)).ToArray();
-                if (candidates.Length > 1)
-                    throw new BpmnExecutionException($"BPMN {callback} found ambiguous ID-less live work for binding '{live.BindingRef}' on iteration '{live.IterationId ?? "none"}'.");
-                if (candidates.Length == 0 && state.ActiveWork.Any(work => StringComparer.Ordinal.Equals(work.NodeId, live.BindingRef)))
-                    throw new BpmnExecutionException($"BPMN {callback} found ID-less live work for binding '{live.BindingRef}' whose iteration '{live.IterationId ?? "none"}' contradicts its active work records.");
-                tokenId = candidates.Length == 1 ? candidates[0].TokenId : null;
-            }
-
-            if (tokenId is not null && !liveByTokenId.TryAdd(tokenId, live))
-                throw new BpmnExecutionException($"BPMN {callback} found more than one live host record for work token '{tokenId}'.");
-        }
-
-        context.LiveWorkByTokenId = liveByTokenId;
-        return liveByTokenId;
-    }
-
-    /// <summary>Rejects duplicate handles, duplicate explicit token ids, and ambiguous legacy slots in a host snapshot.</summary>
-    private static void ValidateUniqueLiveWorkEvidence(IReadOnlyCollection<BpmnLiveWork> liveWork, string callback)
-    {
-        var handles = new HashSet<string>(StringComparer.Ordinal);
-        var tokenIds = new HashSet<string>(StringComparer.Ordinal);
-        var legacySlots = new HashSet<(string BindingRef, string? IterationId)>();
-        var explicitSlots = new HashSet<(string BindingRef, string? IterationId)>();
-
-        foreach (var live in liveWork)
-        {
-            if (!handles.Add(live.Handle))
-                throw new BpmnExecutionException($"BPMN {callback} found duplicate live-work handle '{live.Handle}'.");
-
-            var slot = (live.BindingRef, live.IterationId);
-            if (live.WorkTokenId is null)
-            {
-                if (!legacySlots.Add(slot))
-                    throw new BpmnExecutionException($"BPMN {callback} found duplicate ID-less live work for binding '{live.BindingRef}' on iteration '{live.IterationId ?? "none"}'.");
-                continue;
-            }
-
-            if (string.IsNullOrWhiteSpace(live.WorkTokenId))
-                throw new BpmnExecutionException($"BPMN {callback} found a blank WorkTokenId on live work '{live.BindingRef}'.");
-            if (!tokenIds.Add(live.WorkTokenId))
-                throw new BpmnExecutionException($"BPMN {callback} found duplicate live-work token id '{live.WorkTokenId}'.");
-            explicitSlots.Add(slot);
-        }
-
-        foreach (var slot in legacySlots)
-            if (explicitSlots.Contains(slot))
-                throw new BpmnExecutionException($"BPMN {callback} found mixed explicit and ID-less live-work evidence for binding '{slot.BindingRef}' on iteration '{slot.IterationId ?? "none"}'.");
-    }
-
-    /// <summary>
     /// Confirms that terminal work has left the host snapshot. Other invocations on the same binding and
     /// iteration are valid when their token identities independently resolve.
     /// </summary>
@@ -2900,10 +2784,10 @@ public sealed class BpmnInterpreter
         string handle,
         string callback)
     {
-        var liveByTokenId = ResolveLiveWorkSnapshot(context, callback);
+        var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, callback);
         if (context.Host.LiveWork.Any(live => StringComparer.Ordinal.Equals(live.Handle, handle)))
             throw new BpmnExecutionException($"BPMN {callback} handle '{handle}' is still present in the host's live-work snapshot.");
-        if (liveByTokenId.TryGetValue(resolved.TokenId, out var live))
+        if (liveWorkSnapshot.ResolveForToken(resolved.TokenId, callback) is { } live)
             throw new BpmnExecutionException($"BPMN {callback} token '{resolved.TokenId}' is still live under handle '{live.Handle}'.");
     }
 
@@ -2913,8 +2797,9 @@ public sealed class BpmnInterpreter
         BpmnActiveWork resolved,
         BpmnWorkSignalledRequest signal)
     {
-        var liveByTokenId = ResolveLiveWorkSnapshot(context, "signalled work");
-        if (!liveByTokenId.TryGetValue(resolved.TokenId, out var live)
+        var liveWorkSnapshot = GetLiveWorkSnapshotResolver(context, "signalled work");
+        var live = liveWorkSnapshot.ResolveForToken(resolved.TokenId, "signalled work");
+        if (live is null
             || (signal.WorkTokenId is not null && !StringComparer.Ordinal.Equals(live.WorkTokenId, signal.WorkTokenId))
             || !StringComparer.Ordinal.Equals(live.Handle, signal.SignallingHandle))
             throw new BpmnExecutionException($"BPMN signal for work '{signal.SignallingBindingRef}' and token '{resolved.TokenId}' does not match one live host record and handle.");

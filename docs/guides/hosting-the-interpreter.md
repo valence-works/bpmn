@@ -150,6 +150,14 @@ present and `SignallingHandle` must match that entry, including for an ID-less i
 The established late-signal behavior applies only when no active invocation matches that exact slot.
 Hosts that can start concurrent ordinary work on one binding should store and echo the token ID.
 
+An ambiguous ID-less slot does not block an unrelated completion, fault or signal. It is refused
+when that slot must be resolved, including to select a handle for an interruption. This does not
+make ambiguous work safely completable: hosts must echo the token ID to address those invocations.
+Duplicate handles, contradictory explicit identities and invalid iteration evidence still refuse.
+A whole-scope terminate is different: it cancels each distinct reported live handle without choosing
+between tokens. Finished work must leave `LiveWork` before a terminal callback; retaining the exact
+completing handle is now rejected explicitly, even when the other invocation fields would resolve.
+
 For `OnWorkSignalled`, an explicit ID is strict for the recognized escalation code: the invocation
 must still be active and its matching handle must remain in `LiveWork`. An ID-less signal uses the
 exact binding and `SignallingIterationId` slot, with null matching only null. If the slot resolves an
