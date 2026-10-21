@@ -120,7 +120,9 @@ public sealed class BpmnNoVariables : IBpmnVariableReader
 /// The interpreter's determinism rests on the answers being a function of the request and the host's process
 /// data, as it already rests on the variable reader. An evaluator that throws has broken the port; the exception
 /// surfaces as a <see cref="BpmnExecutionException"/> whose inner exception is the evaluator's. A condition that
-/// cannot be answered is reported as <see cref="BpmnConditionResult.Failed"/> instead, which faults the scope.
+/// cannot be answered is reported as <see cref="BpmnConditionResult.Failed"/> instead, which faults the scope,
+/// except where the routing it decided is moot: an escalation throw whose escalation an interrupting event
+/// subprocess of its own scope caught.
 /// See ADR 0011.
 /// </para>
 /// </summary>

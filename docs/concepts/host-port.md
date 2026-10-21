@@ -413,7 +413,7 @@ The answer is one of three:
 | --- | --- |
 | `BpmnConditionResult.True` | The condition holds. |
 | `BpmnConditionResult.False` | It does not. |
-| `BpmnConditionResult.Failed(faultCode, message)` | It could not be evaluated. The scope faults with `faultCode`, or with `bpmn.condition.failed` when that is null. |
+| `BpmnConditionResult.Failed(faultCode, message)` | It could not be evaluated. The scope faults with `faultCode`, or with `bpmn.condition.failed` when that is null. The one exception is an escalation throw whose escalation an interrupting event subprocess of its own scope caught: its successor is stopped anyway, so the answer stays on the trace and the token ends. |
 
 A failure is a verdict on the scope, like `bpmn.gateway.no-flow-selected`, not a BPMN error raised by
 bound work, so no error boundary or error event subprocess takes it. An evaluator that throws has broken

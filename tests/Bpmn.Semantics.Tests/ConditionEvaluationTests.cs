@@ -557,9 +557,6 @@ public sealed class ConditionEvaluationTests
         conditions.Requests.Select(request => request.FlowId).ShouldBe(["gateMatched"]);
     }
 
-    // --- Fixtures and helpers ------------------------------------------------------------------------------
-
-    /// <summary>Start -> Gate, an unbound exclusive gateway with expression flows f1, f2, f3 to End1..End3, and a default fd.</summary>
     // --- Escalation throw caught by its own scope ----------------------------------------------------------
 
     [Theory]
@@ -597,6 +594,8 @@ public sealed class ConditionEvaluationTests
             "a non-interrupting catcher leaves the throw's successor running, so its routing still decides");
     }
 
+    // --- Fixtures and helpers ------------------------------------------------------------------------------
+
     /// <summary>
     /// An escalation throw whose only onward flow is <c>onward</c>, caught by an event subprocess of the same scope.
     /// </summary>
@@ -623,6 +622,7 @@ public sealed class ConditionEvaluationTests
         return Interpreter.Start(new BpmnStartRequest(graph, null, Snapshot(conditions)));
     }
 
+    /// <summary>Start -> Gate, an unbound exclusive gateway with expression flows f1, f2, f3 to End1..End3, and a default fd.</summary>
     private static BpmnProcessDefinition UnboundExclusive(bool withDefault = true, string? defaultExpression = null)
     {
         var builder = new BpmnProcessBuilder("xor")
