@@ -89,6 +89,10 @@ public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string
 public interface IBpmnVariableReader
 {
     /// <summary>Reads a declared variable by name. Returns <c>false</c> when the host has no such variable at all.</summary>
+    /// <remarks>
+    /// Return <c>true</c> with <see cref="BpmnValue.Refused"/> when the host withholds the value;
+    /// collection-mode multi-instance evaluation then faults with the host's supplied code and message.
+    /// </remarks>
     bool TryRead(string name, out BpmnValue value);
 }
 
