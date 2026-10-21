@@ -560,6 +560,69 @@ public sealed class ConditionEvaluationTests
     // --- Fixtures and helpers ------------------------------------------------------------------------------
 
     /// <summary>Start -> Gate, an unbound exclusive gateway with expression flows f1, f2, f3 to End1..End3, and a default fd.</summary>
+    // --- Escalation throw caught by its own scope ----------------------------------------------------------
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_throw_an_interrupting_own_scope_catcher_takes_activates_it_whatever_its_onward_condition_answers(bool fails)
+    {
+        var conditions = new InMemoryConditions().When("onward", fails ? BpmnConditionResult.Failed("host.bad", "no such variable") : BpmnConditionResult.False);
+
+        var evaluation = StartEscalating(WithExpressions(EscalatingToOwnScope(), ("onward", "ready")), conditions, interrupting: true);
+
+        evaluation.Continuation.ShouldBe(BpmnContinuation.Defer.Instance, string.Join("\n", evaluation.State.Diagnostics.Select(d => d.Message)));
+        evaluation.Commands.OfType<BpmnHostCommand.StartWork>().Select(command => command.BindingRef).ShouldBe(["on-overdue"],
+            "the interrupting catcher stops the throw's successor anyway, so its routing cannot fault the scope");
+        Evaluations(evaluation).ShouldBe([("Escalate", "onward", fails ? "Failed" : "False")], "the answer was asked and is still on the trace");
+    }
+
+    [Fact]
+    public void A_throw_whose_outcome_only_flow_cannot_match_still_activates_an_interrupting_own_scope_catcher()
+    {
+        var evaluation = StartEscalating(EscalatingToOwnScope(onwardOutcome: "Never"), conditions: null, interrupting: true);
+
+        evaluation.Continuation.ShouldBe(BpmnContinuation.Defer.Instance);
+        evaluation.Commands.OfType<BpmnHostCommand.StartWork>().Select(command => command.BindingRef).ShouldBe(["on-overdue"]);
+    }
+
+    [Fact]
+    public void A_throw_a_non_interrupting_own_scope_catcher_takes_still_faults_when_it_takes_no_flow()
+    {
+        var conditions = new InMemoryConditions().When("onward", false);
+
+        var evaluation = StartEscalating(WithExpressions(EscalatingToOwnScope(), ("onward", "ready")), conditions, interrupting: false);
+
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.flow.none-taken",
+            "a non-interrupting catcher leaves the throw's successor running, so its routing still decides");
+    }
+
+    /// <summary>
+    /// An escalation throw whose only onward flow is <c>onward</c>, caught by an event subprocess of the same scope.
+    /// </summary>
+    private static BpmnProcessDefinition EscalatingToOwnScope(string? onwardOutcome = null) =>
+        new BpmnProcessBuilder("escalating-to-own-scope")
+            .StartEvent("Start")
+            .IntermediateThrowEvent("Escalate", Escalation("overdue"))
+            .EndEvent("End")
+            .Element(new BpmnElement("OnOverdue", BpmnElementTypes.SubProcess, bindingRef: "on-overdue", triggeredByEvent: true))
+            .Connect("Start", "Escalate")
+            .Connect("Escalate", "End", condition: onwardOutcome, flowId: "onward")
+            .Build();
+
+    /// <summary>Starts <paramref name="definition"/> with its <c>on-overdue</c> event subprocess body supplied.</summary>
+    private static BpmnEvaluation StartEscalating(BpmnProcessDefinition definition, IBpmnConditionEvaluator? conditions, bool interrupting)
+    {
+        var body = new BpmnProcessBuilder("on-overdue")
+            .Element(new BpmnElement("HandlerStart", BpmnElementTypes.StartEvent, cancelActivity: interrupting, eventDefinitions: [Escalation("overdue")]))
+            .Task("Handle", bindingRef: "handle")
+            .EndEvent("HandlerEnd")
+            .ConnectSequence("HandlerStart", "Handle", "HandlerEnd")
+            .Build();
+        var graph = BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition, bindingRef => bindingRef == "on-overdue" ? body : null), Evaluating);
+        return Interpreter.Start(new BpmnStartRequest(graph, null, Snapshot(conditions)));
+    }
+
     private static BpmnProcessDefinition UnboundExclusive(bool withDefault = true, string? defaultExpression = null)
     {
         var builder = new BpmnProcessBuilder("xor")

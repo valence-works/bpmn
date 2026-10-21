@@ -1838,9 +1838,10 @@ public sealed class BpmnInterpreter
                 case BpmnBehaviorCommandKind.RaiseEscalation:
                 {
                     // The escalation throw or end event raises an escalation. RaiseEscalation is the FIRST
-                    // command of the throw's decision (RaiseEscalation, then EmitTokens or ConsumeToken): it
-                    // either records an own-scope catch, signals the enclosing scope, or records a root no-op
-                    // diagnostic — never a fault — and the loop then processes the companion routing command.
+                    // command of the throw's decision, before its routing command: EmitTokens or ConsumeToken, or
+                    // a Fault when an intermediate throw takes no flow or a condition fails. It either records an
+                    // own-scope catch, signals the enclosing scope, or records a root no-op diagnostic — never a
+                    // fault — and the loop then processes the companion routing command.
                     var raised = RaiseEscalation(context, graph, state, token, element);
                     state = raised.State;
                     ownScopeActivation = raised.OwnScopeActivation;
@@ -1886,6 +1887,18 @@ public sealed class BpmnInterpreter
                 }
                 case BpmnBehaviorCommandKind.Fault:
                 {
+                    // An escalation throw whose escalation an interrupting event subprocess of this scope caught
+                    // has no successor to route: the activation below stops it either way. So a routing fault, no
+                    // flow taken or a failed condition, is moot there, and the token ends as it did before
+                    // conditions could fault a throw's routing.
+                    if (ownScopeActivation is { Interrupting: true })
+                    {
+                        state = UpdateToken(state, token with { Status = BpmnTokenStatus.Consumed });
+                        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Consumed, element.ElementId, null, token.TokenId,
+                            $"BPMN token '{token.TokenId}' ended at escalation throw '{element.ElementId}': an interrupting event subprocess of its scope caught the escalation, so its routing is moot ({command.Message}).");
+                        break;
+                    }
+
                     var faultCode = string.IsNullOrWhiteSpace(command.FaultCode) ? "bpmn.behavior.faulted" : command.FaultCode;
                     var message = command.Message ?? $"BPMN behavior for element '{element.ElementId}' faulted the process.";
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, token.TokenId, message);
