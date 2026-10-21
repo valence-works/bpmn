@@ -46,8 +46,13 @@ public static class BpmnPayloadFormat
     /// <c>BpmnProcessDefinition</c>. A 1.2.0 document reads as before, with the properties absent; one that
     /// carried an author's expression as a retained foreign child still writes it back. See ADR 0011.
     /// </para>
+    /// <para>
+    /// 1.4.0 adds one value to <c>BpmnDiagnosticKind</c>, <c>ConditionEvaluated</c>, appended after every
+    /// existing value so none is renumbered. Execution state written by 1.4.0 may carry it; a 1.3.0 document
+    /// reads as before. See ADR 0011.
+    /// </para>
     /// </summary>
-    public const string Version = "1.3.0";
+    public const string Version = "1.4.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

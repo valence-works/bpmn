@@ -53,8 +53,19 @@ source element's completed work reported that outcome name. The library evaluate
 outcomes are strings the host supplies on completion. See
 [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). A flow can also
 carry a BPMN `ConditionExpression`, set with an initializer, which the writer emits as a
-`<conditionExpression>`. The interpreter does not evaluate it yet: see
-[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
+`<conditionExpression>`. When it is the flow's only condition, the host evaluates it through
+`IBpmnConditionEvaluator`, and the graph builds only for a host that declares `ConditionEvaluation`:
+see [The host port](../concepts/host-port.md#conditions).
+
+```csharp
+var flow = new BpmnSequenceFlow("to-ship", "gate", "ship")
+{
+    ConditionExpression = new BpmnConditionExpression("amount < 1000")
+};
+```
+
+A flow with no condition at all is always taken from an activity or an inclusive gateway, and counts
+as true on an exclusive gateway, which takes the first flow that holds in declaration order.
 
 ```csharp
 var elements = new List<BpmnElement>

@@ -15,8 +15,9 @@ Every entry point is synchronous, takes a request record, and returns a value:
 (graph, prior state, host snapshot, event) -> (next state, continuation, commands, error disposition?)
 ```
 
-Nothing is called back. Nothing is awaited. The interpreter computes a decision and hands it to you;
-you apply it in whatever idiom and on whatever thread your system prefers.
+Nothing is awaited, and nothing is called back except to read: a variable, or the answer to a
+condition expression. The interpreter computes a decision and hands it to you; you apply it in
+whatever idiom and on whatever thread your system prefers.
 
 ```csharp
 var interpreter = BpmnInterpreter.CreateDefault();
@@ -121,6 +122,7 @@ call. It is a value, constructed fresh per evaluation, never held.
 | `InvocationCorrelation` | The `Correlation` dictionary the host carried into this invocation, echoed back verbatim. Empty for a process started directly. |
 | `Variables` | An `IBpmnVariableReader`. |
 | `Capabilities` | What this host can do. Must match what the graph was built with. |
+| `Conditions` | An `IBpmnConditionEvaluator`, or `null`. An init-only property, set with `with { Conditions = ... }`. Required when you declare `ConditionEvaluation`. |
 
 ```csharp
 public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string Handle);
@@ -160,7 +162,50 @@ Three answers are distinct, and the difference matters:
 If your host would need to await something to answer, pre-resolve it before the evaluation. There is
 no async escape hatch here, deliberately.
 
-### 4. A place to keep state
+### 4. A condition evaluator, if you evaluate expressions
+
+Documents written by modeling tools route on `<conditionExpression>` bodies in some expression
+language. The library contains no language. If you want to run such documents, you supply the second
+callback, of the same shape as the variable reader:
+
+```csharp
+public sealed class MyConditions : IBpmnConditionEvaluator
+{
+    public BpmnConditionResult Evaluate(BpmnConditionRequest request) =>
+        request.Language switch
+        {
+            null or "https://www.omg.org/spec/DMN/20191111/FEEL/" => EvaluateFeel(request.Body), // your own engine
+            _ => BpmnConditionResult.Failed("my.condition.unsupported-language", $"Cannot evaluate '{request.Language}'.")
+        };
+}
+
+var graph = BpmnGraph.Build(definition, boundWork, BpmnHostCapabilities.Full | BpmnHostCapabilities.ConditionEvaluation);
+var snapshot = BpmnHostSnapshot.Root(instanceId, BpmnHostCapabilities.Full | BpmnHostCapabilities.ConditionEvaluation)
+    with { Conditions = new MyConditions() };
+```
+
+Declare `ConditionEvaluation` to `Build` and on every snapshot, and put the evaluator on every
+snapshot. Without the capability, `Build` refuses any definition with a flow whose only condition is an
+expression, naming the flows; the import reports nothing about them, because the capability is the
+check. `Full` does not include `ConditionEvaluation`: it is the one capability that means embedding a
+language.
+
+The request carries the element whose flows are being chosen, the flow, the expression body exactly as
+modeled, and its language: the flow's own, else the process default from
+`definitions/@expressionLanguage`, else `null`. Answer `True`, `False`, or `Failed(faultCode, message)`;
+a failure faults the scope with your code, or `bpmn.condition.failed`. Evaluate against the same
+process data your variable reader serves, and keep the answer a function of the request and that data:
+an evaluation is reproducible only while your answers are.
+
+The interpreter decides the rest: which flows are asked and in what order, that a flow with a
+`conditionOutcome` is matched on the outcome instead, that the default flow is never asked, and what
+happens when nothing holds. [The host port](../concepts/host-port.md#conditions) has the rules. Every
+answer is recorded as a `ConditionEvaluated` diagnostic.
+
+`Bpmn.Runtime.InMemory` ships `InMemoryConditions`, a table of answers by flow id with no language in
+it, for tests and samples.
+
+### 5. A place to keep state
 
 `BpmnExecutionState` is the interpreter's memory: tokens, active children, diagnostics, races, loops,
 compensation log, and a sequence counter that every generated id derives from. Treat it as opaque. It
@@ -329,7 +374,9 @@ public sealed class MinimalHost : IBpmnVariableReader
 
     public IReadOnlyList<FaultRecord> Faults => _faults;
 
-    // --- The interpreter's one callback -------------------------------------------------
+    // --- The interpreter's variable callback --------------------------------------------
+    // A host that evaluates condition expressions also puts an IBpmnConditionEvaluator on the
+    // snapshot (see section 4) and declares ConditionEvaluation.
 
     public bool TryRead(string name, out BpmnValue value)
     {
@@ -508,6 +555,8 @@ command shape constrains when decisions are made, not when work happens.
 
 - [ ] Build the graph once per definition, not per instance.
 - [ ] Declare capabilities honestly. `Full` is a claim, not a default.
+- [ ] Declare `ConditionEvaluation` only if you put an `IBpmnConditionEvaluator` on every snapshot, and
+      keep its answers a function of the request and your process data.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
 - [ ] Report a callback with the same binding ref and handle the work was started under, and with

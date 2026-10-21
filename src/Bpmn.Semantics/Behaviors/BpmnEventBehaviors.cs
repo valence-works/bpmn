@@ -59,16 +59,9 @@ public sealed class CatchEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
-    {
-        var flows = BpmnFlowSelector.SelectTaskFlows(context);
-        if (flows.Count == 0 && context.OutboundFlows.Count > 0)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-                "bpmn.flow.none-taken",
-                $"BPMN intermediate catch event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
-
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
-    }
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN intermediate catch event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
 }
 
 /// <summary>
@@ -129,7 +122,8 @@ public sealed class CancelEndEventBehavior : IBpmnElementBehavior
 /// command followed by <see cref="BpmnBehaviorCommandKind.EmitTokens"/> over its selected outbound flows — the
 /// throw signals its enclosing scope and continues immediately (fire-and-continue; escalation is non-blocking).
 /// The interpreter reads the escalation code from the element and owns the signalling (or the root no-op); the
-/// behavior stays semantics-unaware.
+/// behavior stays semantics-unaware. When no outbound flow is selected, or a condition fails, the routing
+/// command is a fault instead; the escalation is still raised first.
 /// </summary>
 public sealed class EscalationThrowEventBehavior : IBpmnElementBehavior
 {
@@ -139,7 +133,8 @@ public sealed class EscalationThrowEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(
             BpmnBehaviorCommand.RaiseEscalation(),
-            BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(BpmnFlowSelector.SelectTaskFlows(context))));
+            BpmnFlowSelector.RouteAsTask(context,
+                $"BPMN escalation throw event '{context.Element.ElementId}' raised its escalation, but no outbound sequence flow's condition held and no default flow is declared."));
 
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
         throw new BpmnExecutionException($"BPMN escalation throw event '{context.Element.ElementId}' cannot bind work.");
@@ -177,16 +172,9 @@ public sealed class MessageThrowEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
-    {
-        var flows = BpmnFlowSelector.SelectTaskFlows(context);
-        if (flows.Count == 0 && context.OutboundFlows.Count > 0)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-                "bpmn.flow.none-taken",
-                $"BPMN message throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
-
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
-    }
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN message throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
 }
 
 /// <summary>

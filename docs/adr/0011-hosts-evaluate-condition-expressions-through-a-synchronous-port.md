@@ -177,3 +177,34 @@ finding nobody reads does not make it correct.
 **Add `ConditionEvaluation` to `Full`.** Rejected. Hosts that declare `Full` today would suddenly
 promise an evaluator they do not have, and would discover it as a null reference at run time rather
 than a refusal at build time.
+
+## Amendment: as implemented
+
+Recorded when the interpreter step landed, where it differs from or adds to the text above.
+
+- **No match at an activity keeps its own code.** An activity, a subprocess, a catch or throw event
+  and a boundary event already faulted with `bpmn.flow.none-taken` when their completing work matched
+  no outgoing flow, so they keep that code. What is new is that the same fault now also applies when a
+  token arrives at an element that binds no work, which used to consume the token silently. Exclusive
+  and inclusive gateways keep `bpmn.gateway.no-flow-selected`.
+- **A throwing evaluator surfaces wrapped.** The evaluator is asked from inside a behavior, so its
+  exception reaches the host as a `BpmnExecutionException` naming the element and flow, with the
+  evaluator's exception as `InnerException`, rather than unwrapped as a variable reader's would. A host
+  that declares `ConditionEvaluation` and leaves `BpmnHostSnapshot.Conditions` null gets the same
+  exception type the first time a condition is needed.
+- **`Iteration` is null with the built-in behaviors.** The instances of a multi-instance activity
+  never route: the activity routes once after its last instance, outside any iteration, and a
+  multi-instance subprocess body is its own scope. The field is populated if a routing token is ever
+  an instance token.
+- **An unbound exclusive gateway with a single outgoing flow** still takes it without testing it unless
+  that flow's only condition is an expression, so a single outcome-conditioned flow keeps routing as
+  before.
+- **Default flows.** A default flow is identified by the element's `default` reference as well as the
+  flow's own flag, which is how a read document marks it. Before this, an activity treated a default
+  marked only on the element as an ordinary unconditional flow and took it beside every other.
+- **Event-based gateway flows** may not carry an expression, as they may not carry an outcome.
+- **Flows nothing evaluates are refused.** A start event, a parallel gateway and an event-based gateway take every outgoing flow, so graph build refuses an expression-only flow out of one whatever the host declares, and such a flow does not count toward `ConditionEvaluation`; an outcome on those flows is passed over as before.
+- **An escalation throw caught by an interrupting event subprocess of its own scope does not fault on its
+  routing.** The activation stops the throw's successor anyway, so a failed answer or no flow taken there
+  ends the token instead of faulting the scope. The answer stays on the trace as a `ConditionEvaluated`
+  diagnostic. A non-interrupting catch leaves the successor running, so its routing still faults.

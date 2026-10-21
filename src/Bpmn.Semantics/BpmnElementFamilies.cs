@@ -186,6 +186,17 @@ public static class BpmnElementFamilies
     public static bool IsCallActivity(BpmnElement element) =>
         StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.CallActivity);
 
+    /// <summary>
+    /// True for an element whose built-in behavior takes every outgoing flow without testing any condition:
+    /// every start event, a parallel gateway, and an event-based gateway. A condition expression on such a flow
+    /// would never be evaluated, so graph build refuses one rather than ignore it, and capability analysis does
+    /// not count it.
+    /// </summary>
+    internal static bool TakesEveryOutgoingFlow(BpmnElement element) =>
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.StartEvent) ||
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ParallelGateway) ||
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EventBasedGateway);
+
     /// <summary>The host families a boundary event may attach to: the task family and embedded subprocesses.</summary>
     public static bool IsBoundaryHostFamily(BpmnElement element) =>
         TaskElementTypes.Contains(element.ElementType) ||

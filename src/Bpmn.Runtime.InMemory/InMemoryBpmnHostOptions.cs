@@ -18,6 +18,16 @@ public sealed class InMemoryBpmnHostOptions
     public BpmnHostCapabilities Capabilities { get; set; } = BpmnHostCapabilities.Full;
 
     /// <summary>
+    /// Answers the condition expressions of the processes this host runs, or <c>null</c> to evaluate none. Setting
+    /// one also declares <see cref="BpmnHostCapabilities.ConditionEvaluation"/>, which
+    /// <see cref="BpmnHostCapabilities.Full"/> does not include, so a definition whose flows carry expressions
+    /// builds only when an evaluator is configured. <see cref="InMemoryConditions"/> is a table of answers by
+    /// flow id; any <see cref="IBpmnConditionEvaluator"/> will do. Every scope the host runs, root and nested,
+    /// asks the same evaluator.
+    /// </summary>
+    public IBpmnConditionEvaluator? Conditions { get; set; }
+
+    /// <summary>
     /// Durations for timer work, keyed by binding ref. Consulted before the model's own ISO-8601 duration, so
     /// a test can shorten or supply a timer the definition does not carry one for.
     /// </summary>
