@@ -51,8 +51,13 @@ public static class BpmnPayloadFormat
     /// existing value so none is renumbered. Execution state written by 1.4.0 may carry it; a 1.3.0 document
     /// reads as before. See ADR 0011.
     /// </para>
+    /// <para>
+    /// 1.5.0 appends two values to <c>BpmnDiagnosticKind</c>, <c>ErrorThrown</c> and <c>ErrorCaught</c>, after
+    /// every existing value so none is renumbered. Execution state written by 1.5.0 may carry them; a 1.4.0
+    /// document reads as before. See ADR 0012.
+    /// </para>
     /// </summary>
-    public const string Version = "1.4.0";
+    public const string Version = "1.5.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

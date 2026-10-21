@@ -37,6 +37,7 @@ public sealed class BpmnBehaviorRegistry : IBpmnBehaviorRegistry
             new CompensationEndEventBehavior(),
             new CancelEndEventBehavior(),
             new EscalationEndEventBehavior(),
+            new ErrorEndEventBehavior(),
             new MessageEndEventBehavior(),
             new CatchEventBehavior(),
             new CompensationThrowEventBehavior(),

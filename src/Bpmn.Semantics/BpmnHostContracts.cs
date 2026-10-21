@@ -328,9 +328,33 @@ public abstract record BpmnContinuation
     }
 
     /// <summary>The process failed deterministically and cannot continue.</summary>
-    /// <param name="Code">A stable fault code.</param>
+    /// <param name="Code">
+    /// A stable fault code: the library's reason the scope stopped, such as <c>bpmn.work.faulted</c> or
+    /// <see cref="BpmnInterpreter.ErrorThrownFaultCode"/>. Never a code a document declares.
+    /// </param>
     /// <param name="Message">A human-readable explanation.</param>
-    public sealed record Fault(string Code, string Message) : BpmnContinuation;
+    public sealed record Fault(string Code, string Message) : BpmnContinuation
+    {
+        /// <summary>
+        /// The BPMN error that caused the fault, or <c>null</c> when the fault is not a BPMN error or the error
+        /// has no code. Set when no catcher in the scope took a work fault the host reported with
+        /// <see cref="BpmnWorkFaultedRequest.ErrorCode"/>, a call activity's <c>Faulted</c> outcome reported with
+        /// <see cref="BpmnWorkCompletedRequest.ErrorCode"/>, or an error an error end event threw. A fault such as
+        /// the propagation limit, a gateway that selects no flow, or a cancelled transaction with no cancel
+        /// boundary carries none.
+        /// <para>
+        /// A scope's interpreter cannot see the scope above it, so the host carries the error across: when a
+        /// nested scope ends with this fault, copy this code into the parent's fault report for an embedded
+        /// subprocess, or into its completion report with the <c>Faulted</c> outcome for a call activity. A host
+        /// that drops it degrades the error to an uncoded one, which only a catch-all catches. See ADR 0012.
+        /// </para>
+        /// <para>
+        /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+        /// nor the deconstruction a host compiled against an earlier version uses.
+        /// </para>
+        /// </summary>
+        public string? ErrorCode { get; init; }
+    }
 }
 
 /// <summary>
@@ -348,17 +372,18 @@ public record BpmnEvaluation(
     IReadOnlyList<BpmnHostCommand> Commands)
 {
     /// <summary>
-    /// What BPMN did with a host-reported failure, including a call activity's failure outcome, or
-    /// <c>null</c> when this evaluation did not route or absorb a failure. Transaction cancellation and
-    /// event subprocesses activated without a failure do not produce an error disposition.
+    /// What BPMN did with a host-reported failure, including a call activity's failure outcome, or with an
+    /// error an error end event threw, or <c>null</c> when this evaluation did not route or absorb a failure.
+    /// Transaction cancellation and event subprocesses activated without a failure do not produce an error
+    /// disposition.
     /// </summary>
     public BpmnErrorDisposition? ErrorDisposition { get; init; }
 }
 
 /// <summary>
-/// What became of a host-reported failure, including a call activity's failure outcome. This is a verdict,
-/// not an instruction: the interpreter reports how BPMN routed or absorbed it, and the host decides what
-/// that means for its own error bookkeeping.
+/// What became of a host-reported failure, including a call activity's failure outcome, or of an error an
+/// error end event threw. This is a verdict, not an instruction: the interpreter reports how BPMN routed or
+/// absorbed it, and the host decides what that means for its own error bookkeeping.
 /// </summary>
 public abstract record BpmnErrorDisposition
 {
@@ -367,17 +392,24 @@ public abstract record BpmnErrorDisposition
     }
 
     /// <summary>
-    /// A BPMN catcher took the error: an error boundary event attached to the failing activity's host, or the
-    /// scope's error event subprocess. The process continues along the catcher's path, so the host should treat
-    /// the failure as handled.
+    /// A BPMN catcher took the error: an error boundary event attached to the failing activity's host, or an
+    /// error event subprocess of the scope. A catcher that declares a code catches only an error with that
+    /// code, and wins over a catch-all; a catch-all catches any error, including one with no code. The process
+    /// continues along the catcher's path, so the host should treat the failure as handled.
     /// </summary>
     /// <param name="CatchingElementId">The boundary event or event subprocess that caught it.</param>
-    /// <param name="ErrorCode">The error code the catcher declares, or <c>null</c> for a catch-all.</param>
+    /// <param name="ErrorCode">
+    /// The error code the catcher declares, which is the code of the error it caught, or <c>null</c> when a
+    /// catch-all caught it.
+    /// </param>
     public sealed record Caught(string CatchingElementId, string? ErrorCode) : BpmnErrorDisposition;
 
     /// <summary>
     /// No catcher handled the error, or the catcher's path itself faulted. The final continuation is always a
-    /// <see cref="BpmnContinuation.Fault"/> and the failure is the host's to surface.
+    /// <see cref="BpmnContinuation.Fault"/> and the failure is the host's to surface. An error end event that no
+    /// event subprocess of its scope catches reports this too: the error leaves the scope on the fault's
+    /// <see cref="BpmnContinuation.Fault.ErrorCode"/>, and how it ends is decided again by the parent's own
+    /// evaluation of the fault report the host makes there.
     /// </summary>
     public sealed record Propagated : BpmnErrorDisposition
     {
@@ -439,6 +471,21 @@ public sealed record BpmnWorkCompletedRequest(
     /// iteration. It is init-only to preserve the positional constructor and deconstruction shape.
     /// </summary>
     public string? WorkTokenId { get; init; }
+
+    /// <summary>
+    /// The BPMN error a called process raised, meaningful only alongside a call activity's
+    /// <see cref="BpmnInterpreter.CallActivityFaultedOutcomeName"/> outcome: it lets that error reach the
+    /// caller's error catchers, which a coded catcher otherwise never matches. Typically the
+    /// <see cref="BpmnContinuation.Fault.ErrorCode"/> the called process ended with. The interpreter ignores it
+    /// on any other completion, including the <c>DispatchFailed</c> and <c>Cancelled</c> outcomes, which are
+    /// failures of the call itself and reach only catch-alls. Surrounding whitespace is trimmed, and a blank
+    /// code counts as none. See ADR 0012.
+    /// <para>
+    /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+    /// nor the deconstruction a host compiled against an earlier version uses.
+    /// </para>
+    /// </summary>
+    public string? ErrorCode { get; init; }
 }
 
 /// <summary>
@@ -453,7 +500,10 @@ public sealed record BpmnWorkCompletedRequest(
 /// <param name="Host">The host snapshot for this evaluation.</param>
 /// <param name="FaultedBindingRef">The binding whose work failed.</param>
 /// <param name="FaultedHandle">The failed work's opaque host handle.</param>
-/// <param name="FaultMessage">A human-readable description of the failure, used in the propagated fault message.</param>
+/// <param name="FaultMessage">
+/// A human-readable description of the failure, used in the propagated fault message. The BPMN error the work
+/// raised, if any, goes in <see cref="BpmnWorkFaultedRequest.ErrorCode"/>, not here.
+/// </param>
 public sealed record BpmnWorkFaultedRequest(
     BpmnGraph Graph,
     BpmnExecutionState? PriorState,
@@ -480,6 +530,21 @@ public sealed record BpmnWorkFaultedRequest(
     /// iteration. It is init-only to preserve the positional constructor and deconstruction shape.
     /// </summary>
     public string? WorkTokenId { get; init; }
+
+    /// <summary>
+    /// The BPMN error the failed work raised, or <c>null</c> when the host cannot name one. Which error was
+    /// raised is a fact about the run that only the host knows; which catcher it reaches is a property of the
+    /// model. An error boundary on the failing activity, then an error event subprocess of the scope, catches it
+    /// when it declares this code, else when it is a catch-all; an uncoded fault reaches only catch-alls. When
+    /// nothing catches it, the scope faults and <see cref="BpmnContinuation.Fault.ErrorCode"/> keeps the code.
+    /// For an embedded subprocess, this is the <see cref="BpmnContinuation.Fault.ErrorCode"/> the nested scope
+    /// ended with. Surrounding whitespace is trimmed, and a blank code counts as none. See ADR 0012.
+    /// <para>
+    /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
+    /// nor the deconstruction a host compiled against an earlier version uses.
+    /// </para>
+    /// </summary>
+    public string? ErrorCode { get; init; }
 }
 
 /// <summary>

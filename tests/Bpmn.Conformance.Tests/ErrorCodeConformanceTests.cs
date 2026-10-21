@@ -7,9 +7,10 @@ using Xunit;
 namespace Bpmn.Conformance.Tests;
 
 /// <summary>
-/// An error catcher read from a document reports the code it declares when it catches. The interpreter reads
-/// that code from the catcher's event definition, so these tests hold the reader and the interpreter to the
-/// same key, end to end, rather than each against its own idea of it.
+/// An error catcher read from a document catches by the code it declares, and reports that code when it catches;
+/// an error end event read from a document throws the code its <c>errorRef</c> resolves to. The interpreter reads
+/// both codes from the event definitions, so these tests hold the reader and the interpreter to the same key, end
+/// to end, rather than each against its own idea of it.
 /// </summary>
 public sealed class ErrorCodeConformanceTests
 {
@@ -65,40 +66,65 @@ public sealed class ErrorCodeConformanceTests
         string catchingElementId,
         string? expectedCode)
     {
-        var imported = _reader.Read(Document(errorRef, catcher));
-        var definition = imported.Definitions.Processes.Single();
-        var nested = imported.Bindings.OfType<BpmnWorkBinding.NestedProcess>()
-            .ToDictionary(binding => binding.BindingRef, binding => binding.Definition, StringComparer.Ordinal);
-        var graph = BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition, nested.GetValueOrDefault), BpmnHostCapabilities.Full);
-
-        var started = Interpreter.Start(new BpmnStartRequest(graph, null, BpmnHostSnapshot.Root("scope-1")));
-        var charge = started.Commands.OfType<BpmnHostCommand.StartWork>().Single(start => start.ElementId == "Charge");
-
-        var faulted = Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-            graph, started.State, BpmnHostSnapshot.Root("scope-1"), charge.BindingRef, "h-charge", "Credit declined"));
+        var faulted = FaultCharge(Document(errorRef, catcher), expectedCode);
 
         faulted.ErrorDisposition.ShouldBe(new BpmnErrorDisposition.Caught(catchingElementId, expectedCode));
     }
 
-    [Fact]
-    public void An_error_end_event_read_from_a_document_never_runs_as_a_plain_end_event()
+    [Theory]
+    [InlineData("boundary", "Error_Credit")]
+    [InlineData("boundary", "Error_IdOnly")]
+    [InlineData("event-subprocess", "Error_Credit")]
+    [InlineData("event-subprocess", "Error_IdOnly")]
+    public void A_coded_catcher_read_from_a_document_does_not_catch_another_code(string catcher, string errorRef)
+    {
+        var faulted = FaultCharge(Document(errorRef, catcher), "SOMETHING_ELSE");
+
+        faulted.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance);
+        faulted.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().ErrorCode.ShouldBe("SOMETHING_ELSE");
+    }
+
+    private BpmnEvaluation FaultCharge(string document, string? errorCode)
+    {
+        var graph = Build(_reader.Read(document));
+
+        var started = Interpreter.Start(new BpmnStartRequest(graph, null, BpmnHostSnapshot.Root("scope-1")));
+        var charge = started.Commands.OfType<BpmnHostCommand.StartWork>().Single(start => start.ElementId == "Charge");
+
+        return Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
+            graph, started.State, BpmnHostSnapshot.Root("scope-1"), charge.BindingRef, "h-charge", "Credit declined") { ErrorCode = errorCode });
+    }
+
+    private static BpmnGraph Build(BpmnImportResult imported)
+    {
+        var definition = imported.Definitions.Processes.Single();
+        var nested = imported.Bindings.OfType<BpmnWorkBinding.NestedProcess>()
+            .ToDictionary(binding => binding.BindingRef, binding => binding.Definition, StringComparer.Ordinal);
+        return BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition, nested.GetValueOrDefault), BpmnHostCapabilities.Full);
+    }
+
+    [Theory]
+    [InlineData("Error_Credit", "CREDIT_DECLINED")]
+    [InlineData("Error_IdOnly", "Error_IdOnly")]
+    [InlineData("", null)]
+    public void An_error_end_event_read_from_a_document_throws_the_code_its_errorRef_resolves_to(string errorRef, string? expectedCode)
     {
         var imported = _reader.Read($"""
             <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Defs" targetNamespace="http://example.test/errors">
               {Declarations}
               <bpmn:process id="P" isExecutable="true">
                 <bpmn:startEvent id="Start" />
-                <bpmn:endEvent id="Failed"><bpmn:errorEventDefinition errorRef="Error_Credit" /></bpmn:endEvent>
+                <bpmn:endEvent id="Failed">{ErrorDefinition(errorRef)}</bpmn:endEvent>
                 <bpmn:sequenceFlow id="F1" sourceRef="Start" targetRef="Failed" />
               </bpmn:process>
             </bpmn:definitions>
             """);
-        var definition = imported.Definitions.Processes.Single();
 
-        var refusal = Should.Throw<BpmnExecutionException>(() =>
-            BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.Full));
+        var started = Interpreter.Start(new BpmnStartRequest(Build(imported), null, BpmnHostSnapshot.Root("scope-1")));
 
-        refusal.Message.ShouldContain("'Failed'");
-        refusal.Message.ShouldContain("'CREDIT_DECLINED'");
+        var fault = started.Continuation.ShouldBeOfType<BpmnContinuation.Fault>();
+        fault.Code.ShouldBe(BpmnInterpreter.ErrorThrownFaultCode);
+        fault.ErrorCode.ShouldBe(expectedCode);
+        started.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance);
     }
 }

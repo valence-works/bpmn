@@ -109,5 +109,21 @@ public enum BpmnDiagnosticKind
     /// message). Recorded once per evaluation, in the order the conditions were asked, ahead of the routing or
     /// fault the answers led to. Added in payload format 1.4.0.
     /// </summary>
-    ConditionEvaluated
+    ConditionEvaluated,
+
+    /// <summary>
+    /// An error end event fired and threw its error: the element is the end event, and the <c>errorCode</c>
+    /// detail carries the error's code, absent for an error with no code. Recorded before the catch or the fault
+    /// that follows. Added in payload format 1.5.0.
+    /// </summary>
+    ErrorThrown,
+
+    /// <summary>
+    /// An error catcher took an error: an error boundary event or an error event subprocess, named by the
+    /// element, caught a work fault, a call activity's failure outcome, or an error an error end event threw.
+    /// The <c>errorCode</c> detail carries the caught error's code, absent for an error with no code, and the
+    /// <c>match</c> detail says whether the catcher declared that code (<c>exact</c>) or is a catch-all
+    /// (<c>catch-all</c>). Added in payload format 1.5.0.
+    /// </summary>
+    ErrorCaught
 }

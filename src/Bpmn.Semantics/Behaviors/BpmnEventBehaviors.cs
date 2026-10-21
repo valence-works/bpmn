@@ -159,6 +159,24 @@ public sealed class EscalationEndEventBehavior : IBpmnElementBehavior
 }
 
 /// <summary>
+/// Error end event: on token arrival, emit the single <see cref="BpmnBehaviorCommandKind.ThrowError"/> command
+/// and nothing else. The interpreter consumes the token, reads the error code from the element, and either
+/// activates an error event subprocess of the scope that catches it or ends the scope with a fault that carries
+/// the code. The behavior stays semantics-unaware.
+/// </summary>
+public sealed class ErrorEndEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.EndEventError;
+    public string DisplayName => "Error End Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ThrowError());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN error end event '{context.Element.ElementId}' cannot bind work.");
+}
+
+/// <summary>
 /// Message intermediate throw event: a bound-work send. On token arrival it starts the element's bound publish
 /// work; that work completes immediately (fire-and-continue), which is an ordinary work completion that routes
 /// the throw token's outbound flows by the shared task selection rules. The behavior stays semantics-unaware.

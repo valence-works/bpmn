@@ -103,6 +103,16 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     public void CarryTeardown(PendingTeardown teardown) => _carriedTeardowns.Add(teardown);
 
     /// <summary>
+    /// How an error an error end event threw inside the propagation loop ended, for the same reason teardowns are
+    /// carried here: the loop drops everything but each step's state. The first error thrown in an evaluation
+    /// decides it; a host-reported failure's disposition, carried on the result, takes precedence.
+    /// </summary>
+    public BpmnErrorDisposition? ErrorDisposition { get; private set; }
+
+    /// <summary>Records how a thrown error ended, unless an earlier one in this evaluation already did.</summary>
+    public void RecordErrorDisposition(BpmnErrorDisposition disposition) => ErrorDisposition ??= disposition;
+
+    /// <summary>
     /// How many tokens this evaluation has dispatched to an element behavior on arrival. Counted here rather
     /// than in the propagation loop so the limit holds for the evaluation as a whole, however many times it
     /// enters that loop.
