@@ -74,8 +74,13 @@ public sealed class InMemoryBpmnHost
     /// <summary>The options this host was built with.</summary>
     public InMemoryBpmnHostOptions Options { get; }
 
-    /// <summary>What this host claims it can do. Passed to every graph build and every snapshot.</summary>
-    public BpmnHostCapabilities Capabilities => Options.Capabilities;
+    /// <summary>
+    /// What this host claims it can do: <see cref="InMemoryBpmnHostOptions.Capabilities"/>, plus
+    /// <see cref="BpmnHostCapabilities.ConditionEvaluation"/> when <see cref="InMemoryBpmnHostOptions.Conditions"/>
+    /// is set. Passed to every graph build and every snapshot.
+    /// </summary>
+    public BpmnHostCapabilities Capabilities =>
+        Options.Conditions is null ? Options.Capabilities : Options.Capabilities | BpmnHostCapabilities.ConditionEvaluation;
 
     /// <summary>The simulated clock every scope on this host shares.</summary>
     public VirtualClock Clock { get; }
@@ -96,7 +101,8 @@ public sealed class InMemoryBpmnHost
     /// <para>
     /// Throws <see cref="BpmnCapabilityException"/> when the definition needs a capability
     /// <see cref="Capabilities"/> does not declare, and <see cref="BpmnExecutionException"/> when the
-    /// definition is structurally invalid. Both are raised here, before anything runs.
+    /// definition, or a nested body it can reach at any depth, is structurally invalid. Both are raised here,
+    /// before anything runs.
     /// </para>
     /// </summary>
     public InMemoryProcessInstance Start(
@@ -116,7 +122,8 @@ public sealed class InMemoryBpmnHost
     /// <summary>
     /// Starts a process from a graph that was already built. Use this when the same definition runs many
     /// times: a graph depends only on the definition, the bound work and the capabilities, none of which
-    /// change per instance.
+    /// change per instance. Every nested body the graph can reach is built before the root runs, so a body that
+    /// cannot run is refused here too.
     /// </summary>
     public InMemoryProcessInstance Start(
         BpmnGraph graph,
@@ -124,6 +131,8 @@ public sealed class InMemoryBpmnHost
         BpmnStartSignal? startSignal = null)
     {
         ArgumentNullException.ThrowIfNull(graph);
+
+        BuildNestedBodies(graph);
 
         var instance = CreateScope(
             graph,
@@ -147,6 +156,36 @@ public sealed class InMemoryBpmnHost
     /// <summary>The bound work <paramref name="definition"/> declares, with nested definitions this host knows about attached.</summary>
     public IReadOnlyCollection<BpmnBoundWork> DeriveBoundWork(BpmnProcessDefinition definition) =>
         InMemoryBoundWork.Derive(definition, ResolveNestedProcess);
+
+    /// <summary>
+    /// Builds every nested body <paramref name="graph"/> can reach, at any depth, the way
+    /// <see cref="InMemoryProcessInstance"/> builds each one when its subprocess starts. The root's build sees only
+    /// the bodies its own bound work carries; deeper ones only this host can resolve. Building them here refuses a
+    /// body that cannot run before anything has run, rather than when a token first reaches it.
+    /// </summary>
+    private void BuildNestedBodies(BpmnGraph graph)
+    {
+        var visited = new HashSet<BpmnProcessDefinition>(ReferenceEqualityComparer.Instance);
+        var pending = new Stack<BpmnProcessDefinition>();
+
+        foreach (var element in graph.Elements)
+        {
+            if (element.BindingRef is { } bindingRef && graph.GetRequiredBoundWork(bindingRef).NestedProcess is { } body && visited.Add(body))
+                pending.Push(body);
+        }
+
+        while (pending.TryPop(out var body))
+        {
+            var boundWork = DeriveBoundWork(body);
+            _ = BpmnGraph.Build(body, boundWork, Capabilities);
+
+            foreach (var work in boundWork)
+            {
+                if (work.NestedProcess is { } nested && visited.Add(nested))
+                    pending.Push(nested);
+            }
+        }
+    }
 
     // --- Internals the instances use -----------------------------------------------------------------
 

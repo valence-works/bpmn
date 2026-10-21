@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
@@ -341,13 +342,19 @@ public sealed class BpmnInterpreter
         var state = request.PriorState ?? new BpmnExecutionState();
         var context = new BpmnEvaluationContext(request.Graph, request.Host, state);
 
+        BpmnEvaluation AbsorbedCompletion(BpmnEvaluation evaluation) =>
+            IsCallActivityFailureCompletion(graph.FindElementByBindingRef(completionContext.CompletedBindingRef),
+                completionContext.OutcomeNames, out _)
+                ? evaluation with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance }
+                : evaluation;
+
         if (AbsorbIntoEndedScope(context, graph, state, completionContext.CompletedBindingRef,
                 $"completion of work '{completionContext.CompletedBindingRef}'") is { } absorbedCompletion)
-            return absorbedCompletion;
+            return AbsorbedCompletion(absorbedCompletion);
 
         if (AbsorbStoppedWork(state, completionContext.CompletedHandle, completionContext.WorkTokenId,
                 $"completion of work '{completionContext.CompletedBindingRef}'") is { } lateCompletion)
-            return FinishEvaluation(context, lateCompletion);
+            return AbsorbedCompletion(FinishEvaluation(context, lateCompletion));
 
         var completedWork = ResolveLiveWork(state, completionContext.CompletedBindingRef, completionContext.CompletedIterationId,
                 completionContext.WorkTokenId, "completed work")
@@ -361,7 +368,7 @@ public sealed class BpmnInterpreter
         if (token.Status == BpmnTokenStatus.Canceled)
         {
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, token.AtElementId, token.FlowId, token.TokenId, $"BPMN ignored completion for canceled token '{token.TokenId}'.");
-            return FinishEvaluation(context, new EvaluationResult(state));
+            return AbsorbedCompletion(FinishEvaluation(context, new EvaluationResult(state)));
         }
 
         // The teardowns this evaluation carries, issued only on a non-fault continuation.
@@ -381,7 +388,7 @@ public sealed class BpmnInterpreter
             // call activity completing with a failure outcome, the call-activity ladder routes here composed with
             // the coordinator cascade: RouteCallActivityFailureOutcome resolves the interrupt target to the loop
             // coordinator, so firing an error boundary or error event subprocess interrupts every remaining instance.
-            if (IsCallActivityFailureCompletion(graph, token, completionContext.OutcomeNames, out var instanceFailureOutcome))
+            if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var instanceFailureOutcome))
             {
                 return FinishEvaluation(context, RouteCallActivityFailureOutcome(
                     context, graph, state, token, instanceFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
@@ -434,7 +441,7 @@ public sealed class BpmnInterpreter
         // routes normal outbound; the interpreter routes the error-catcher ladder directly (host error boundary,
         // then scope error event subprocess, then process fault). The multi-instance case is handled above, inside
         // the instance interception, so the coordinator cascade composes first.
-        if (IsCallActivityFailureCompletion(graph, token, completionContext.OutcomeNames, out var callActivityFailureOutcome))
+        if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var callActivityFailureOutcome))
         {
             return FinishEvaluation(context, RouteCallActivityFailureOutcome(
                 context, graph, state, token, callActivityFailureOutcome, liveWorkHandles, pendingCancellations, completionContext.CompletedHandle));
@@ -457,17 +464,9 @@ public sealed class BpmnInterpreter
         state = ApplyBoundaryCompletionSemantics(context, graph, state, token, liveWorkHandles, pendingCancellations);
 
         var element = graph.GetRequiredElement(token.AtElementId);
-        var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
-        var behaviorContext = new BpmnBehaviorContext(
-            BpmnBehaviorTrigger.WorkCompleted,
-            element,
-            token,
-            graph.OutboundFlows(element.ElementId),
-            graph.InboundFlows(element.ElementId),
-            completionContext.OutcomeNames,
-            state);
+        var (dispatchedState, decision) = Dispatch(context, graph, state, token, element, BpmnBehaviorTrigger.WorkCompleted, completionContext.OutcomeNames);
 
-        var result = ApplyDecision(context, graph, state, token, element, Execute(behavior, behaviorContext, element), completionContext.CompletedHandle);
+        var result = ApplyDecision(context, graph, dispatchedState, token, element, decision, completionContext.CompletedHandle);
         if (result is { Fault: null, Terminated: false })
             result = Propagate(context, graph, result.State, completionContext.CompletedHandle);
 
@@ -512,7 +511,7 @@ public sealed class BpmnInterpreter
     /// stopping that work was already decided. One the snapshot contradicts throws, as a completion does.
     /// </para>
     /// </summary>
-    public BpmnFaultEvaluation OnWorkFaulted(BpmnWorkFaultedRequest request)
+    public BpmnEvaluation OnWorkFaulted(BpmnWorkFaultedRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -524,19 +523,9 @@ public sealed class BpmnInterpreter
         // checking the fault against that would refuse a report the completion path accepts.
         if (AbsorbIntoEndedScope(context, request.Graph, state, request.FaultedBindingRef,
                 $"fault of work '{request.FaultedBindingRef}'") is { } absorbed)
-            return new BpmnFaultEvaluation(absorbed.State, absorbed.Continuation, absorbed.Commands, BpmnErrorDisposition.Propagated.Instance);
+            return absorbed with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance };
 
-        var result = EvaluateWorkFaulted(context, request);
-        var evaluation = FinishEvaluation(context, result);
-
-        // A caught error is only genuinely caught when the evaluation exits cleanly. If routing the catcher's
-        // path itself faults, the whole scope is going down, so the error propagates after all — the same rule
-        // that discards carried-but-unissued teardown on a fault continuation.
-        var disposition = evaluation.Continuation is BpmnContinuation.Fault
-            ? BpmnErrorDisposition.Propagated.Instance
-            : result.ErrorDisposition ?? BpmnErrorDisposition.Propagated.Instance;
-
-        return new BpmnFaultEvaluation(evaluation.State, evaluation.Continuation, evaluation.Commands, disposition);
+        return FinishEvaluation(context, EvaluateWorkFaulted(context, request));
     }
 
     private EvaluationResult EvaluateWorkFaulted(BpmnEvaluationContext context, BpmnWorkFaultedRequest request)
@@ -552,7 +541,7 @@ public sealed class BpmnInterpreter
         var faultedBindingRef = request.FaultedBindingRef;
         if (AbsorbStoppedWork(state, request.FaultedHandle, request.WorkTokenId,
                 $"fault of work '{faultedBindingRef}'") is { } lateFault)
-            return lateFault;
+            return lateFault with { ErrorDisposition = BpmnErrorDisposition.Absorbed.Instance };
 
         var faultedWork = ResolveLiveWork(state, faultedBindingRef, request.FaultedIterationId, request.WorkTokenId, "faulted work");
         if (faultedWork is not null)
@@ -572,7 +561,7 @@ public sealed class BpmnInterpreter
                 state = RemoveActiveWork(state, faultedWork.TokenId);
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Canceled, faultedWork?.ElementId, null, faultedToken?.TokenId,
                 $"BPMN ignored a late fault of work '{faultedBindingRef}' whose token was already cancelled.");
-            return new EvaluationResult(state);
+            return new EvaluationResult(state, ErrorDisposition: BpmnErrorDisposition.Absorbed.Instance);
         }
 
         // Catch the error through an error boundary event attached to the failing work's host.
@@ -602,7 +591,7 @@ public sealed class BpmnInterpreter
         var detail = string.IsNullOrWhiteSpace(request.FaultMessage) ? "" : $" ({request.FaultMessage})";
         var message = $"BPMN process faulted because the work bound to '{faultedBindingRef}' faulted{detail}: failed work cannot complete, so its token — and any downstream join that requires it — can no longer proceed.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, faultedWork?.ElementId, null, faultedWork?.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault("bpmn.work.faulted", message));
+        return new EvaluationResult(state, new BpmnFault("bpmn.work.faulted", message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -705,13 +694,12 @@ public sealed class BpmnInterpreter
     /// (deterministic precedence). <c>Completed</c>/<c>Dispatched</c> return <c>false</c> (normal task-flow routing).
     /// </summary>
     private static bool IsCallActivityFailureCompletion(
-        BpmnGraph graph,
-        BpmnToken token,
+        BpmnElement? element,
         IReadOnlyCollection<string> outcomeNames,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? failureOutcome)
     {
         failureOutcome = null;
-        if (!BpmnElementFamilies.IsCallActivity(graph.GetRequiredElement(token.AtElementId)))
+        if (element is null || !BpmnElementFamilies.IsCallActivity(element))
             return false;
 
         failureOutcome = CallActivityFailureOutcomes.FirstOrDefault(outcome => outcomeNames.Contains(outcome, StringComparer.Ordinal));
@@ -762,7 +750,11 @@ public sealed class BpmnInterpreter
                 $"BPMN error boundary '{errorBoundary.ElementId}' fired and emitted token '{errorToken.TokenId}' to route the call-activity failure path.");
 
             var boundaryResult = Propagate(context, graph, state, completedHandle);
-            return boundaryResult with { PendingTeardowns = pendingCancellations };
+            return boundaryResult with
+            {
+                PendingTeardowns = pendingCancellations,
+                ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, ReadErrorCode(errorBoundary))
+            };
         }
 
         // Ladder tier 2: the scope's error event subprocess activates interrupting — stop all other live
@@ -773,7 +765,11 @@ public sealed class BpmnInterpreter
                 liveWorkHandles, pendingCancellations, completedHandle,
                 $"call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
             var subprocessResult = Propagate(context, graph, activation.State, completedHandle);
-            return subprocessResult with { PendingTeardowns = pendingCancellations };
+            return subprocessResult with
+            {
+                PendingTeardowns = pendingCancellations,
+                ErrorDisposition = new BpmnErrorDisposition.Caught(errorEventSubprocess.ElementId, errorEventSubprocess.Code)
+            };
         }
 
         // Ladder tier 3: no catcher — the process faults deterministically with the per-outcome fault code.
@@ -791,7 +787,7 @@ public sealed class BpmnInterpreter
         };
         var message = $"BPMN call activity '{element.ElementId}' completed with the '{failureOutcome}' outcome, but no error boundary or error event subprocess is available to route it.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, completingToken.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault(faultCode, message));
+        return new EvaluationResult(state, new BpmnFault(faultCode, message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -825,7 +821,7 @@ public sealed class BpmnInterpreter
 
         if (context.Host.HasEnclosingScope)
         {
-            context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(EscalationSignalCode, BuildEscalationPayload(code, name)));
+            context.AddCommand(new BpmnHostCommand.SignalEnclosingScope(EscalationSignalCode, EscalationPayload(code, name)));
             return (BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.EscalationRaised, element.ElementId, null, token.TokenId,
                 $"BPMN escalation event '{element.ElementId}' raised escalation code '{code}' to its enclosing scope."), null);
         }
@@ -1065,7 +1061,7 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnWorkSignalledRequest signal)
     {
-        var escalationCode = ReadPayloadCode(signal.Payload);
+        TryReadEscalationCode(signal.Payload, out var escalationCode);
 
         // Resolve the host element from the signalling work's binding ref. This is robust to the late case: the
         // host element is graph-derived, so it resolves even after the signalling work stopped being live.
@@ -1248,18 +1244,41 @@ public sealed class BpmnInterpreter
             ? code.Trim()
             : null;
 
-    /// <summary>Builds the escalation payload <c>{ code, name? }</c>; the escalation identity travels here, keeping the signal code namespace clean. <c>name</c> is omitted when absent.</summary>
-    private static JsonElement BuildEscalationPayload(string code, string? name) =>
-        JsonSerializer.SerializeToElement(new EscalationPayload(code, name), EscalationPayloadOptions);
+    /// <summary>
+    /// Builds the payload of an escalation signal: <c>{ "code": ..., "name": ... }</c>, with <c>name</c> omitted when
+    /// absent. Pair it with <see cref="EscalationSignalCode"/> to originate an escalation from outside the process,
+    /// for example by delivering it through <see cref="OnWorkSignalled"/> as if the work had escalated. The escalation
+    /// identity travels here, keeping the signal code namespace clean.
+    /// </summary>
+    /// <param name="code">The escalation code a catcher matches on. Surrounding whitespace is trimmed.</param>
+    /// <param name="name">An optional display name, carried for reporting and never matched on.</param>
+    /// <exception cref="ArgumentException"><paramref name="code"/> is null, empty or whitespace.</exception>
+    public static JsonElement EscalationPayload(string code, string? name = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(code);
+        return JsonSerializer.SerializeToElement(
+            new EscalationPayloadShape(code.Trim(), string.IsNullOrWhiteSpace(name) ? null : name.Trim()),
+            EscalationPayloadOptions);
+    }
 
-    /// <summary>Reads the escalation code from an escalation payload; <c>null</c> when absent or malformed (defensive — the interpreter builds the payload, so unreachable in practice).</summary>
-    private static string? ReadPayloadCode(JsonElement? payload) =>
-        payload is { ValueKind: JsonValueKind.Object } element
-        && element.TryGetProperty("code", out var code)
-        && code.ValueKind == JsonValueKind.String
-        && code.GetString() is { Length: > 0 } value
-            ? value
+    /// <summary>
+    /// Reads the escalation code from an escalation signal payload, the way the interpreter matches it against
+    /// catchers. Returns <c>false</c> when the payload is absent, not an object, or carries no non-blank string
+    /// <c>code</c> property; such a signal matches no catcher, not even a catch-all.
+    /// </summary>
+    /// <param name="payload">The signal payload, as carried by <see cref="BpmnHostCommand.SignalEnclosingScope"/>.</param>
+    /// <param name="code">The escalation code with surrounding whitespace trimmed, as catcher codes are, when one was read.</param>
+    public static bool TryReadEscalationCode(JsonElement? payload, [NotNullWhen(true)] out string? code)
+    {
+        code = payload is { ValueKind: JsonValueKind.Object } element
+               && element.TryGetProperty("code", out var codeProperty)
+               && codeProperty.ValueKind == JsonValueKind.String
+               && codeProperty.GetString() is { } value
+               && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
             : null;
+        return code is not null;
+    }
 
     private static readonly JsonSerializerOptions EscalationPayloadOptions = new(JsonSerializerDefaults.Web)
     {
@@ -1267,7 +1286,7 @@ public sealed class BpmnInterpreter
     };
 
     /// <summary>The escalation payload shape: the required matching <c>code</c> and an optional display <c>name</c>.</summary>
-    private sealed record EscalationPayload(string Code, string? Name = null);
+    private sealed record EscalationPayloadShape(string Code, string? Name = null);
 
     /// <summary>
     /// Handles a transaction that completed with the <c>Cancelled</c> outcome, in the enclosing
@@ -1553,17 +1572,9 @@ public sealed class BpmnInterpreter
         BpmnToken coordinatorToken,
         string producedBy)
     {
-        var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
-        var behaviorContext = new BpmnBehaviorContext(
-            BpmnBehaviorTrigger.WorkCompleted,
-            element,
-            coordinatorToken,
-            graph.OutboundFlows(element.ElementId),
-            graph.InboundFlows(element.ElementId),
-            [],
-            state);
+        var (dispatchedState, decision) = Dispatch(context, graph, state, coordinatorToken, element, BpmnBehaviorTrigger.WorkCompleted, []);
 
-        return ApplyDecision(context, graph, state, coordinatorToken, element, Execute(behavior, behaviorContext, element), producedBy);
+        return ApplyDecision(context, graph, dispatchedState, coordinatorToken, element, decision, producedBy);
     }
 
     /// <summary>
@@ -1620,17 +1631,9 @@ public sealed class BpmnInterpreter
 
             var element = graph.GetRequiredElement(token.AtElementId);
             context.CountPropagationStep(element.ElementId);
-            var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
-            var behaviorContext = new BpmnBehaviorContext(
-                BpmnBehaviorTrigger.TokenArrived,
-                element,
-                token,
-                graph.OutboundFlows(element.ElementId),
-                graph.InboundFlows(element.ElementId),
-                [],
-                state);
+            var (dispatchedState, decision) = Dispatch(context, graph, state, token, element, BpmnBehaviorTrigger.TokenArrived, []);
 
-            var result = ApplyDecision(context, graph, state, token, element, Execute(behavior, behaviorContext, element), producedBy);
+            var result = ApplyDecision(context, graph, dispatchedState, token, element, decision, producedBy);
             if (result.Fault is not null || result.Terminated)
                 return result;
 
@@ -1664,6 +1667,118 @@ public sealed class BpmnInterpreter
                       + "That is almost always a cycle through it that did not wait on this run; the evaluation was stopped rather than left to run forever.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, elementId, null, null, message);
         return new EvaluationResult(state, new BpmnFault(PropagationLimitFaultCode, message));
+    }
+
+    /// <summary>
+    /// Dispatches <paramref name="token"/> to <paramref name="element"/>'s behavior and returns its decision, with
+    /// one <see cref="BpmnDiagnosticKind.ConditionEvaluated"/> diagnostic per condition the behavior had the host
+    /// evaluate, in the order it asked. They are recorded before the decision is applied, so the trace reads
+    /// evaluation, then the routing or fault the answers led to. The behavior itself stays pure: it reads the
+    /// answers through its context and never touches state.
+    /// </summary>
+    private (BpmnExecutionState State, BpmnBehaviorDecision Decision) Dispatch(
+        BpmnEvaluationContext context,
+        BpmnGraph graph,
+        BpmnExecutionState state,
+        BpmnToken token,
+        BpmnElement element,
+        BpmnBehaviorTrigger trigger,
+        IReadOnlyCollection<string> outcomeNames)
+    {
+        var behavior = _behaviors.GetRequired(BpmnElementFamilies.Resolve(element));
+        var evaluations = new List<(BpmnSequenceFlow Flow, BpmnConditionResult Result)>();
+        var behaviorContext = new BpmnBehaviorContext(
+            trigger,
+            element,
+            token,
+            graph.OutboundFlows(element.ElementId),
+            graph.InboundFlows(element.ElementId),
+            outcomeNames,
+            state,
+            ConditionEvaluator(context, graph, state, element, token, evaluations));
+
+        var decision = Execute(behavior, behaviorContext, element);
+        return (RecordConditionEvaluations(state, element, token, evaluations), decision);
+    }
+
+    /// <summary>
+    /// The callback a behavior context answers <see cref="IBpmnBehaviorContext.EvaluateCondition"/> through: it
+    /// builds the request, asks the host's evaluator, and appends the answer to <paramref name="evaluations"/>.
+    /// A host that declared <see cref="BpmnHostCapabilities.ConditionEvaluation"/> and supplied no evaluator has
+    /// broken the port, and so has an evaluator that throws; both surface as <see cref="BpmnExecutionException"/>.
+    /// </summary>
+    private static Func<BpmnSequenceFlow, BpmnConditionResult> ConditionEvaluator(
+        BpmnEvaluationContext context,
+        BpmnGraph graph,
+        BpmnExecutionState state,
+        BpmnElement element,
+        BpmnToken token,
+        List<(BpmnSequenceFlow Flow, BpmnConditionResult Result)> evaluations) =>
+        flow =>
+        {
+            if (!StringComparer.Ordinal.Equals(flow.SourceRef, element.ElementId))
+                throw new BpmnExecutionException($"BPMN behavior for element '{element.ElementId}' asked for the condition on flow '{flow.FlowId}', which does not originate from it.");
+            if (flow.ConditionExpression is not { } expression)
+                throw new BpmnExecutionException($"BPMN behavior for element '{element.ElementId}' asked for the condition on flow '{flow.FlowId}', which carries no condition expression.");
+            if (context.Host.Conditions is not { } evaluator)
+                throw new BpmnExecutionException(
+                    $"BPMN element '{element.ElementId}' needs the condition expression on flow '{flow.FlowId}' evaluated, but the host snapshot supplies no condition evaluator. "
+                    + $"A host that declares {nameof(BpmnHostCapabilities.ConditionEvaluation)} must set {nameof(BpmnHostSnapshot)}.{nameof(BpmnHostSnapshot.Conditions)}.");
+
+            var request = new BpmnConditionRequest(
+                element.ElementId,
+                flow.FlowId,
+                BpmnConditionSites.SequenceFlow,
+                expression.Body,
+                expression.Language ?? graph.Definition.ExpressionLanguage,
+                ResolveMultiInstanceCoordinatorTokenId(state, token) is null ? null : MultiInstanceIterationIdPrefix + token.TokenId);
+
+            BpmnConditionResult? result;
+            try
+            {
+                result = evaluator.Evaluate(request);
+            }
+            catch (Exception exception) when (exception is not BpmnExecutionException)
+            {
+                throw new BpmnExecutionException(
+                    $"BPMN host condition evaluator threw while evaluating the condition on flow '{flow.FlowId}' leaving element '{element.ElementId}'.", exception);
+            }
+
+            if (result is null)
+                throw new BpmnExecutionException(
+                    $"BPMN host condition evaluator returned no result for the condition on flow '{flow.FlowId}' leaving element '{element.ElementId}'.");
+
+            evaluations.Add((flow, result));
+            return result;
+        };
+
+    /// <summary>Appends one <see cref="BpmnDiagnosticKind.ConditionEvaluated"/> diagnostic per evaluation, in order.</summary>
+    private static BpmnExecutionState RecordConditionEvaluations(
+        BpmnExecutionState state,
+        BpmnElement element,
+        BpmnToken token,
+        IReadOnlyList<(BpmnSequenceFlow Flow, BpmnConditionResult Result)> evaluations)
+    {
+        foreach (var (flow, result) in evaluations)
+        {
+            var details = new Dictionary<string, string>(StringComparer.Ordinal) { ["result"] = result.Kind.ToString() };
+            string message;
+            if (result.Kind == BpmnConditionResultKind.Failed)
+            {
+                if (result.FaultCode is { } faultCode)
+                    details["faultCode"] = faultCode;
+                details["failure"] = result.Message!;
+                message = $"BPMN condition on flow '{flow.FlowId}' leaving element '{element.ElementId}' failed{(result.FaultCode is null ? "" : $" with '{result.FaultCode}'")}: {result.Message}";
+            }
+            else
+            {
+                message = $"BPMN condition on flow '{flow.FlowId}' leaving element '{element.ElementId}' evaluated to {(result.Kind == BpmnConditionResultKind.True ? "true" : "false")}.";
+            }
+
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ConditionEvaluated, element.ElementId, flow.FlowId, token.TokenId, message, details);
+        }
+
+        return state;
     }
 
     private static BpmnBehaviorDecision Execute(IBpmnElementBehavior behavior, IBpmnBehaviorContext behaviorContext, BpmnElement element)
@@ -1741,9 +1856,10 @@ public sealed class BpmnInterpreter
                 case BpmnBehaviorCommandKind.RaiseEscalation:
                 {
                     // The escalation throw or end event raises an escalation. RaiseEscalation is the FIRST
-                    // command of the throw's decision (RaiseEscalation, then EmitTokens or ConsumeToken): it
-                    // either records an own-scope catch, signals the enclosing scope, or records a root no-op
-                    // diagnostic — never a fault — and the loop then processes the companion routing command.
+                    // command of the throw's decision, before its routing command: EmitTokens or ConsumeToken, or
+                    // a Fault when an intermediate throw takes no flow or a condition fails. It either records an
+                    // own-scope catch, signals the enclosing scope, or records a root no-op diagnostic — never a
+                    // fault — and the loop then processes the companion routing command.
                     var raised = RaiseEscalation(context, graph, state, token, element);
                     state = raised.State;
                     ownScopeActivation = raised.OwnScopeActivation;
@@ -1789,6 +1905,18 @@ public sealed class BpmnInterpreter
                 }
                 case BpmnBehaviorCommandKind.Fault:
                 {
+                    // An escalation throw whose escalation an interrupting event subprocess of this scope caught
+                    // has no successor to route: the activation below stops it either way. So a routing fault, no
+                    // flow taken or a failed condition, is moot there, and the token ends as it did before
+                    // conditions could fault a throw's routing.
+                    if (ownScopeActivation is { Interrupting: true })
+                    {
+                        state = UpdateToken(state, token with { Status = BpmnTokenStatus.Consumed });
+                        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Consumed, element.ElementId, null, token.TokenId,
+                            $"BPMN token '{token.TokenId}' ended at escalation throw '{element.ElementId}': an interrupting event subprocess of its scope caught the escalation, so its routing is moot ({command.Message}).");
+                        break;
+                    }
+
                     var faultCode = string.IsNullOrWhiteSpace(command.FaultCode) ? "bpmn.behavior.faulted" : command.FaultCode;
                     var message = command.Message ?? $"BPMN behavior for element '{element.ElementId}' faulted the process.";
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, token.TokenId, message);
@@ -2090,19 +2218,23 @@ public sealed class BpmnInterpreter
             return new EvaluationResult(state);
         }
 
+        var evaluations = new List<(BpmnSequenceFlow Flow, BpmnConditionResult Result)>();
         var behaviorContext = new BpmnBehaviorContext(
             BpmnBehaviorTrigger.WorkCompleted, throwElement, throwToken,
-            graph.OutboundFlows(throwElement.ElementId), graph.InboundFlows(throwElement.ElementId), [], state);
-        var flows = BpmnFlowSelector.SelectTaskFlows(behaviorContext);
-        if (flows.Count == 0 && behaviorContext.OutboundFlows.Count > 0)
+            graph.OutboundFlows(throwElement.ElementId), graph.InboundFlows(throwElement.ElementId), [], state,
+            ConditionEvaluator(context, graph, state, throwElement, throwToken, evaluations));
+        var routing = BpmnFlowSelector.RouteAsTask(behaviorContext,
+            $"BPMN compensate throw event '{throwElement.ElementId}' completed its replay but no outbound sequence flow matched and no default flow is declared.");
+        state = RecordConditionEvaluations(state, throwElement, throwToken, evaluations);
+        if (routing.Kind == BpmnBehaviorCommandKind.Fault)
         {
-            var message = $"BPMN compensate throw event '{throwElement.ElementId}' completed its replay but no outbound sequence flow matched and no default flow is declared.";
+            var message = routing.Message!;
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, throwElement.ElementId, null, throwToken.TokenId, message);
-            return new EvaluationResult(state, new BpmnFault("bpmn.flow.none-taken", message));
+            return new EvaluationResult(state, new BpmnFault(routing.FaultCode!, message));
         }
 
         state = UpdateToken(state, throwToken with { Status = BpmnTokenStatus.Consumed });
-        state = EmitFlowTokens(state, graph, throwElement, throwToken, BpmnFlowSelector.FlowIds(flows), producedBy, memberTokenIds: null);
+        state = EmitFlowTokens(state, graph, throwElement, throwToken, routing.FlowIds, producedBy, memberTokenIds: null);
         return new EvaluationResult(state);
     }
 
@@ -2152,13 +2284,23 @@ public sealed class BpmnInterpreter
     /// </summary>
     private BpmnEvaluation FinishEvaluation(BpmnEvaluationContext context, EvaluationResult result)
     {
+        // A catcher only handled the failure if its path exits cleanly. Keep this rule at the shared exit
+        // so call-activity completion outcomes and work faults report the same final verdict.
+        BpmnEvaluation Finish(BpmnExecutionState finalState, BpmnContinuation continuation) =>
+            Evaluated(context, finalState, continuation) with
+            {
+                ErrorDisposition = result.ErrorDisposition is BpmnErrorDisposition.Caught && continuation is BpmnContinuation.Fault
+                    ? BpmnErrorDisposition.Propagated.Instance
+                    : result.ErrorDisposition
+            };
+
         var state = result.State;
 
         if (result.Fault is not null)
-            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(result.Fault));
+            return Finish(WithdrawStartedWork(context, state), MakeFault(result.Fault));
 
         if (state.PendingFault is { } pendingFault)
-            return Evaluated(context, WithdrawStartedWork(context, state), MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
+            return Finish(WithdrawStartedWork(context, state), MakeFault(new BpmnFault(pendingFault.FaultCode, pendingFault.Message)));
 
         if (result.Terminated || state.Terminated)
         {
@@ -2171,7 +2313,7 @@ public sealed class BpmnInterpreter
             // stays there.
             IssueCarriedCommands(context, result with { PendingScopeSignal = null });
             IssueTerminateTeardowns(context);
-            return Evaluated(context, state, new BpmnContinuation.Complete(DoneOutcomeName));
+            return Finish(state, new BpmnContinuation.Complete(DoneOutcomeName));
         }
 
         var liveTokens = state.Tokens.Where(token => token.Status is BpmnTokenStatus.Active or BpmnTokenStatus.AwaitingChild or BpmnTokenStatus.WaitingAtJoin).ToArray();
@@ -2222,7 +2364,7 @@ public sealed class BpmnInterpreter
             var outcomeName = state.Cancelling ? CancelledOutcomeName : DoneOutcomeName;
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Completed, null, null, null,
                 $"BPMN process completed with the '{outcomeName}' outcome because no live tokens remain.");
-            return Evaluated(context, state, new BpmnContinuation.Complete(outcomeName));
+            return Finish(state, new BpmnContinuation.Complete(outcomeName));
         }
 
         // A parked join arrival with nothing live left to produce the missing arrivals can never fire — a
@@ -2237,12 +2379,12 @@ public sealed class BpmnInterpreter
             var joinElementIds = string.Join(", ", nonListenerLiveTokens.Select(token => token.AtElementId).Distinct(StringComparer.Ordinal));
             var message = $"BPMN process deadlocked: token(s) wait at join(s) [{joinElementIds}] but no live token or running work can produce the missing arrival(s).";
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, null, null, null, message);
-            return Evaluated(context, state, MakeFault(new BpmnFault("bpmn.join.deadlock", message)));
+            return Finish(state, MakeFault(new BpmnFault("bpmn.join.deadlock", message)));
         }
 
         // Clean deferral: the carried teardowns may now be issued.
         state = RecordStoppedWork(state, IssueCarriedCommands(context, result));
-        return Evaluated(context, state, BpmnContinuation.Defer.Instance);
+        return Finish(state, BpmnContinuation.Defer.Instance);
     }
 
     /// <summary>

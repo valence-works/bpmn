@@ -117,6 +117,12 @@ Three things a consumer generating types should know, all of them described in t
   `bpmnExecutionState`, and `bpmnWorkBinding`. Each is also listed under `x-roots` for code generators.
   Format 1.2.0 adds the binding root as a union of seven cases selected by `kind`; existing definition
   and execution-state shapes are unchanged. See [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
+  Format 1.3.0 adds optional properties only: `conditionExpression` on a sequence
+  flow (the `bpmnConditionExpression` shape) and `expressionLanguage` on the definitions and on each
+  process. A 1.2.0 payload reads as before, with them absent. Format 1.4.0, the current version,
+  appends one diagnostic kind, `ConditionEvaluated` (24), which execution state records for every
+  condition expression the host evaluated; no existing value is renumbered. See
+  [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
 
 Regenerate the schema after any model change:
 
@@ -142,10 +148,13 @@ See [Reading and writing BPMN XML](../guides/reading-and-writing-bpmn.md).
 
 - **Entry points**: `BpmnInterpreter` (`CreateDefault`, `Start`, `OnWorkCompleted`,
   `OnWorkFaulted`, `OnWorkSignalled`).
+- **Escalation signals**: `BpmnInterpreter.EscalationSignalCode`, `EscalationPayload` and
+  `TryReadEscalationCode`; see [Errors and escalation](../concepts/errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 - **Requests**: `BpmnStartRequest`, `BpmnWorkCompletedRequest`, `BpmnWorkFaultedRequest`,
   `BpmnWorkSignalledRequest`, `BpmnStartSignal`.
 - **Graph**: `BpmnGraph`, `BpmnBoundWork`.
-- **Results**: `BpmnEvaluation`, `BpmnFaultEvaluation`, `BpmnContinuation`, `BpmnErrorDisposition`.
+- **Results**: `BpmnEvaluation` (including its nullable `ErrorDisposition`), `BpmnContinuation`,
+  `BpmnErrorDisposition`.
 - **Commands**: `BpmnHostCommand.StartWork`, `.CancelWorkSubtree`, `.SignalEnclosingScope`.
 - **Host contract**: `BpmnHostSnapshot`, `BpmnLiveWork`, `BpmnIterationScope`,
   `IBpmnVariableReader`, `BpmnNoVariables`.

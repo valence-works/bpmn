@@ -51,7 +51,7 @@ public sealed class WorkInvocationIdentityTests
             graph, state, host, bindingRef, handle, [], iterationId) { WorkTokenId = workTokenId });
     }
 
-    private static BpmnFaultEvaluation Fault(
+    private static BpmnEvaluation Fault(
         BpmnGraph graph,
         BpmnExecutionState state,
         string bindingRef,
@@ -251,7 +251,7 @@ public sealed class WorkInvocationIdentityTests
 
         var caught = Fault(graph, state.State, failed.BindingRef, failed.Handle, [Live(sibling)], failed.TokenId);
 
-        caught.Disposition.ShouldBe(new BpmnErrorDisposition.Caught("Failure", ErrorCode: null));
+        caught.ErrorDisposition.ShouldBe(new BpmnErrorDisposition.Caught("Failure", ErrorCode: null));
         caught.Continuation.ShouldBe(Defer);
         caught.Commands.OfType<BpmnHostCommand.StartWork>().Select(start => start.BindingRef).ShouldBe(["recover"]);
         caught.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldNotContain(command => command.Handle == sibling.Handle);
@@ -490,7 +490,7 @@ public sealed class WorkInvocationIdentityTests
 
         var faulted = Fault(graph, started.State, work.BindingRef, work.Handle, [], workTokenId: null);
 
-        faulted.Disposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance);
+        faulted.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance);
         faulted.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.work.faulted");
     }
 

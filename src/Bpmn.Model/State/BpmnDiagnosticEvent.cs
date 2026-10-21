@@ -101,5 +101,13 @@ public enum BpmnDiagnosticKind
     ScopeListenerFired,
 
     /// <summary>A message, signal and timer triggered scope listener was retired: its scope completed (teardown-then-complete) or was interrupted, so the still-armed listener token and its durable child are cancelled.</summary>
-    ScopeListenerRetired
+    ScopeListenerRetired,
+
+    /// <summary>
+    /// The host's condition evaluator answered one condition expression: the element whose outgoing flows were
+    /// being chosen, the flow whose condition it was, and the result (true, false, or failed with its code and
+    /// message). Recorded once per evaluation, in the order the conditions were asked, ahead of the routing or
+    /// fault the answers led to. Added in payload format 1.4.0.
+    /// </summary>
+    ConditionEvaluated
 }

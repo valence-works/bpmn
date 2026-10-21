@@ -175,16 +175,12 @@ public sealed class InMemoryProcessInstance
     /// <summary>
     /// Raises a BPMN escalation from a running unit of work, which is the common case of
     /// <see cref="SignalWork(string, string, JsonElement?)"/>: it uses the interpreter's escalation code and
-    /// wraps <paramref name="escalationCode"/> in the payload shape the interpreter reads.
+    /// wraps <paramref name="escalationCode"/> in <see cref="BpmnInterpreter.EscalationPayload"/>.
     /// </summary>
     public void EscalateWork(string handleOrBindingRef, string escalationCode)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(escalationCode);
-
-        using var payload = JsonDocument.Parse(
-            JsonSerializer.Serialize(new Dictionary<string, string>(StringComparer.Ordinal) { ["code"] = escalationCode }));
-
-        SignalWork(handleOrBindingRef, BpmnInterpreter.EscalationSignalCode, payload.RootElement.Clone());
+        SignalWork(handleOrBindingRef, BpmnInterpreter.EscalationSignalCode, BpmnInterpreter.EscalationPayload(escalationCode));
     }
 
     /// <summary>The live work with this handle, or <c>null</c>.</summary>
@@ -299,7 +295,7 @@ public sealed class InMemoryProcessInstance
             evaluation.Continuation,
             evaluation.Commands,
             moves,
-            (evaluation as BpmnFaultEvaluation)?.Disposition));
+            evaluation.ErrorDisposition));
 
         // In the order returned. A teardown emitted before a start is not interchangeable with the reverse.
         foreach (var command in evaluation.Commands)
@@ -464,7 +460,10 @@ public sealed class InMemoryProcessInstance
         LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle) { WorkTokenId = work.WorkTokenId }).ToArray(),
         InvocationCorrelation: _invocationCorrelation,
         Variables: Variables,
-        Capabilities: _host.Capabilities);
+        Capabilities: _host.Capabilities)
+    {
+        Conditions = _host.Options.Conditions
+    };
 
     private bool Retire(string handle)
     {
