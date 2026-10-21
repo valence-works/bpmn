@@ -353,6 +353,38 @@ public sealed class ErrorCodeMatchingTests
     }
 
     [Fact]
+    public void A_multi_instance_call_activity_instance_faulted_with_a_code_reaches_the_boundary_declaring_it()
+    {
+        var definition = new BpmnProcessBuilder("multi-instance-call")
+            .StartEvent("Start")
+            .Element(new BpmnElement("Call", BpmnElementTypes.CallActivity, bindingRef: "call",
+                properties: new Dictionary<string, string>(StringComparer.Ordinal) { ["calledElement"] = "child" },
+                loopCharacteristics: new BpmnLoopCharacteristics(isSequential: false, cardinality: 3)))
+            .EndEvent("EndOk")
+            .BoundaryEvent("Declined", "Call", Error(CreditDeclined))
+            .Task("Recover", bindingRef: "recover")
+            .EndEvent("EndRecovered")
+            .ConnectSequence("Start", "Call", "EndOk")
+            .ConnectSequence("Declined", "Recover", "EndRecovered")
+            .Build();
+        var graph = BuildGraph(definition);
+        var started = Interpreter.Start(new BpmnStartRequest(graph, null, Scope()));
+        var live = LiveWork(started);
+
+        var evaluation = Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
+            graph, started.State, Scope(live[..2]), "call", live[2].Handle, [BpmnInterpreter.CallActivityFaultedOutcomeName], live[2].IterationId)
+        {
+            WorkTokenId = live[2].WorkTokenId,
+            ErrorCode = CreditDeclined
+        });
+
+        evaluation.ErrorDisposition.ShouldBe(new BpmnErrorDisposition.Caught("Declined", CreditDeclined));
+        evaluation.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().Select(teardown => teardown.Handle)
+            .ShouldBe([live[0].Handle, live[1].Handle], ignoreOrder: true);
+        Started(evaluation).ShouldBe(["recover"]);
+    }
+
+    [Fact]
     public void A_call_activity_faulted_outcome_no_catcher_matches_faults_with_its_code()
     {
         var graph = BuildGraph(CallWithBoundaries(Timeout));

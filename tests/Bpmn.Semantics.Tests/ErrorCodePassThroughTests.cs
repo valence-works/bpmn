@@ -187,6 +187,19 @@ public sealed class ErrorCodePassThroughTests
         root.Transcript[^1].Disposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance);
     }
 
+    [Fact]
+    public void A_called_process_failure_keeps_its_cause_in_the_callers_transcript()
+    {
+        var (root, child) = Run(Parent(callActivity: true), Thrower(CreditDeclined));
+
+        child.CompleteWork("charge");
+
+        var trigger = root.Transcript[^1].Trigger.ShouldBeOfType<BpmnTranscriptTrigger.WorkCompleted>();
+        trigger.Cause.ShouldNotBeNull().ShouldStartWith(BpmnInterpreter.ErrorThrownFaultCode + ": ",
+            customMessage: "the completion carries no message, so the called scope's fault is kept on the transcript");
+        root.Transcript.ToString().ShouldContain(trigger.Cause);
+    }
+
     // --- The reference host's own API ----------------------------------------------------------------------
 
     [Fact]

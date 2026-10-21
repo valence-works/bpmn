@@ -238,7 +238,7 @@ public sealed class InMemoryProcessInstance
             RunWorkCompleted(work, [], timerFired: true);
     }
 
-    internal void RunWorkCompleted(InMemoryWorkItem work, IReadOnlyCollection<string> outcomeNames, bool timerFired, string? errorCode = null)
+    internal void RunWorkCompleted(InMemoryWorkItem work, IReadOnlyCollection<string> outcomeNames, bool timerFired, string? errorCode = null, string? cause = null)
     {
         // A late completion for work that was torn down, or for a scope that already finished, is absorbed
         // rather than faulted. Both are ordinary races in BPMN: an interrupting boundary event tears its host
@@ -248,7 +248,7 @@ public sealed class InMemoryProcessInstance
 
         BpmnTranscriptTrigger trigger = timerFired
             ? new BpmnTranscriptTrigger.TimerFired(work)
-            : new BpmnTranscriptTrigger.WorkCompleted(work, outcomeNames) { ErrorCode = errorCode };
+            : new BpmnTranscriptTrigger.WorkCompleted(work, outcomeNames) { ErrorCode = errorCode, Cause = cause };
 
         Evaluate(trigger, snapshot => _host.Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
             Graph, _state, snapshot, work.BindingRef, work.Handle, outcomeNames, work.IterationId)
@@ -466,7 +466,7 @@ public sealed class InMemoryProcessInstance
             // here (ADR 0012). A call activity reports a called process's failure as a completion with the
             // Faulted outcome, carrying the error; an embedded subprocess reports it as a fault.
             case BpmnContinuation.Fault fault when parent.Graph.FindElementByBindingRef(parentWork.BindingRef) is { } host && BpmnElementFamilies.IsCallActivity(host):
-                _host.Enqueue(() => parent.RunWorkCompleted(parentWork, [BpmnInterpreter.CallActivityFaultedOutcomeName], timerFired: false, fault.ErrorCode));
+                _host.Enqueue(() => parent.RunWorkCompleted(parentWork, [BpmnInterpreter.CallActivityFaultedOutcomeName], timerFired: false, fault.ErrorCode, $"{fault.Code}: {fault.Message}"));
                 break;
 
             case BpmnContinuation.Fault fault:

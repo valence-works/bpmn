@@ -35,9 +35,15 @@ public abstract record BpmnTranscriptTrigger
         /// <summary>The BPMN error reported with the completion, for a call activity whose called process faulted with one; <c>null</c> otherwise.</summary>
         public string? ErrorCode { get; init; }
 
+        /// <summary>
+        /// Why the called process failed, for a call activity's Faulted completion: the called scope's fault code and
+        /// message. The completion itself carries no message, so this keeps the cause in the caller's transcript.
+        /// </summary>
+        public string? Cause { get; init; }
+
         /// <inheritdoc />
         public override string Describe() =>
-            $"completed {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}{Outcomes(OutcomeNames)}{Error(ErrorCode)}";
+            $"completed {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}{Outcomes(OutcomeNames)}{Error(ErrorCode)}{(Cause is null ? string.Empty : $": {Cause}")}";
     }
 
     /// <summary>A timer came due, which completes the work it was scheduled for.</summary>
