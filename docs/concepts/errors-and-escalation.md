@@ -163,9 +163,9 @@ correlation, whose token id names a token of the enclosing scope.
 Because a scope's interpreter has no view of the tree above it, propagation across a scope boundary
 is your host's routing job. When a nested scope ends with a `Fault`, report it to the parent and copy
 `Fault.ErrorCode` across: into `BpmnWorkFaultedRequest.ErrorCode` for an embedded subprocess, or into
-`BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for a call activity. A host that drops
-the code degrades the error to an uncoded one, which only a catch-all catches. The reference host,
-`Bpmn.Runtime.InMemory`, does exactly this. `HasEnclosingScope` and `InvocationCorrelation` on the
+`BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for a call activity. The reference host,
+`Bpmn.Runtime.InMemory`, copies the code this way. A host that drops the code degrades the error to an
+uncoded one, which only a catch-all catches. `HasEnclosingScope` and `InvocationCorrelation` on the
 snapshot are how the interpreter learns whether crossing is even possible.
 
 ## Escalation

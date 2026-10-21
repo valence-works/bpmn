@@ -367,8 +367,8 @@ var parentEvaluation = parentWorkIsCallActivity
         { FaultedIterationId = parentWork.IterationId, WorkTokenId = parentWork.WorkTokenId, ErrorCode = fault.ErrorCode });
 ```
 
-A host that drops the code degrades every crossing error to an uncoded one, which only a catch-all
-catches. The reference host, `InMemoryBpmnHost`, does exactly this.
+The reference host, `InMemoryBpmnHost`, forwards the code this way. A host that drops the code degrades
+every crossing error to an uncoded one, which only a catch-all catches.
 
 `Caught` means an error boundary event or an error event subprocess took the failure and this
 evaluation returned without fault; its `ErrorCode` is the code the catcher declares, null only for a
