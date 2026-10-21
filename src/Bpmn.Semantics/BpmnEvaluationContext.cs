@@ -15,10 +15,16 @@ internal sealed record PendingTeardown(string Handle, string ElementId, string R
 /// command list it builds. It exists so the interpreter can stay a pure function of its request — nothing here
 /// reaches the host, and nothing here survives the evaluation.
 /// </summary>
-internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot host)
+internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot host, BpmnExecutionState entryState)
 {
     private readonly List<BpmnHostCommand> _commands = [];
     private readonly List<PendingTeardown> _carriedTeardowns = [];
+
+    /// <summary>The immutable state used to correlate entries in <see cref="BpmnHostSnapshot.LiveWork"/>.</summary>
+    public BpmnExecutionState EntryState { get; } = entryState;
+
+    /// <summary>The lazily indexed host ledger for this evaluation's entry state.</summary>
+    public BpmnLiveWorkSnapshotResolver? LiveWorkSnapshotResolver { get; set; }
 
     /// <summary>The graph this evaluation runs.</summary>
     public BpmnGraph Graph { get; } = graph;

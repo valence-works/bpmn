@@ -27,18 +27,17 @@ namespace Bpmn.Semantics;
 /// here corrupts the event-subprocess start-element hint, which is read from this same dictionary.
 /// </para>
 /// <para>
-/// Because correlation does not round-trip, the interpreter re-finds a parked token from
-/// (binding ref, iteration id) alone. That imposes a rule on every host: <b>at most one live unit of
-/// work per (binding ref, iteration id) within a scope</b>. Multi-instance instances share a binding ref
-/// and are told apart by their iteration id, which is what it is for.
+/// Work callbacks can echo the scope-local token id assigned when work started. Without that echo, the
+/// interpreter retains the legacy rule that a callback's binding and reported iteration must identify one
+/// active unit uniquely. Legacy signals use the exact binding/iteration slot, while terminal callbacks
+/// can omit the iteration when the binding identifies a single record.
 /// </para>
 /// <para>
-/// The rule holds <b>once a command batch has been applied in full, in order</b> — not at every point
-/// within one. An interrupting path may emit the replacement <see cref="BpmnHostCommand.StartWork"/>
-/// ahead of the <see cref="BpmnHostCommand.CancelWorkSubtree"/> for the unit it supersedes, so a host
-/// that applied the batch halfway would see the slot doubly occupied. Two obligations follow: apply
-/// commands in the order returned, and key the ledger by handle rather than by slot, so the teardown
-/// still names the older unit unambiguously.
+/// For ID-less legacy callbacks, the uniqueness rule applies <b>once a command batch has been applied in full,
+/// in order</b> — not at every point within one. An interrupting path may emit replacement work before the
+/// <see cref="BpmnHostCommand.CancelWorkSubtree"/> for the unit it supersedes. Hosts must apply commands in
+/// order and keep the ledger keyed by handle, so teardown still names the older unit unambiguously. Hosts that
+/// echo token ids can distinguish concurrent work even when binding and iteration are the same.
 /// </para>
 /// </param>
 /// <param name="Variables">The process's declared variables, as the host sees them.</param>
@@ -75,15 +74,24 @@ public sealed record BpmnHostSnapshot(
 /// <param name="BindingRef">The <see cref="BpmnElement.BindingRef"/> (or <see cref="BpmnElement.ListenerBindingRef"/>) it runs.</param>
 /// <param name="IterationId">
 /// The <see cref="BpmnIterationScope.IterationId"/> it was started under, or <c>null</c> for ordinary
-/// single-run work. Several concurrent instances of the same binding are distinguished by this.
+/// work. Multi-instance invocations use distinct iterations; concurrent ordinary invocations use distinct
+/// <see cref="WorkTokenId"/> values.
 /// </param>
 /// <param name="Handle">
 /// An opaque host handle for this running unit. The interpreter echoes it back in
 /// <see cref="BpmnHostCommand.CancelWorkSubtree"/> and never parses it. A handle must name one unit for the
 /// scope's lifetime: never reuse one, because a late report for work the scope tore down is recognized by its
-/// handle alone.
+/// handle first; when the callback also supplies <see cref="WorkTokenId"/>, that id must agree with the stopped token.
 /// </param>
-public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string Handle);
+public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string Handle)
+{
+    /// <summary>
+    /// The scope-local token id echoed from the <see cref="BpmnHostCommand.StartWork.TokenId"/> that created
+    /// this live unit. When supplied, it must identify exactly one active work record whose binding and
+    /// iteration agree with this snapshot entry. <c>null</c> keeps the legacy exact binding/iteration lookup.
+    /// </summary>
+    public string? WorkTokenId { get; init; }
+}
 
 /// <summary>Reads the process's declared variables. The interpreter only ever reads; it never writes.</summary>
 public interface IBpmnVariableReader
@@ -258,7 +266,8 @@ public abstract record BpmnHostCommand
     /// <param name="Correlation">
     /// Opaque interpreter state with exactly one use: when the work is a nested BPMN process, the host supplies
     /// it as that process's <see cref="BpmnHostSnapshot.InvocationCorrelation"/>. It is never handed back on a
-    /// callback; a completion, fault or signal is matched by binding ref, iteration id and handle alone.
+    /// callback. A callback can echo this work's token id through its <c>WorkTokenId</c> property; an ID-less
+    /// legacy callback is resolved from its binding and reported iteration when those identify one unit.
     /// </param>
     /// <param name="IterationScope">The per-instance scope for a multi-instance instance; <c>null</c> otherwise.</param>
     /// <param name="StartElementHint">
@@ -405,8 +414,7 @@ public sealed record BpmnStartRequest(
 /// Reports that a started unit of work completed.
 /// <para>
 /// The completing work must ALREADY be removed from <see cref="BpmnHostSnapshot.LiveWork"/>. Completion
-/// is terminal; leaving it present lets a re-armed non-interrupting listener key onto the same
-/// (binding ref, iteration id) slot, and a teardown can then target the work that just finished.
+/// is terminal, so reporting the same invocation as live would contradict the callback.
 /// </para>
 /// </summary>
 /// <param name="Graph">The built process graph.</param>
@@ -423,7 +431,15 @@ public sealed record BpmnWorkCompletedRequest(
     string CompletedBindingRef,
     string CompletedHandle,
     IReadOnlyCollection<string> OutcomeNames,
-    string? CompletedIterationId = null);
+    string? CompletedIterationId = null)
+{
+    /// <summary>
+    /// The scope-local token id echoed from the <see cref="BpmnHostCommand.StartWork.TokenId"/> that started
+    /// this work. When present, it selects the invocation and must agree with the binding and any reported
+    /// iteration. It is init-only to preserve the positional constructor and deconstruction shape.
+    /// </summary>
+    public string? WorkTokenId { get; init; }
+}
 
 /// <summary>
 /// Reports that a started unit of work failed terminally.
@@ -448,24 +464,33 @@ public sealed record BpmnWorkFaultedRequest(
 {
     /// <summary>
     /// The iteration id the failed work ran under, for a multi-instance instance; <c>null</c> for ordinary
-    /// single-run work. The faulted unit is found from this and <see cref="FaultedBindingRef"/>, exactly as a
-    /// completion is, so a fault of one of several concurrent instances must carry it: without it the
-    /// interpreter cannot tell the instances apart and throws <see cref="BpmnExecutionException"/>.
+    /// single-run work. When <see cref="WorkTokenId"/> is absent, the faulted unit is found from this and
+    /// <see cref="FaultedBindingRef"/> and that pair must identify one active unit uniquely. An explicit token id
+    /// can identify the unit without an iteration id; if both are supplied, they must agree.
     /// <para>
     /// An init-only property rather than a positional parameter, so adding it changes neither the constructor
     /// nor the deconstruction a host compiled against an earlier version uses.
     /// </para>
     /// </summary>
     public string? FaultedIterationId { get; init; }
+
+    /// <summary>
+    /// The scope-local token id echoed from the <see cref="BpmnHostCommand.StartWork.TokenId"/> that started
+    /// this work. When present, it selects the invocation and must agree with the binding and any reported
+    /// iteration. It is init-only to preserve the positional constructor and deconstruction shape.
+    /// </summary>
+    public string? WorkTokenId { get; init; }
 }
 
 /// <summary>
 /// Reports a signal raised by a nested process this scope invoked — the receiving half of
 /// <see cref="BpmnHostCommand.SignalEnclosingScope"/>.
 /// <para>
-/// Unlike a completion or a fault, the signalling work must STILL BE PRESENT in
-/// <see cref="BpmnHostSnapshot.LiveWork"/>. A signal is not terminal: an escalating activity keeps
-/// running, and removing it makes the interpreter believe it has already gone.
+/// For a recognized escalation signal with <see cref="BpmnWorkSignalledRequest.WorkTokenId"/>, the signalling
+/// work must still be present in <see cref="BpmnHostSnapshot.LiveWork"/> with the same token id and handle. An
+/// ID-less legacy signal resolved to an active invocation must also match its live handle. Only when no
+/// active exact-slot match remains can it use the legacy late-signal path. An unrecognized signal code
+/// remains a forward-compatible diagnostic pass-through and does not resolve invocation identity.
 /// </para>
 /// <para>
 /// A nested scope can terminalize synchronously while the parent is still applying commands. Queue the
@@ -488,4 +513,13 @@ public sealed record BpmnWorkSignalledRequest(
     string SignallingHandle,
     string Code,
     JsonElement? Payload = null,
-    string? SignallingIterationId = null);
+    string? SignallingIterationId = null)
+{
+    /// <summary>
+    /// The scope-local token id echoed from the <see cref="BpmnHostCommand.StartWork.TokenId"/> that raised
+    /// this signal. When present on a recognized escalation signal, it must identify an active invocation and
+    /// match the live-work snapshot entry, including its handle. It is init-only to preserve the positional
+    /// constructor and deconstruction shape. A null value retains legacy signal handling.
+    /// </summary>
+    public string? WorkTokenId { get; init; }
+}
