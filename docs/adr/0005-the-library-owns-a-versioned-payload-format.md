@@ -59,7 +59,9 @@ to know the individual `$defs` names. Format 1.2.0 adds a third root for work bi
 [ADR 0007](0007-work-bindings-have-a-json-contract.md); the original model shapes stay unchanged.
 Format 1.3.0 adds optional properties for condition expressions and the expression language, as
 recorded in [ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
-Format 1.4.0 appends the `ConditionEvaluated` diagnostic kind for the same decision.
+Format 1.4.0 appends the `ConditionEvaluated` diagnostic kind for the same decision. Format 1.5.0
+appends the `ErrorThrown` and `ErrorCaught` diagnostic kinds, as recorded in
+[ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md).
 
 ### What publishing it exposed
 
