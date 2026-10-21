@@ -31,8 +31,8 @@ var evaluation = interpreter.Start(new BpmnStartRequest(graph, priorState: null,
 | Entry point | Request | Returns |
 | --- | --- | --- |
 | `Start` | `BpmnStartRequest(Graph, PriorState, Host, StartSignal?)` | `BpmnEvaluation` |
-| `OnWorkCompleted` | `BpmnWorkCompletedRequest(..., CompletedIterationId?) { WorkTokenId }` | `BpmnEvaluation` |
-| `OnWorkFaulted` | `BpmnWorkFaultedRequest(..., FaultMessage?) { FaultedIterationId, WorkTokenId }` | `BpmnEvaluation` |
+| `OnWorkCompleted` | `BpmnWorkCompletedRequest(..., CompletedIterationId?) { WorkTokenId, ErrorCode }` | `BpmnEvaluation` |
+| `OnWorkFaulted` | `BpmnWorkFaultedRequest(..., FaultMessage?) { FaultedIterationId, WorkTokenId, ErrorCode }` | `BpmnEvaluation` |
 | `OnWorkSignalled` | `BpmnWorkSignalledRequest(..., SignallingIterationId?) { WorkTokenId }` | `BpmnEvaluation` |
 
 The **binding ref** names the kind of work, and the **handle** names the host's physical work item.
@@ -85,14 +85,11 @@ var boundWork = result.Bindings
 #### Nested bodies
 
 Each subprocess body runs as its own scope with its own graph, which you build when the subprocess
-starts. A body that cannot run would then be refused mid-run, after earlier work has already happened.
-`Build` prevents that for the bodies it can see: it refuses an error end event, which nothing executes
-yet, in any body your bound work carries in `NestedProcess`.
-
-A body carries no bound work of its own, so the bodies nested inside it, at any depth, are visible only
-to you. Build the graph of every body the root can reach before you run the root, and discard or cache
-the result: the refusal then reaches the caller up front, wherever the body sits. The reference host,
-`InMemoryBpmnHost`, does this whenever it starts a root.
+starts. A body that cannot run is then refused mid-run, after earlier work has already happened. A
+body carries no bound work of its own, so the bodies nested inside it, at any depth, are visible only
+to you. To refuse a broken body up front, build the graph of every body the root can reach before you
+run the root, and discard or cache the result. The reference host, `InMemoryBpmnHost`, does this
+whenever it starts a root.
 
 #### Recurring timer starts
 
@@ -268,7 +265,7 @@ instance.
 | --- | --- |
 | `BpmnContinuation.Complete(Outcome)` | The scope finished: no token remains and no work is running. `Outcome` is `"Done"` normally, or `"Cancelled"` when a cancel end event cancelled a transaction. |
 | `BpmnContinuation.Defer` | Still running: work was started, a token waits at a join, or a listener is armed. Persist the state and call back when something completes. |
-| `BpmnContinuation.Fault(Code, Message)` | The scope failed deterministically and cannot continue. |
+| `BpmnContinuation.Fault(Code, Message) { ErrorCode }` | The scope failed deterministically and cannot continue. `ErrorCode` names the BPMN error behind the fault, when there is one; pass it to the parent scope. |
 
 The outcome names are constants: `BpmnInterpreter.DoneOutcomeName` and
 `BpmnInterpreter.CancelledOutcomeName`. `Defer` is the common case, and it is what "the process is
@@ -324,12 +321,12 @@ entirely about how you run them.
 
 `BpmnEvaluation.ErrorDisposition` is nullable. `OnWorkFaulted` sets it when the reported failure
 is routed or absorbed, and call-activity completions do the same for the failure outcomes `Faulted`,
-`DispatchFailed`, or `Cancelled`:
+`DispatchFailed`, or `Cancelled`. Any evaluation in which an error end event throws sets it too:
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
-    { FaultedIterationId = work.IterationId, WorkTokenId = work.WorkTokenId });
+    { FaultedIterationId = work.IterationId, WorkTokenId = work.WorkTokenId, ErrorCode = "CREDIT_DECLINED" });
 
 var summary = evaluation.ErrorDisposition switch
 {
@@ -341,14 +338,41 @@ var summary = evaluation.ErrorDisposition switch
 };
 ```
 
-Note what the request does **not** carry: an error code. The host reports that work failed and why in
-human terms, and today every error catcher takes any failure. In 0.4.0,
-[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) lets the host name the error, and
-makes a coded catcher catch only that code. A host that crosses scopes will then pass a child's
-`Fault.ErrorCode` up with the parent's fault report.
+`ErrorCode` names the BPMN error the work raised, or is `null` when you cannot name one. The message
+stays a human-readable description. Matching is strict
+([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)): a catcher that declares a code
+catches only that code, and wins over a catch-all, while an uncoded fault reaches only catch-alls. A
+fault no catcher takes faults the scope, and the `Fault` continuation keeps the code in its own
+`ErrorCode`. For a call activity, report the called process's error in
+`BpmnWorkCompletedRequest.ErrorCode` alongside the `Faulted` outcome; the interpreter ignores the code
+on any other completion, so `DispatchFailed` and `Cancelled` reach only catch-alls.
+
+An error end event in the model throws too. An error event subprocess of its own scope catches it, and
+the evaluation reports `Caught`; otherwise the scope faults with `bpmn.error.thrown`
+(`BpmnInterpreter.ErrorThrownFaultCode`), `Fault.ErrorCode` carries the thrown code, and the evaluation
+reports `Propagated`.
+
+Crossing scopes is your job, as it is for every fault. When a nested scope ends with a `Fault`, copy its
+`ErrorCode` into the parent's report:
+
+```csharp
+// The child scope ended with childEvaluation.Continuation is BpmnContinuation.Fault fault.
+var parentEvaluation = parentWorkIsCallActivity
+    ? interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
+        parentGraph, parentState, parentSnapshot, parentWork.BindingRef, parentWork.Handle,
+        [BpmnInterpreter.CallActivityFaultedOutcomeName], parentWork.IterationId)
+        { WorkTokenId = parentWork.WorkTokenId, ErrorCode = fault.ErrorCode })
+    : interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
+        parentGraph, parentState, parentSnapshot, parentWork.BindingRef, parentWork.Handle, fault.Message)
+        { FaultedIterationId = parentWork.IterationId, WorkTokenId = parentWork.WorkTokenId, ErrorCode = fault.ErrorCode });
+```
+
+The reference host, `InMemoryBpmnHost`, forwards the code this way. A host that drops the code degrades
+every crossing error to an uncoded one, which only a catch-all catches.
 
 `Caught` means an error boundary event or an error event subprocess took the failure and this
-evaluation returned without fault. Recovery work may still be running. `Propagated` means the final
+evaluation returned without fault; its `ErrorCode` is the code the catcher declares, null only for a
+catch-all. Recovery work may still be running. `Propagated` means the final
 continuation is always a `BpmnContinuation.Fault`: no catcher matched, or a catcher's route faulted
 during this evaluation. `Absorbed` means
 the failure belonged to work or a scope that had already stopped. Ordinary starts, completions and
@@ -436,13 +460,14 @@ public sealed class MinimalHost : IBpmnVariableReader
             { WorkTokenId = work.WorkTokenId }), work);
     }
 
-    public void FaultWork(string handle, string message)
+    /// errorCode: the BPMN error the work raised, or null when you cannot name one.
+    public void FaultWork(string handle, string message, string? errorCode = null)
     {
         var work = Take(handle);
 
         var evaluation = _interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
             _graph, _state, Snapshot(), work.BindingRef, handle, message)
-            { FaultedIterationId = work.IterationId, WorkTokenId = work.WorkTokenId });
+            { FaultedIterationId = work.IterationId, WorkTokenId = work.WorkTokenId, ErrorCode = errorCode });
 
         Apply(evaluation, work, message);
     }
@@ -511,7 +536,9 @@ public sealed class MinimalHost : IBpmnVariableReader
                 break;                                   // waiting; another event will arrive
 
             case BpmnContinuation.Fault fault:
-                OnScopeFaulted(fault.Code, fault.Message);
+                // A nested scope reports this to its parent with fault.ErrorCode: as FaultWork's
+                // errorCode for a subprocess, or with the Faulted outcome for a call activity.
+                OnScopeFaulted(fault.Code, fault.Message, fault.ErrorCode);
                 break;
         }
     }
@@ -533,7 +560,7 @@ public sealed class MinimalHost : IBpmnVariableReader
     }
 
     private void OnScopeCompleted(string outcome) { /* report upward, archive, whatever */ }
-    private void OnScopeFaulted(string code, string message) { /* your failure model, if any */ }
+    private void OnScopeFaulted(string code, string message, string? errorCode) { /* your failure model, if any */ }
 }
 
 public sealed record FaultRecord(string BindingRef, string Message);
@@ -613,6 +640,10 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Pass outcome names on completion when a conditional sequence flow depends on them.
 - [ ] Make `CancelWorkSubtree` recursive. It is not "cancel this one thing".
 - [ ] Route `SignalEnclosingScope` to the immediate parent scope, not to the root.
+- [ ] Name the BPMN error a failed unit of work raised in `ErrorCode`, when you can; a coded catcher
+      catches nothing else.
+- [ ] When a nested scope faults, copy its `Fault.ErrorCode` into the parent's fault report, or into
+      the parent's `Faulted` completion for a call activity.
 - [ ] Decide your failure policy from `BpmnEvaluation.ErrorDisposition`, not from every fault.
 
 ## Two traps that are easy to hit and hard to diagnose

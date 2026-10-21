@@ -25,25 +25,45 @@ An event names an error by `errorRef`. The reader resolves that ref to the error
 on the event definition, under `BpmnEventDefinitionProperties.Code`, with the error's name under
 `BpmnEventDefinitionProperties.Name`. An event definition without a ref carries no code.
 
-A host reports that work failed; it does not name the error:
+An error is raised in one of two ways. Bound work fails, and the host names the error it raised:
 
 ```csharp
 interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
-    { FaultedIterationId = work.IterationId });   // null unless a multi-instance instance failed
+    {
+        FaultedIterationId = work.IterationId,   // null unless a multi-instance instance failed
+        WorkTokenId = work.WorkTokenId,
+        ErrorCode = "CREDIT_DECLINED"            // null when the host cannot name one
+    });
 ```
 
-Which catcher handles a failure is a property of the model, not of the report. The host supplies a
-human-readable message; BPMN supplies the routing.
+Or the model throws one at an error end event. Which **error** was raised is a fact about the run, so
+whatever raised it names it: the host for failed work, the end event's `errorRef` for a thrown error.
+Which **catcher** it reaches is a property of the model
+([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)). The message stays what it
+was, a human-readable description of the failure; the code is what BPMN matches on.
 
-A catcher's code is recorded, not yet matched on. An error boundary event or error event subprocess
-that declares a code reports it in `Caught.ErrorCode` when it catches, but selection does not narrow
-on it: today every error catcher catches any failure, which is why a host carries at most one error
-boundary and a scope at most one error event subprocess. [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) changes this in 0.4.0
-(#66). The host names the error its work raised, error end events throw, and a catcher that declares a
-code catches only that code. For a call activity, the child's error code is reported only with the
-`Faulted` outcome; `DispatchFailed` and `Cancelled` are uncoded failures of the call itself and reach
-only catch-alls.
+### Matching
+
+- **Strict.** A catcher that declares a code catches only an error with that code. A catcher that
+  declares none is a catch-all and catches any error. An error with no code reaches only catch-alls.
+- **Exact first, then the catch-all.** On one activity, a boundary declaring the error's code wins
+  over the activity's catch-all boundary. In one scope, the same holds for error event subprocesses.
+- **Cardinality.** An activity may carry several error boundary events, and a scope several error
+  event subprocesses, provided their codes are distinct and there is at most one catch-all each. This is
+  the escalation rule, applied to errors. Graph build refuses a duplicate code or a second catch-all;
+  the reader drops one with a finding.
+
+A reported code is trimmed, and a blank one counts as none.
+
+This is a 0.4.0 change. Before it, every error catcher caught any failure, so a coded catcher now
+misses a fault it used to take when the host reports no code, or a different one. A host that wants
+the old behavior reports the code its catchers expect, or the model adds a catch-all.
+
+For a call activity, the called process's error is reported with the `Faulted` outcome, in
+`BpmnWorkCompletedRequest.ErrorCode`. The interpreter ignores the code on any other completion.
+`DispatchFailed` and `Cancelled` are failures of the call itself, so they carry no error of the callee
+and reach only catch-alls.
 
 ### Error boundary events are always interrupting
 
@@ -56,11 +76,8 @@ and there is no coherent meaning for one: the activity has failed, so there is n
 continue alongside.
 
 An error boundary event with no code is a catch-all: it catches **any** error, and reports a null
-code. A boundary event with a code reports that code when it catches, but it still catches any error
-for now; narrowing it to only that code arrives with error-code matching in 0.4.0 (#66, ADR 0012).
-Declaring the code today keeps the model honest about what the boundary is for, so its meaning does
-not change when matching lands. Like every catch-all, a boundary without a code is occasionally what
-you want and usually not.
+code. A boundary event with a code catches only that code, and reports it. Like every catch-all, a
+boundary without a code is occasionally what you want and usually not.
 
 ### Error start events in event subprocesses
 
@@ -69,64 +86,87 @@ element with `triggeredByEvent: true` whose start trigger is an error.
 
 The difference from a boundary event is scope. A boundary event catches errors from the one activity
 it is attached to. An error event subprocess catches errors raised anywhere in the scope that
-contains it.
+contains it, including one an error end event of that scope throws. It is always interrupting.
 
 Error-triggered event subprocesses are dormant catchers: unlike message, signal and timer triggers,
 they need no armed listener, so their `ListenerBindingRef` is null. Nothing has to be running for
 them to catch.
 
-### Error end events are read, not yet executed
+### Error end events throw
 
-An error end event ends its scope by throwing an error. The reader keeps it as an end event carrying
-its error definition, and the writer writes it back, so a document that throws errors survives a round
-trip. One without an `errorRef` throws an error with no code.
+An error end event ends its scope by throwing an error: the code its `errorRef` resolves to, or no
+code when it has no `errorRef`. The reader keeps it as an end event carrying its error definition, and
+the writer writes it back.
 
-The interpreter does not execute it yet. `BpmnGraph.Build` refuses a definition that contains one,
-because the only other reading is a plain end event, which would complete a scope the document says has
-failed. Until it does, raise the error by faulting the bound work.
+When a token reaches one, the interpreter consumes the token and records an `ErrorThrown` diagnostic.
+Then:
 
-The refusal covers subprocess bodies too, so it comes before anything runs rather than when a token
-first reaches the subprocess. `BpmnGraph.Build` checks every body the bound work carries in
-`NestedProcess`, embedded or event subprocess. Bodies nested deeper are resolved by your host, so your
-host refuses those by building each one before it runs the root, as the reference host does. See
-[Hosting the interpreter](../guides/hosting-the-interpreter.md).
+1. An error event subprocess of the **same scope** that declares the code, else the scope's catch-all,
+   catches it. The subprocess activates, interrupting: every other live token in the scope is stopped,
+   work the scope is running is torn down, and work the same evaluation was about to start is
+   withdrawn. The evaluation reports `Caught`.
+2. Otherwise the scope ends at once with `Fault(bpmn.error.thrown)`, whose `ErrorCode` is the thrown
+   code. Like every fault it withdraws work the evaluation was about to start, and tears nothing down:
+   stopping what the scope still runs is the host's half of the fault. The evaluation reports
+   `Propagated`, because no catcher in the scope took the error.
+
+`BpmnInterpreter.ErrorThrownFaultCode` is the fault code. `Fault.Code` stays the library's reason the
+scope stopped; the BPMN error travels separately in `Fault.ErrorCode`, so a document can never forge a
+library reason. An uncaught error fails its scope, where an uncaught escalation is a no-op.
 
 ### Propagation
 
-An error that is not caught where it is thrown moves **up the scope hierarchy** until something
+An error that is not caught where it is raised moves **up the scope hierarchy** until something
 catches it.
 
-1. Work faults.
-2. Does an error boundary event on the failing activity match? If so, the activity is terminated and
-   the boundary path runs. Done.
+1. Work faults, or an error end event throws.
+2. For a work fault: does an error boundary event on the failing activity match? If so, the activity is
+   terminated and the boundary path runs. Done.
 3. Does an error event subprocess in the enclosing scope match? If so, it activates. Done.
-4. Otherwise the scope itself fails, and step 2 repeats one level up, with the enclosing activity as
-   the failing one.
-5. If it reaches the root uncaught, the process fails.
+4. Otherwise the scope itself fails with a `Fault` that keeps the error's code, and step 2 repeats one
+   level up, with the enclosing activity as the failing one.
+5. If it reaches the root uncaught, the process fails, and the root's `Fault.ErrorCode` still names the
+   error.
 
-The returned `BpmnEvaluation` reports how BPMN handled a host-reported failure in its nullable
-`ErrorDisposition`:
+Faults that are not BPMN errors carry no `ErrorCode`: the propagation limit, a gateway that selects no
+flow, a failed condition, a cancelled transaction with no cancel boundary, and a catcher's own path
+faulting for any of those reasons.
+
+The returned `BpmnEvaluation` reports how BPMN handled a host-reported failure, or a thrown error, in
+its nullable `ErrorDisposition`:
 
 - `Caught(CatchingElementId, ErrorCode?)` — a catcher in this scope matched and this evaluation
-  returned without fault. Recovery work may still be running. A null code means the catcher is a
-  catch-all.
+  returned without fault. Recovery work may still be running. `ErrorCode` is the code the catcher
+  declares, which is the code it caught; it is null only for a catch-all.
 - `Propagated` — the final continuation is always a `Fault`. No catcher may have matched, or a
   catcher's route faulted during this evaluation, so the failure has gone up.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-This applies both to `OnWorkFaulted` and to `OnWorkCompleted` when a call activity reports the
-failure outcomes `Faulted`, `DispatchFailed`, or `Cancelled`. Those outcomes enter the same catcher
-routing ladder. An ordinary start, completion, signal, transaction cancellation, or event subprocess
-activation on another path leaves `ErrorDisposition` null. A transaction's `Cancelled` completion
-does not mean the same thing as a call activity's `Cancelled` failure outcome.
+This applies to `OnWorkFaulted`, to `OnWorkCompleted` when a call activity reports the failure
+outcomes `Faulted`, `DispatchFailed`, or `Cancelled`, and to any evaluation in which an error end
+event fires. The failure outcomes enter the same catcher routing ladder. An ordinary start, completion,
+signal, transaction cancellation, or event subprocess activation on another path leaves
+`ErrorDisposition` null. A transaction's `Cancelled` completion does not mean the same thing as a call
+activity's `Cancelled` failure outcome.
+
+The disposition is about one scope. An error that propagates out of a child is `Propagated` there, and
+is `Caught` or `Propagated` again in the parent's own evaluation. A host that records an incident for
+every `Propagated` evaluation records the child's even when the parent catches it.
+
+Every catch records an `ErrorCaught` diagnostic naming the catcher. Its `errorCode` detail is the
+caught error's code, absent for an uncoded error, and its `match` detail is `exact` or `catch-all`.
 
 Steps 2 and 3 work the same in a nested scope as at the root. The interpreter finds the failing
 activity from the binding ref and iteration id you report, never from the scope's invocation
 correlation, whose token id names a token of the enclosing scope.
 
 Because a scope's interpreter has no view of the tree above it, propagation across a scope boundary
-is your host's routing job. `HasEnclosingScope` and `InvocationCorrelation` on the snapshot are how
-the interpreter learns whether that is even possible.
+is your host's routing job. When a nested scope ends with a `Fault`, report it to the parent and copy
+`Fault.ErrorCode` across: into `BpmnWorkFaultedRequest.ErrorCode` for an embedded subprocess, or into
+`BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for a call activity. The reference host,
+`Bpmn.Runtime.InMemory`, copies the code this way. A host that drops the code degrades the error to an
+uncoded one, which only a catch-all catches. `HasEnclosingScope` and `InvocationCorrelation` on the
+snapshot are how the interpreter learns whether crossing is even possible.
 
 ## Escalation
 
@@ -274,10 +314,11 @@ What the library gives you instead is the one piece of information you cannot co
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-    graph, state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId });
+    graph, state, snapshot, work.BindingRef, work.Handle, message)
+    { FaultedIterationId = work.IterationId, WorkTokenId = work.WorkTokenId, ErrorCode = errorCode });
 
 if (evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated)
-    _incidents.Record(work, message);   // your model, your policy
+    _incidents.Record(work, message, errorCode);   // your model, your policy
 // Caught: the process modeled this failure. Absorbed: this work or scope had already stopped.
 // Null: no host-reported failure was routed or absorbed in this evaluation.
 ```

@@ -30,12 +30,12 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | `sendTask` | Supported | Publishes a named message and continues. |
 | `receiveTask` | Supported | Waits for a named message. |
 | `callActivity` | Supported | Behaves as a member of the task family; the host resolves and runs the called process. A `calledElement`-less call activity reads with an `Info` finding. |
-| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. The returned `BpmnEvaluation.ErrorDisposition` reports whether routing caught, propagated or absorbed the failure. |
+| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. A `Faulted` outcome carries the called process's error in `BpmnWorkCompletedRequest.ErrorCode`, so a coded catcher can match it; `DispatchFailed` and `Cancelled` carry no error and reach only catch-alls. The returned `BpmnEvaluation.ErrorDisposition` reports whether routing caught, propagated or absorbed the failure. |
 | `subProcess`, embedded | Supported | The nested body travels as a `NestedProcess` work binding. |
 | `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. |
 | `transaction` | Supported | Modeled as `subProcess` with `isTransaction: true`. May not also carry loop characteristics. |
 | Event subprocess with more than one start event | Dropped | The body must declare exactly one. |
-| Second error-triggered event subprocess in one scope | Dropped | At most one. The same rule applies to a second code-less catch-all escalation event subprocess, and to two event subprocesses claiming the same escalation code. |
+| Second code-less catch-all error event subprocess in one scope, or two claiming the same error code | Dropped | A scope may carry several error event subprocesses with distinct codes and at most one catch-all. The same rule applies to escalation event subprocesses. |
 | Non-interrupting error event subprocess | Dropped | BPMN does not allow it. |
 | `adHocSubProcess` | Dropped | Not part of the model the reader builds. |
 
@@ -58,7 +58,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | None (plain) | Supported | |
 | Message, signal | Supported | Matched on the resolved message or signal **name**. An unresolvable `messageRef` / `signalRef` degrades to a plain start. |
 | Timer | Supported | Must be a **recurring schedule**: exactly one nonblank ISO-8601 `interval` or `cron` expression. Graph build rejects a missing or ambiguous choice; `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts. A timer start that is not recurring degrades on import. |
-| Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code the subprocess reports when it catches; selection does not yet narrow on it. |
+| Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code it catches: only that code, preferred over a catch-all in the same scope. One with no ref is the catch-all. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |
 | Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. |
@@ -73,7 +73,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
-| **Error** | Read, not executed | **No import finding:** the exception to the rule above, because nothing is lost on read; the refusal comes from `BpmnGraph.Build`, so a host that checks only findings must also build the graph to see it. Read and written with its error: the code its `errorRef` resolves to, or no code when it has no ref. `BpmnGraph.Build` **refuses** a definition containing one, including in a subprocess body its bound work carries, because running it as a plain end event would complete a scope the document says has failed. A host refuses deeper bodies by building them before the root runs. Raise an error by faulting the bound work instead. |
+| Error | Supported | Throws the code its `errorRef` resolves to, or an error with no code when it has no ref. An error event subprocess of its own scope that declares the code, else the scope's catch-all, catches it and interrupts the scope; otherwise the scope faults with `bpmn.error.thrown` and `Fault.ErrorCode` set to the code, for the enclosing scope to catch. |
 | Signal, conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
 
 ### Intermediate events
@@ -94,7 +94,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | Interrupting (`cancelActivity: true`) | Supported | The BPMN default. Terminates the host activity and routes the boundary path. |
 | Non-interrupting (`cancelActivity: false`) | Supported | The boundary path runs alongside the still-running activity. |
-| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. Its `errorRef` resolves to the code it reports when it catches. Every error boundary currently catches any error; one with no code is the catch-all. |
+| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. Its `errorRef` resolves to the code it catches: a coded boundary catches **only** that code, and wins over the host's catch-all. One with no code is the catch-all. A second code-less one on the same host, or a duplicate code, is dropped. |
 | Escalation | Supported | May be non-interrupting. A code-less boundary is the catch-all; a second code-less one on the same host, or a duplicate code, is dropped. |
 | Timer | Supported | Requires a one-shot `<timeDuration>`; without one it is dropped. |
 | Message, signal | Supported | Dropped when the name cannot be resolved. |

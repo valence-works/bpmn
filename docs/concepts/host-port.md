@@ -22,8 +22,8 @@ expression.
 | Entry point | The event it carries | Returns |
 | --- | --- | --- |
 | `Start` | The scope is beginning, optionally at a start event an external trigger matched. | `BpmnEvaluation` |
-| `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names. | `BpmnEvaluation` |
-| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnEvaluation` |
+| `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names, and for a call activity's `Faulted` outcome optionally the BPMN error the called process raised. | `BpmnEvaluation` |
+| `OnWorkFaulted` | A unit of work failed, with a human-readable message and optionally the BPMN error it raised. | `BpmnEvaluation` |
 | `OnWorkSignalled` | A nested scope this one invoked signalled outward. | `BpmnEvaluation` |
 
 Work carries three complementary identifiers. The **binding ref** is the interpreter's name for it,
@@ -187,7 +187,7 @@ What the scope itself should do now.
 | --- | --- |
 | `Complete(Outcome)` | The scope finished: no token remains and no work is running. `Outcome` is `"Done"` normally, or `"Cancelled"` when a cancel end event cancelled a transaction. It is what a conditional flow in the parent selects on. |
 | `Defer` | Still running: work was started, a token waits at a join, or a listener is armed. |
-| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. |
+| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. `Code` is the library's reason. The init-only `ErrorCode` names the BPMN error behind the fault, when there is one. |
 
 `Defer` is not "waiting". The interpreter has no notion of waiting; it has a notion of having nothing
 left to decide. What you do during that gap — suspend, poll, park a message subscription, hold a
@@ -309,37 +309,59 @@ host it knows cannot answer.
 ### The error disposition
 
 `BpmnEvaluation.ErrorDisposition` is a nullable `BpmnErrorDisposition`. It reports how BPMN handled a
-host-reported failure without making the host adopt an incident or retry policy:
+host-reported failure, or an error an error end event threw, without making the host adopt an incident
+or retry policy:
 
 - `Caught(CatchingElementId, ErrorCode?)` — an error boundary event or an error event subprocess took
-  the failure and this evaluation returned without fault. Recovery work may still be running. A
-  null `ErrorCode` means the catcher is a catch-all.
+  the failure and this evaluation returned without fault. Recovery work may still be running.
+  `ErrorCode` is the code the catcher declares, which is the code it caught; it is null only for a
+  catch-all.
 - `Propagated` — the final evaluation has a `Fault` continuation. This means no catcher in the scope
   matched, or a catcher's route faulted during this evaluation; the failure is now the enclosing
   scope's problem, or at the root, yours.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-The disposition is present for failed work reported by `OnWorkFaulted`, and for a call-activity
+The disposition is present for failed work reported by `OnWorkFaulted`, for a call-activity
 completion reported by `OnWorkCompleted` with
-the outcome `Faulted`, `DispatchFailed`, or `Cancelled`. Those call-activity outcomes use the same
-error-catcher routing as a fault report. A late failure for work or a scope that was already stopped
-is reported as `Absorbed`.
+the outcome `Faulted`, `DispatchFailed`, or `Cancelled`, and for an evaluation in which an error end
+event threw. Those call-activity outcomes use the same error-catcher routing as a fault report. A
+thrown error is `Caught` when an error event subprocess of its own scope takes it, and `Propagated`
+otherwise. A late failure for work or a scope that was already stopped is reported as `Absorbed`.
 
-The property is `null` when no host-reported failure was routed or absorbed. That includes normal
+The property is `null` when no failure was routed or absorbed and no error was thrown. That includes normal
 starts, completions and signals, transaction cancellation, and an event subprocess activated on an
 unrelated path. In particular, a transaction's `Cancelled` completion is distinct from a call
 activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a separate transcript
 field and is unchanged.
 
-Note what `BpmnWorkFaultedRequest` does not carry: an error code. The host reports that work failed
-and describes why in human terms. Today every error catcher takes any failure. This changes in 0.4.0:
-[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) adds an error code to the
-fault request and to the `Fault` continuation, and makes a coded catcher catch only its own code.
-
 This is the only place the library says anything about failure policy, and it says the minimum: what
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
 is not modeled here, because BPMN does not model it. See
 [Errors and escalation](errors-and-escalation.md).
+
+### Error codes
+
+Which BPMN error was raised is a fact about the run, and only whatever raised it knows that. Which
+catcher it reaches is a property of the model
+([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)). Three init-only properties
+carry it, so positional constructors and deconstruction are unchanged:
+
+| Property | Meaning |
+| --- | --- |
+| `BpmnWorkFaultedRequest.ErrorCode` | The BPMN error the failed work raised, or `null` when the host cannot name one. The message stays a human-readable description. |
+| `BpmnWorkCompletedRequest.ErrorCode` | The error a called process raised. Meaningful only with a call activity's `Faulted` outcome; the interpreter ignores it on any other completion, including `DispatchFailed` and `Cancelled`. |
+| `BpmnContinuation.Fault.ErrorCode` | The BPMN error behind the fault, or `null` when the fault is not a BPMN error. |
+
+Matching is strict. A catcher that declares a code catches only that code, and wins over a catch-all;
+an error with no code reaches only catch-alls. The fault ladder tries an error boundary on the failing
+activity, then an error event subprocess of the scope, and otherwise faults the scope with the code
+preserved on `Fault.ErrorCode`. A reported code is trimmed, and a blank one counts as none.
+
+Crossing scopes stays your job. When a nested scope ends with a `Fault`, copy its `ErrorCode` into the
+parent's report: `BpmnWorkFaultedRequest.ErrorCode` for an embedded subprocess, or
+`BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for a call activity. A host that forgets
+degrades every crossing error to an uncoded one, which only a catch-all catches. Faults that are not
+BPMN errors, such as `bpmn.propagation.limit` or `bpmn.gateway.no-flow-selected`, carry no code.
 
 ### Callbacks for work already stopped
 
@@ -502,6 +524,8 @@ it already rested on your variable reader.
 8. Never reuse a handle within a scope. A late ID-less terminal report for work the scope tore down
    is absorbed by its handle; if it supplies `WorkTokenId`, that ID must also match the stopped
    token. Absorb a signal for a handle the host already retired before calling the interpreter.
+9. When a nested scope ends with a `Fault`, copy its `ErrorCode` into the parent's fault report, or into
+   the parent's `Faulted` completion for a call activity.
 
 ## Related
 

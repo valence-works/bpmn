@@ -41,6 +41,9 @@ public static class BpmnElementFamilies
     /// <summary>The escalation end event family: raises an escalation to the enclosing scope, then consumes its token (none-end semantics).</summary>
     public const string EndEventEscalation = "endEvent.escalation";
 
+    /// <summary>The error end event family: throws the error it declares, which an error event subprocess of its scope catches, or which ends the scope with a fault carrying the error's code.</summary>
+    public const string EndEventError = "endEvent.error";
+
     /// <summary>The message end event family: a bound-work send — starts the bound publish work, then consumes its token on that work's completion (none-end semantics).</summary>
     public const string EndEventMessage = "endEvent.message";
     public const string Task = "task";
@@ -283,34 +286,13 @@ public static class BpmnElementFamilies
                 return EndEventEscalation;
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Message))
                 return EndEventMessage;
-            // An error end event is read and written with its error, but nothing executes it yet. Running it as
-            // a plain end event would complete a scope the document says has failed, so it is refused instead.
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Error))
-                throw ErrorEndEventRefusal(element);
+                return EndEventError;
         }
 
         throw new BpmnExecutionException(
-            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, and message end events are supported.");
+            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, and message end events are supported.");
     }
-
-    /// <summary>True when <paramref name="element"/> is an end event that throws an error, which nothing executes yet.</summary>
-    internal static bool IsErrorEndEvent(BpmnElement element) =>
-        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) &&
-        element.EventDefinitions.Count == 1 &&
-        StringComparer.Ordinal.Equals(element.EventDefinitions.Single().Type, BpmnEventDefinitionTypes.Error);
-
-    /// <summary>
-    /// The refusal for an error end event. <paramref name="enclosingElementId"/> names the element whose body
-    /// declares it, when the event was found in a nested body rather than in the definition being built.
-    /// </summary>
-    internal static BpmnExecutionException ErrorEndEventRefusal(BpmnElement element, string? enclosingElementId = null) =>
-        new($"BPMN error end event '{element.ElementId}'{(enclosingElementId is null ? "" : $" in the body of '{enclosingElementId}'")} throws {DescribeError(element.EventDefinitions.Single())}, but error end events are not executable yet; "
-            + "the definition is refused rather than run with the event as a plain end event. Fault the bound work to raise the error instead.");
-
-    private static string DescribeError(BpmnEventDefinition definition) =>
-        definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code)
-            ? $"error code '{code.Trim()}'"
-            : "an error with no code";
 
     /// <summary>
     /// Resolves an intermediate throw event. Exactly one

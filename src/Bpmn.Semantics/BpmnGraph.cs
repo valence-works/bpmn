@@ -87,12 +87,6 @@ public sealed class BpmnGraph
     /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, including one with
     /// a cycle that can never wait, and <see cref="BpmnCapabilityException"/> when the definition needs a host
     /// capability <paramref name="capabilities"/> does not declare.
-    /// <para>
-    /// A nested body is built on its own, when its subprocess starts. What a body cannot run should still be refused
-    /// before the root runs, so this also refuses an error end event in any body <paramref name="boundWork"/>
-    /// carries in <see cref="BpmnBoundWork.NestedProcess"/>. Bodies nested deeper are resolved by the host, not
-    /// carried here: a host that runs them should build each one before it runs the root.
-    /// </para>
     /// </summary>
     /// <param name="definition">The process to execute.</param>
     /// <param name="boundWork">
@@ -123,7 +117,6 @@ public sealed class BpmnGraph
         var variableNames = definition.Variables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
-        RefuseErrorEndEventsInCarriedBodies(elements, boundWorkByRef);
 
         var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
         graph.RefuseCyclesThatCannotWait();
@@ -185,9 +178,32 @@ public sealed class BpmnGraph
             .Where(BpmnElementFamilies.IsEscalationBoundary)
             .ToArray();
 
-    /// <summary>The single error boundary attached to <paramref name="hostElementId"/>, or <c>null</c> when the host has none; validation caps a host at one error boundary.</summary>
-    public BpmnElement? AttachedErrorBoundary(string hostElementId) =>
-        _boundariesByHost[hostElementId].FirstOrDefault(BpmnElementFamilies.IsErrorBoundary);
+    /// <summary>The error boundary events attached to <paramref name="hostElementId"/>, in element order; dormant and fault-driven. A host may carry several with distinct codes plus at most one code-less catch-all.</summary>
+    public IReadOnlyCollection<BpmnElement> AttachedErrorBoundaries(string hostElementId) =>
+        _boundariesByHost[hostElementId]
+            .Where(BpmnElementFamilies.IsErrorBoundary)
+            .ToArray();
+
+    /// <summary>
+    /// The error boundary on <paramref name="hostElementId"/> that catches an error coded <paramref name="errorCode"/>:
+    /// the boundary declaring exactly that code wins; else the code-less catch-all; else <c>null</c>. An error with
+    /// no code (<c>null</c>) reaches only the catch-all.
+    /// </summary>
+    public BpmnElement? AttachedErrorBoundary(string hostElementId, string? errorCode)
+    {
+        var boundaries = AttachedErrorBoundaries(hostElementId);
+        return (errorCode is null ? null : boundaries.FirstOrDefault(boundary => StringComparer.Ordinal.Equals(ReadErrorCode(boundary), errorCode)))
+               ?? boundaries.FirstOrDefault(boundary => ReadErrorCode(boundary) is null);
+    }
+
+    /// <summary>
+    /// The code-less catch-all error boundary attached to <paramref name="hostElementId"/>, which is the only one an
+    /// error with no code reaches, or <c>null</c>. A host used to carry at most one error boundary, which caught any
+    /// error; since error codes are matched (ADR 0012) a host may carry several, so "the" error boundary no longer
+    /// exists.
+    /// </summary>
+    [Obsolete("A host may carry several error boundaries since error codes are matched (ADR 0012). Use AttachedErrorBoundary(hostElementId, errorCode) or AttachedErrorBoundaries(hostElementId).")]
+    public BpmnElement? AttachedErrorBoundary(string hostElementId) => AttachedErrorBoundary(hostElementId, errorCode: null);
 
     /// <summary>The single compensation boundary attached to <paramref name="hostElementId"/>, or <c>null</c> when the host has none; validation caps a host at one compensation boundary.</summary>
     public BpmnElement? AttachedCompensationBoundary(string hostElementId) =>
@@ -226,9 +242,32 @@ public sealed class BpmnGraph
         _eventSubprocesses.FirstOrDefault(catcher =>
             catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Escalation && catcher.Code is null);
 
-    /// <summary>The scope's single error event subprocess, or <c>null</c> when it has none; validation caps a scope at one.</summary>
-    public BpmnEventSubprocessCatcher? ErrorEventSubprocess() =>
-        _eventSubprocesses.FirstOrDefault(catcher => catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error);
+    /// <summary>
+    /// The error event subprocess of this scope that catches an error coded <paramref name="errorCode"/>: an exact
+    /// code match wins; else the code-less catch-all; else <c>null</c>. An error with no code (<c>null</c>) reaches
+    /// only the catch-all.
+    /// </summary>
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocess(string? errorCode) =>
+        (errorCode is null ? null : ErrorEventSubprocessExact(errorCode)) ?? ErrorCatchAllEventSubprocess();
+
+    /// <summary>The error event subprocess with the exact code <paramref name="errorCode"/>, or <c>null</c>.</summary>
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocessExact(string errorCode) =>
+        _eventSubprocesses.FirstOrDefault(catcher =>
+            catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error &&
+            catcher.Code is not null && StringComparer.Ordinal.Equals(catcher.Code, errorCode));
+
+    /// <summary>The code-less catch-all error event subprocess, or <c>null</c>.</summary>
+    public BpmnEventSubprocessCatcher? ErrorCatchAllEventSubprocess() =>
+        _eventSubprocesses.FirstOrDefault(catcher =>
+            catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error && catcher.Code is null);
+
+    /// <summary>
+    /// The code-less catch-all error event subprocess, which is the only one an error with no code reaches, or
+    /// <c>null</c>. A scope used to carry at most one error event subprocess, which caught any error; since error
+    /// codes are matched (ADR 0012) a scope may carry several, so "the" error event subprocess no longer exists.
+    /// </summary>
+    [Obsolete("A scope may carry several error event subprocesses since error codes are matched (ADR 0012). Use ErrorEventSubprocess(errorCode).")]
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocess() => ErrorCatchAllEventSubprocess();
 
     /// <summary>The element's default sequence flow, or <c>null</c> when it declares none.</summary>
     public BpmnSequenceFlow? GetDefaultFlow(BpmnElement element)
@@ -559,6 +598,7 @@ public sealed class BpmnGraph
                 case BpmnElementFamilies.StartEventError:
                 case BpmnElementFamilies.EndEventNone:
                 case BpmnElementFamilies.EndEventTerminate:
+                case BpmnElementFamilies.EndEventError:
                 case BpmnElementFamilies.ParallelGateway:
                 case BpmnElementFamilies.EventBasedGateway:
                     if (element.BindingRef is not null)
@@ -648,39 +688,18 @@ public sealed class BpmnGraph
     }
 
     /// <summary>
-    /// Refuses an error end event in a body this definition's bound work carries, embedded or event subprocess
-    /// alike. A body's own graph is built only when its subprocess starts, so without this the refusal would surface
-    /// mid-run, after earlier work had already happened. A body carries no bound work of its own, so the bodies
-    /// nested inside it are not visible here: the host resolves those, and must build each one before running the
-    /// root to refuse them up front too.
-    /// </summary>
-    private static void RefuseErrorEndEventsInCarriedBodies(
-        IReadOnlyCollection<BpmnElement> elements,
-        IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef)
-    {
-        foreach (var element in elements)
-        {
-            if (element.BindingRef is null || boundWorkByRef[element.BindingRef].NestedProcess is not { } body)
-                continue;
-
-            if (body.Elements.FirstOrDefault(BpmnElementFamilies.IsErrorEndEvent) is { } thrower)
-                throw BpmnElementFamilies.ErrorEndEventRefusal(thrower, element.ElementId);
-        }
-    }
-
-    /// <summary>
     /// Event subprocess rules. A <c>TriggeredByEvent</c> element is a flow-less <c>subProcess</c>
     /// binding a body: it participates in no sequence flows, carries no loop characteristics, hosts no attached
     /// boundary, is not a compensation handler, not referenced as one, and is neither a compensation handler nor a
     /// transaction (the compensation-handler rule family, mirrored). Its body must declare exactly one start event
-    /// carrying exactly one supported trigger definition — escalation (with optional code; code-less = catch-all),
-    /// error (catch-all only), or a message/signal (with a <c>name</c>) / timer (with an <c>interval</c>) — with no
+    /// carrying exactly one supported trigger definition — escalation or error (each with an optional code;
+    /// code-less = catch-all), or a message/signal (with a <c>name</c>) / timer (with an <c>interval</c>) — with no
     /// nested <c>TriggeredByEvent</c> inside the body (rejected). A message/signal/timer event subprocess
     /// declares a required <see cref="BpmnElement.ListenerBindingRef"/> (the armed scope listener) that
     /// escalation/error must NOT declare (dormant catchers). The body start event's interrupting flag (its
     /// <see cref="BpmnElement.CancelActivity"/>, the BPMN <c>isInterrupting</c> default-true convention) must be
-    /// interrupting for an error trigger. Per scope: escalation codes are distinct with at most one code-less
-    /// catch-all, and at most one error event subprocess. The body structure is read the way MI validation reads
+    /// interrupting for an error trigger. Per scope and per trigger kind, escalation and error alike: codes are
+    /// distinct, with at most one code-less catch-all. The body structure is read the way MI validation reads
     /// the definition's own variable declarations — authoring-time knowledge, no runtime cross-scope reach.
     /// Returns the graph-derived catcher index.
     /// </summary>
@@ -707,7 +726,8 @@ public sealed class BpmnGraph
         var catchers = new List<BpmnEventSubprocessCatcher>();
         var escalationCodes = new HashSet<string>(StringComparer.Ordinal);
         var hasEscalationCatchAll = false;
-        var hasError = false;
+        var errorCodes = new HashSet<string>(StringComparer.Ordinal);
+        var hasErrorCatchAll = false;
 
         foreach (var element in triggered)
         {
@@ -772,18 +792,28 @@ public sealed class BpmnGraph
             }
             else if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Error))
             {
-                // An error-triggered event subprocess catches the fault of work started in this scope and then runs
-                // its body. Interrupting only (per BPMN), and a scope carries at most one. Its code is recorded so a
-                // catch reports what the catcher declares, but selection does not yet narrow on it.
+                // An error-triggered event subprocess catches an error raised in this scope — a work fault, a call
+                // activity's failure outcome, or an error end event — and then runs its body. Interrupting only (per
+                // BPMN). A coded one catches only its code, so a scope may carry several with distinct codes plus one
+                // code-less catch-all: the escalation rule, applied to errors.
                 if (element.ListenerBindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by a work fault, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
+                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by an error, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
                 if (!interrupting)
                     throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' must be interrupting; error events are always interrupting per BPMN.");
-                if (hasError)
-                    throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
-                hasError = true;
 
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, ReadErrorCode(bodyStart), Interrupting: true));
+                var errorCode = ReadErrorCode(bodyStart);
+                if (errorCode is null)
+                {
+                    if (hasErrorCatchAll)
+                        throw new BpmnExecutionException($"BPMN scope declares more than one code-less catch-all error event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
+                    hasErrorCatchAll = true;
+                }
+                else if (!errorCodes.Add(errorCode))
+                {
+                    throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess for code '{errorCode}' (at '{element.ElementId}'); error event-subprocess codes in one scope must be distinct.");
+                }
+
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, errorCode, Interrupting: true));
             }
             else if (ExternalTriggerKind(definitionType) is { } externalTriggerKind)
             {
@@ -872,8 +902,8 @@ public sealed class BpmnGraph
     /// Boundary event rules: the <c>attachedToRef</c> host must exist, be a task-family or
     /// subprocess element, and bind work; a boundary takes no inbound flows and at least one
     /// outbound flow; a catch boundary (timer/message/signal) binds listener work while an error
-    /// boundary binds none and must be interrupting; a host carries at most one error boundary; a boundary
-    /// declares no default flow (its outbound is taken unconditionally when it fires).
+    /// boundary binds none and must be interrupting; a host's error boundary codes are distinct, with at most one
+    /// code-less catch-all; a boundary declares no default flow (its outbound is taken unconditionally when it fires).
     /// </summary>
     private static void ValidateBoundaryEvents(
         IReadOnlyCollection<BpmnElement> elements,
@@ -881,7 +911,8 @@ public sealed class BpmnGraph
         ILookup<string, BpmnSequenceFlow> inboundByTarget)
     {
         var elementsById = elements.ToDictionary(element => element.ElementId, StringComparer.Ordinal);
-        var errorBoundaryCountByHost = new Dictionary<string, int>(StringComparer.Ordinal);
+        var errorCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var errorCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var boundary in elements.Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.BoundaryEvent)))
         {
@@ -933,9 +964,20 @@ public sealed class BpmnGraph
                 if (!boundary.CancelActivity)
                     throw new BpmnExecutionException($"BPMN error boundary event '{boundary.ElementId}' must be interrupting (cancelActivity=true); a non-interrupting error boundary is not meaningful.");
 
-                errorBoundaryCountByHost[hostId] = (errorBoundaryCountByHost.TryGetValue(hostId, out var count) ? count : 0) + 1;
-                if (errorBoundaryCountByHost[hostId] > 1)
-                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one error boundary event; without error-code matching a host may carry at most one.");
+                // A coded boundary catches only its code, so a host may carry several: distinct codes plus at most
+                // one code-less catch-all, the escalation rule applied to errors.
+                var code = ReadErrorCode(boundary);
+                if (code is null)
+                {
+                    if (!errorCatchAllHosts.Add(hostId))
+                        throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one code-less catch-all error boundary; a host may carry at most one.");
+                }
+                else
+                {
+                    var codes = errorCodesByHost.TryGetValue(hostId, out var existing) ? existing : errorCodesByHost[hostId] = new HashSet<string>(StringComparer.Ordinal);
+                    if (!codes.Add(code))
+                        throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one error boundary for code '{code}'; error boundary codes on one host must be distinct.");
+                }
             }
             else if (BpmnElementFamilies.IsCancelBoundary(boundary))
             {
@@ -1009,8 +1051,12 @@ public sealed class BpmnGraph
         }
     }
 
-    /// <summary>The code an error event definition declares, or <c>null</c> for a catch-all. Errors keep their code under the same key as escalations.</summary>
-    private static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
+    /// <summary>
+    /// The code an error event definition declares — what a catcher catches, or what an error end event throws — or
+    /// <c>null</c> for a catch-all, or for a thrown error with no code. Errors keep their code under the same key as
+    /// escalations; surrounding whitespace is trimmed, and a blank code counts as none.
+    /// </summary>
+    internal static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
 
     /// <summary>The non-empty escalation code an escalation throw/end/boundary declares, or <c>null</c> when absent/blank (a code-less boundary is the catch-all).</summary>
     private static string? ReadEscalationCode(BpmnElement element) =>
@@ -1260,7 +1306,7 @@ public enum BpmnEventSubprocessTriggerKind
     /// <summary>An escalation-triggered event subprocess (interrupting or non-interrupting), matched by code (exact beats code-less catch-all).</summary>
     Escalation,
 
-    /// <summary>An error-triggered event subprocess (interrupting only, per BPMN), catch-all (no error-code matching).</summary>
+    /// <summary>An error-triggered event subprocess (interrupting only, per BPMN), matched by code (exact beats code-less catch-all).</summary>
     Error,
 
     /// <summary>A message-triggered event subprocess: armed as a scope listener at scope start, fired by a named-event stimulus.</summary>
@@ -1303,8 +1349,7 @@ public sealed record BpmnEventSubprocessCatcher(
 /// <param name="NestedProcess">
 /// The process definition this work runs, when the work is a nested BPMN process. Required for an event
 /// subprocess body, whose start-event trigger the graph validator reads; <c>null</c> for every other kind of
-/// work, including subprocesses whose body the host resolves on its own. A body carried here is checked when the
-/// enclosing graph builds; one the host resolves on its own is checked only when the host builds it.
+/// work, including subprocesses whose body the host resolves on its own.
 /// </param>
 public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null)
 {

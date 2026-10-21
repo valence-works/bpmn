@@ -147,6 +147,16 @@ public sealed class BpmnInterpreter
     public const string CallActivityCancelledFaultCode = "bpmn.call-activity.cancelled";
 
     /// <summary>
+    /// The fault code a scope ends with when an error end event threw an error that no error event subprocess of
+    /// the scope catches. The error's own code travels on <see cref="BpmnContinuation.Fault.ErrorCode"/>, so a
+    /// document can never forge a library reason. See ADR 0012.
+    /// </summary>
+    public const string ErrorThrownFaultCode = "bpmn.error.thrown";
+
+    /// <summary>The fault code raised when a work fault reaches no error catcher.</summary>
+    private const string WorkFaultedFaultCode = "bpmn.work.faulted";
+
+    /// <summary>
     /// The call activity failure outcomes the interpreter translates into BPMN error handling, in precedence
     /// order. Every other outcome routes as ordinary task flow.
     /// </summary>
@@ -384,7 +394,7 @@ public sealed class BpmnInterpreter
             if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var instanceFailureOutcome))
             {
                 return FinishEvaluation(context, RouteCallActivityFailureOutcome(
-                    context, graph, state, token, instanceFailureOutcome, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
+                    context, graph, state, token, instanceFailureOutcome, completionContext.ErrorCode, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
             }
 
             return FinishEvaluation(context, HandleMultiInstanceInstanceCompletion(
@@ -432,12 +442,13 @@ public sealed class BpmnInterpreter
         // A call activity's bound work completed with a failure outcome (Faulted/DispatchFailed/Cancelled) —
         // intercept BEFORE normal behavior dispatch, joining the interception ladder above. The completion never
         // routes normal outbound; the interpreter routes the error-catcher ladder directly (host error boundary,
-        // then scope error event subprocess, then process fault). The multi-instance case is handled above, inside
-        // the instance interception, so the coordinator cascade composes first.
+        // then scope error event subprocess, then process fault), matching the callee's error code on Faulted. The
+        // multi-instance case is handled above, inside the instance interception, so the coordinator cascade
+        // composes first.
         if (IsCallActivityFailureCompletion(graph.GetRequiredElement(token.AtElementId), completionContext.OutcomeNames, out var callActivityFailureOutcome))
         {
             return FinishEvaluation(context, RouteCallActivityFailureOutcome(
-                context, graph, state, token, callActivityFailureOutcome, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
+                context, graph, state, token, callActivityFailureOutcome, completionContext.ErrorCode, liveWorkSnapshot, pendingCancellations, completionContext.CompletedHandle));
         }
 
         // /D3: if the completing token is a live event-based-gateway race member, it is the winner.
@@ -492,12 +503,14 @@ public sealed class BpmnInterpreter
     /// <summary>
     /// Reports that a started unit of work failed terminally, and returns how BPMN handled the error.
     /// <para>
-    /// When the failing activity's host carries an attached error boundary event, or the scope declares an
-    /// error event subprocess, the error is <b>caught</b>: the host token and its still-armed sibling listeners
-    /// are torn down and the catcher's path routes, so the process continues and the disposition reports the
-    /// catching element. Otherwise the error is <b>propagated</b>: failed work can never complete, so its token
+    /// The fault ladder tries an error boundary event attached to the failing activity's host, then an error event
+    /// subprocess of the scope. At each tier the catcher that declares the reported
+    /// <see cref="BpmnWorkFaultedRequest.ErrorCode"/> wins, else the code-less catch-all; a fault with no code
+    /// reaches only catch-alls. A match <b>catches</b> the error: the host token and its still-armed sibling
+    /// listeners are torn down and the catcher's path routes, so the process continues and the disposition reports
+    /// the catching element. Otherwise the error is <b>propagated</b>: failed work can never complete, so its token
     /// — and any downstream join that requires it — can no longer proceed, and the process faults
-    /// deterministically.
+    /// deterministically, keeping the error's code on <see cref="BpmnContinuation.Fault.ErrorCode"/>.
     /// </para>
     /// <para>
     /// A fault whose handle names work this scope already tore down is absorbed instead, as a late completion is:
@@ -557,34 +570,39 @@ public sealed class BpmnInterpreter
             return new EvaluationResult(state, ErrorDisposition: BpmnErrorDisposition.Absorbed.Instance);
         }
 
+        // Strict matching (ADR 0012): at each tier the catcher declaring the reported code wins, else the
+        // catch-all; an uncoded fault reaches only catch-alls.
+        var errorCode = NormalizeErrorCode(request.ErrorCode);
+
         // Catch the error through an error boundary event attached to the failing work's host.
         if (faultedWork is not null
-            && graph.AttachedErrorBoundary(faultedWork.ElementId) is { } errorBoundary
+            && graph.AttachedErrorBoundary(faultedWork.ElementId, errorCode) is { } errorBoundary
             && state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedWork.TokenId)) is { } hostToken
             && hostToken.Status is not (BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled))
         {
-            return CatchFaultWithErrorBoundary(context, graph, state, faultedWork, hostToken, errorBoundary, request.FaultedHandle);
+            return CatchFaultWithErrorBoundary(context, graph, state, faultedWork, hostToken, errorBoundary, errorCode, request.FaultedHandle);
         }
 
-        // No host error boundary, but the scope declares an error event subprocess — catch there and activate it
-        // interrupting. An event-subprocess body's own fault is NOT self-caught (its host element is the
+        // No host error boundary catches it, but an error event subprocess of the scope does — catch there and
+        // activate it interrupting. An event-subprocess body's own fault is NOT self-caught (its host element is the
         // TriggeredByEvent element); it takes the ordinary propagation path.
         if (faultedWork is not null
             && !graph.GetRequiredElement(faultedWork.ElementId).TriggeredByEvent
-            && graph.ErrorEventSubprocess() is { } errorEventSubprocess
+            && graph.ErrorEventSubprocess(errorCode) is { } errorEventSubprocess
             && state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, faultedWork.TokenId)) is { } errorHostToken
             && errorHostToken.Status is not (BpmnTokenStatus.Consumed or BpmnTokenStatus.Canceled))
         {
-            return CatchFaultWithErrorEventSubprocess(context, graph, state, faultedWork, errorHostToken, errorEventSubprocess, request.FaultedHandle);
+            return CatchFaultWithErrorEventSubprocess(context, graph, state, faultedWork, errorHostToken, errorEventSubprocess, errorCode, request.FaultedHandle);
         }
 
         if (faultedWork is not null)
             state = RemoveActiveWork(state, faultedWork.TokenId);
 
         var detail = string.IsNullOrWhiteSpace(request.FaultMessage) ? "" : $" ({request.FaultMessage})";
-        var message = $"BPMN process faulted because the work bound to '{faultedBindingRef}' faulted{detail}: failed work cannot complete, so its token — and any downstream join that requires it — can no longer proceed.";
+        var uncaught = errorCode is null ? "" : $" with error code '{errorCode}', which no error catcher takes,";
+        var message = $"BPMN process faulted because the work bound to '{faultedBindingRef}' faulted{uncaught}{detail}: failed work cannot complete, so its token — and any downstream join that requires it — can no longer proceed.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, faultedWork?.ElementId, null, faultedWork?.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault("bpmn.work.faulted", message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
+        return new EvaluationResult(state, new BpmnFault(WorkFaultedFaultCode, message, errorCode), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -605,6 +623,7 @@ public sealed class BpmnInterpreter
         BpmnActiveWork faultedWork,
         BpmnToken faultedToken,
         BpmnElement errorBoundary,
+        string? errorCode,
         string faultedHandle)
     {
         var pendingCancellations = new List<PendingTeardown>();
@@ -628,18 +647,21 @@ public sealed class BpmnInterpreter
         var interruptIterationKey = state.Tokens.FirstOrDefault(candidate => StringComparer.Ordinal.Equals(candidate.TokenId, interruptTokenId))?.IterationKey;
         var errorToken = NewToken(state, errorBoundary.ElementId, flowId: null, parentTokenId: interruptTokenId, BpmnTokenStatus.Active, producingWorkHandle: faultedHandle, iterationKey: interruptIterationKey);
         state = AddToken(state, errorToken);
+        var catcherCode = BpmnGraph.ReadErrorCode(errorBoundary);
+        state = RecordErrorCaught(state, errorBoundary.ElementId, catcherCode, errorCode, errorToken.TokenId,
+            $"a work fault of host '{faultedToken.AtElementId}'");
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.TokenEmitted, errorBoundary.ElementId, null, errorToken.TokenId,
             $"BPMN error boundary '{errorBoundary.ElementId}' fired and emitted token '{errorToken.TokenId}' to route the error path.");
 
         return Propagate(context, graph, state, faultedHandle) with
         {
             PendingTeardowns = pendingCancellations,
-            ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, ReadErrorCode(errorBoundary))
+            ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, catcherCode)
         };
     }
 
     /// <summary>
-    /// Catches a work fault with the scope's error event subprocess: drops the failing work's record, then
+    /// Catches a work fault with an error event subprocess of the scope: drops the failing work's record, then
     /// activates the (always interrupting) event subprocess — minting a scope-level activation token and
     /// stopping all other live work in the scope, which tears down the failing host token, its sibling
     /// listeners, and any other branch — before starting the body.
@@ -651,6 +673,7 @@ public sealed class BpmnInterpreter
         BpmnActiveWork faultedWork,
         BpmnToken faultedToken,
         BpmnEventSubprocessCatcher errorEventSubprocess,
+        string? errorCode,
         string faultedHandle)
     {
         var pendingCancellations = new List<PendingTeardown>();
@@ -660,6 +683,8 @@ public sealed class BpmnInterpreter
         // the failing host token) does not issue a teardown for work that has already gone.
         var faultIterationKey = faultedToken.IterationKey;
         state = RemoveActiveWork(state, faultedWork.TokenId);
+        state = RecordErrorCaught(state, errorEventSubprocess.ElementId, errorEventSubprocess.Code, errorCode, faultedToken.TokenId,
+            $"a work fault of host '{faultedToken.AtElementId}'");
 
         var activation = ActivateEventSubprocess(context, graph, state, errorEventSubprocess, faultIterationKey,
             liveWorkSnapshot, pendingCancellations, faultedHandle,
@@ -673,13 +698,38 @@ public sealed class BpmnInterpreter
         };
     }
 
-    /// <summary>The error code an error boundary event declares, or <c>null</c> when it catches any error.</summary>
-    private static string? ReadErrorCode(BpmnElement errorBoundary) =>
-        errorBoundary.EventDefinitions.SingleOrDefault() is { } definition
-        && definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code)
-        && !string.IsNullOrWhiteSpace(code)
-            ? code.Trim()
-            : null;
+    /// <summary>
+    /// A host-reported error code as the interpreter matches it: trimmed, as a catcher's declared code is, with a
+    /// blank code counting as none.
+    /// </summary>
+    private static string? NormalizeErrorCode(string? errorCode) =>
+        string.IsNullOrWhiteSpace(errorCode) ? null : errorCode.Trim();
+
+    /// <summary>
+    /// Records an <see cref="BpmnDiagnosticKind.ErrorCaught"/> diagnostic: <paramref name="catcherElementId"/> took
+    /// an error coded <paramref name="errorCode"/> from <paramref name="source"/>, by declaring that code or, when
+    /// <paramref name="catcherCode"/> is <c>null</c>, as a catch-all.
+    /// </summary>
+    private static BpmnExecutionState RecordErrorCaught(
+        BpmnExecutionState state,
+        string catcherElementId,
+        string? catcherCode,
+        string? errorCode,
+        string? tokenId,
+        string source)
+    {
+        var details = new Dictionary<string, string>(StringComparer.Ordinal) { ["match"] = catcherCode is null ? "catch-all" : "exact" };
+        if (errorCode is not null)
+            details["errorCode"] = errorCode;
+
+        var how = catcherCode is null ? "as a catch-all" : "by declaring that code";
+        return BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ErrorCaught, catcherElementId, null, tokenId,
+            $"BPMN error catcher '{catcherElementId}' caught {DescribeError(errorCode)} from {source} {how}.", details);
+    }
+
+    /// <summary>How a diagnostic names an error: by its code, or as an error with no code.</summary>
+    private static string DescribeError(string? errorCode) =>
+        errorCode is null ? "an error with no code" : $"error code '{errorCode}'";
 
     /// <summary>
     /// True when the completing token is a call activity whose bound work completed with a translated failure
@@ -705,10 +755,14 @@ public sealed class BpmnInterpreter
     /// activity's bound work with a failure outcome rather than failing it, so the host token is consumed and the
     /// error-catcher ladder is routed directly. The completing work's record was already dropped by the caller.
     /// The ladder is: (1) a host-attached error boundary event mints an <see cref="BpmnTokenStatus.Active"/> token
-    /// at the boundary, inheriting the interrupt target's iteration key, and propagates; (2) else the scope's error
-    /// event subprocess activates interrupting; (3) else the process faults deterministically with the per-outcome
-    /// fault code. The interrupt target is the multi-instance loop coordinator when the completing token is an
-    /// instance, so firing a catcher interrupts every remaining instance; otherwise it is the host token itself.
+    /// at the boundary, inheriting the interrupt target's iteration key, and propagates; (2) else an error event
+    /// subprocess of the scope activates interrupting; (3) else the process faults deterministically with the
+    /// per-outcome fault code, keeping the error code on the fault. At each tier the catcher declaring the error
+    /// code wins, else the catch-all. Only a <c>Faulted</c> outcome carries the called process's error, from
+    /// <paramref name="reportedErrorCode"/>; <c>DispatchFailed</c> and <c>Cancelled</c> are failures of the call
+    /// itself, so the code is ignored for them and they reach only catch-alls. The interrupt target is the
+    /// multi-instance loop coordinator when the completing token is an instance, so firing a catcher interrupts
+    /// every remaining instance; otherwise it is the host token itself.
     /// </summary>
     private EvaluationResult RouteCallActivityFailureOutcome(
         BpmnEvaluationContext context,
@@ -716,11 +770,16 @@ public sealed class BpmnInterpreter
         BpmnExecutionState state,
         BpmnToken completingToken,
         string failureOutcome,
+        string? reportedErrorCode,
         BpmnLiveWorkSnapshotResolver? liveWorkSnapshot,
         List<PendingTeardown> pendingCancellations,
         string completedHandle)
     {
         var element = graph.GetRequiredElement(completingToken.AtElementId);
+
+        // Only the Faulted outcome carries an error of the callee (ADR 0012). The interpreter ignores a code on
+        // DispatchFailed and Cancelled, which then reach only catch-alls.
+        var errorCode = StringComparer.Ordinal.Equals(failureOutcome, CallActivityFaultedOutcomeName) ? NormalizeErrorCode(reportedErrorCode) : null;
 
         // The interrupt target is the MI loop coordinator when the completing token is an instance (
         // coordinator cascade), otherwise the completing host token itself.
@@ -731,7 +790,7 @@ public sealed class BpmnInterpreter
             $"BPMN call activity '{element.ElementId}' completed with the '{failureOutcome}' outcome; routing the call-activity failure path.");
 
         // Ladder tier 1: a host-attached error boundary fires — mint a token to route its outbound flows.
-        if (graph.AttachedErrorBoundary(element.ElementId) is { } errorBoundary)
+        if (graph.AttachedErrorBoundary(element.ElementId, errorCode) is { } errorBoundary)
         {
             state = CancelTokenAndWork(context, state, interruptTokenId, CallActivityFailureRoutedReason, liveWorkSnapshot, pendingCancellations,
                 (token, reason) => $"BPMN error boundary '{errorBoundary.ElementId}' routed a call-activity '{failureOutcome}' outcome of host '{element.ElementId}' and cancelled token '{token.TokenId}' at '{token.AtElementId}' ({reason}).");
@@ -739,6 +798,9 @@ public sealed class BpmnInterpreter
 
             var errorToken = NewToken(state, errorBoundary.ElementId, flowId: null, parentTokenId: interruptTokenId, BpmnTokenStatus.Active, producingWorkHandle: completedHandle, iterationKey: interruptIterationKey);
             state = AddToken(state, errorToken);
+            var catcherCode = BpmnGraph.ReadErrorCode(errorBoundary);
+            state = RecordErrorCaught(state, errorBoundary.ElementId, catcherCode, errorCode, errorToken.TokenId,
+                $"the call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.TokenEmitted, errorBoundary.ElementId, null, errorToken.TokenId,
                 $"BPMN error boundary '{errorBoundary.ElementId}' fired and emitted token '{errorToken.TokenId}' to route the call-activity failure path.");
 
@@ -746,14 +808,16 @@ public sealed class BpmnInterpreter
             return boundaryResult with
             {
                 PendingTeardowns = pendingCancellations,
-                ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, ReadErrorCode(errorBoundary))
+                ErrorDisposition = new BpmnErrorDisposition.Caught(errorBoundary.ElementId, catcherCode)
             };
         }
 
-        // Ladder tier 2: the scope's error event subprocess activates interrupting — stop all other live
+        // Ladder tier 2: an error event subprocess of the scope activates interrupting — stop all other live
         // work (which cancels the interrupt target and its listeners) and schedule the body.
-        if (graph.ErrorEventSubprocess() is { } errorEventSubprocess)
+        if (graph.ErrorEventSubprocess(errorCode) is { } errorEventSubprocess)
         {
+            state = RecordErrorCaught(state, errorEventSubprocess.ElementId, errorEventSubprocess.Code, errorCode, completingToken.TokenId,
+                $"the call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
             var activation = ActivateEventSubprocess(context, graph, state, errorEventSubprocess, interruptIterationKey,
                 liveWorkSnapshot, pendingCancellations, completedHandle,
                 $"call-activity '{failureOutcome}' outcome of host '{element.ElementId}'");
@@ -778,9 +842,10 @@ public sealed class BpmnInterpreter
             CallActivityDispatchFailedOutcomeName => CallActivityDispatchFailedFaultCode,
             _ => CallActivityCancelledFaultCode
         };
-        var message = $"BPMN call activity '{element.ElementId}' completed with the '{failureOutcome}' outcome, but no error boundary or error event subprocess is available to route it.";
+        var carried = errorCode is null ? "" : $" carrying error code '{errorCode}'";
+        var message = $"BPMN call activity '{element.ElementId}' completed with the '{failureOutcome}' outcome{carried}, but no error boundary or error event subprocess is available to route it.";
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, completingToken.TokenId, message);
-        return new EvaluationResult(state, new BpmnFault(faultCode, message), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
+        return new EvaluationResult(state, new BpmnFault(faultCode, message, errorCode), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -1587,14 +1652,14 @@ public sealed class BpmnInterpreter
         BpmnErrorDisposition? ErrorDisposition = null,
         PendingScopeSignal? PendingScopeSignal = null);
 
-    /// <summary>A deterministic process failure, carried until the evaluation decides how to surface it.</summary>
-    private sealed record BpmnFault(string Code, string Message);
+    /// <summary>A deterministic process failure, carried until the evaluation decides how to surface it. <paramref name="ErrorCode"/> is the BPMN error behind it, if any.</summary>
+    private sealed record BpmnFault(string Code, string Message, string? ErrorCode = null);
 
     /// <summary>An escalation this scope could not match, to be re-signalled one hop outward. Issued only on a non-fault continuation.</summary>
     private sealed record PendingScopeSignal(string Code, JsonElement? Payload);
 
     /// <summary>Wraps a carried fault as a continuation.</summary>
-    private static BpmnContinuation MakeFault(BpmnFault fault) => new BpmnContinuation.Fault(fault.Code, fault.Message);
+    private static BpmnContinuation MakeFault(BpmnFault fault) => new BpmnContinuation.Fault(fault.Code, fault.Message) { ErrorCode = fault.ErrorCode };
 
     /// <summary>Packages the state, the continuation, and the commands produced so far as one evaluation.</summary>
     private static BpmnEvaluation Evaluated(BpmnEvaluationContext context, BpmnExecutionState state, BpmnContinuation continuation) =>
@@ -1885,6 +1950,12 @@ public sealed class BpmnInterpreter
                     state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Consumed, element.ElementId, null, token.TokenId, $"BPMN end event '{element.ElementId}' consumed token '{token.TokenId}'.");
                     break;
                 }
+                case BpmnBehaviorCommandKind.ThrowError:
+                {
+                    // An error end event throws its error. ThrowError is the sole command an error-end behavior
+                    // emits, so the resolved result is returned directly.
+                    return ThrowError(context, graph, state, token, element, producedBy);
+                }
                 case BpmnBehaviorCommandKind.TerminateProcess:
                 {
                     state = UpdateToken(state, token with { Status = BpmnTokenStatus.Consumed });
@@ -1941,6 +2012,60 @@ public sealed class BpmnInterpreter
         }
 
         return new EvaluationResult(state);
+    }
+
+    /// <summary>
+    /// Handles a <c>ThrowError</c> command: an error end event fired. Consumes its token and records
+    /// <see cref="BpmnDiagnosticKind.ErrorThrown"/>, then checks the scope's OWN error event subprocesses (the exact
+    /// code, else the catch-all; an error with no code reaches only the catch-all). A match activates the
+    /// subprocess, which is always interrupting: it stops all other live work in the scope, withdrawing work this
+    /// evaluation started and carrying teardowns for the rest, exactly as an own-scope escalation catch does, and the
+    /// evaluation reports <see cref="BpmnErrorDisposition.Caught"/>. Otherwise the scope ends at once with a
+    /// <see cref="ErrorThrownFaultCode"/> fault carrying the error's code, and the evaluation reports
+    /// <see cref="BpmnErrorDisposition.Propagated"/>: no catcher in the scope took the error, and crossing into the
+    /// enclosing scope is the host's job (ADR 0012). Like every fault, it withdraws the work this evaluation was
+    /// about to start. An uncaught error fails its scope where an uncaught escalation is a no-op.
+    /// <para>
+    /// This runs inside the propagation loop, whose result never reaches the caller intact, so a catch's teardowns
+    /// and its disposition ride the context. A fault leaves the loop with its result, but rides the context too, so
+    /// a caller that replaces the result's disposition cannot lose it.
+    /// </para>
+    /// </summary>
+    private EvaluationResult ThrowError(
+        BpmnEvaluationContext context,
+        BpmnGraph graph,
+        BpmnExecutionState state,
+        BpmnToken token,
+        BpmnElement element,
+        string producedBy)
+    {
+        var errorCode = BpmnGraph.ReadErrorCode(element);
+        state = UpdateToken(state, token with { Status = BpmnTokenStatus.Consumed });
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Consumed, element.ElementId, null, token.TokenId,
+            $"BPMN error end event '{element.ElementId}' consumed token '{token.TokenId}'.");
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ErrorThrown, element.ElementId, null, token.TokenId,
+            $"BPMN error end event '{element.ElementId}' threw {DescribeError(errorCode)}.",
+            errorCode is null ? null : new Dictionary<string, string>(StringComparer.Ordinal) { ["errorCode"] = errorCode });
+
+        if (graph.ErrorEventSubprocess(errorCode) is { } catcher)
+        {
+            state = RecordErrorCaught(state, catcher.ElementId, catcher.Code, errorCode, token.TokenId, $"error end event '{element.ElementId}'");
+
+            var ownScopeCancellations = new List<PendingTeardown>();
+            var activation = ActivateEventSubprocess(context, graph, state, catcher, token.IterationKey, GetLiveWorkSnapshotResolver(context, "teardown lookup"),
+                ownScopeCancellations, producedBy, $"error end event '{element.ElementId}' threw {DescribeError(errorCode)}");
+
+            foreach (var teardown in ownScopeCancellations)
+                context.CarryTeardown(teardown);
+            context.RecordErrorDisposition(new BpmnErrorDisposition.Caught(catcher.ElementId, catcher.Code));
+
+            return activation with { PendingTeardowns = null };
+        }
+
+        var message = $"BPMN error end event '{element.ElementId}' threw {DescribeError(errorCode)}, and no error event subprocess of its scope catches it; the scope faults, and the error is the enclosing scope's to catch.";
+        state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, token.TokenId, message);
+        context.RecordErrorDisposition(BpmnErrorDisposition.Propagated.Instance);
+        return new EvaluationResult(state, new BpmnFault(ErrorThrownFaultCode, message, errorCode), ErrorDisposition: BpmnErrorDisposition.Propagated.Instance);
     }
 
     /// <summary>
@@ -2278,13 +2403,16 @@ public sealed class BpmnInterpreter
     private BpmnEvaluation FinishEvaluation(BpmnEvaluationContext context, EvaluationResult result)
     {
         // A catcher only handled the failure if its path exits cleanly. Keep this rule at the shared exit
-        // so call-activity completion outcomes and work faults report the same final verdict.
+        // so call-activity completion outcomes, work faults and thrown errors report the same final verdict. A
+        // host-reported failure's disposition rides the result; an error an error end event threw inside the
+        // propagation loop rides the context.
+        var disposition = result.ErrorDisposition ?? context.ErrorDisposition;
         BpmnEvaluation Finish(BpmnExecutionState finalState, BpmnContinuation continuation) =>
             Evaluated(context, finalState, continuation) with
             {
-                ErrorDisposition = result.ErrorDisposition is BpmnErrorDisposition.Caught && continuation is BpmnContinuation.Fault
+                ErrorDisposition = disposition is BpmnErrorDisposition.Caught && continuation is BpmnContinuation.Fault
                     ? BpmnErrorDisposition.Propagated.Instance
-                    : result.ErrorDisposition
+                    : disposition
             };
 
         var state = result.State;
