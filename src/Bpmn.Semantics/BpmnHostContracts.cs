@@ -177,8 +177,9 @@ public enum BpmnConditionResultKind
 /// <summary>
 /// The host's answer to one <see cref="BpmnConditionRequest"/>: <see cref="True"/>, <see cref="False"/>, or
 /// <see cref="Failed"/>. A failure faults the scope with <see cref="FaultCode"/>, or with
-/// <c>bpmn.condition.failed</c> when the host gives none. Like every interpreter fault it is a verdict on the
-/// scope, not a BPMN error, so no error catcher takes it.
+/// <c>bpmn.condition.failed</c> when the host gives none, except at an escalation throw an interrupting event
+/// subprocess of its own scope caught, whose routing is moot. Like every interpreter fault it is a verdict on
+/// the scope, not a BPMN error, so no error catcher takes it.
 /// </summary>
 public sealed record BpmnConditionResult
 {

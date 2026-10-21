@@ -436,7 +436,9 @@ When the interpreter asks:
   completion when it does.
 - Nothing holds and there is no default: an exclusive or inclusive gateway faults the scope with
   `bpmn.gateway.no-flow-selected`, and any other element that has outgoing flows faults it with
-  `bpmn.flow.none-taken`. An element with no outgoing flow at all is an implicit end.
+  `bpmn.flow.none-taken`. An element with no outgoing flow at all is an implicit end. An escalation throw
+  that an interrupting event subprocess of its own scope caught does not fault: the activation stops its
+  successor anyway, so a failed answer or no flow taken there ends the token.
 
 Every evaluation adds a `ConditionEvaluated` diagnostic naming the element, the flow and the answer,
 before the routing or fault it led to. Given the same inputs and the same answers, an evaluation is
