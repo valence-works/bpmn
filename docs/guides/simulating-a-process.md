@@ -88,9 +88,24 @@ instance.Clock.Advance(TimeSpan.FromHours(2));
 `handle` is the opaque identifier the host assigned when it started the work, exactly as in a host
 you write yourself — see [The host port](../concepts/host-port.md).
 
-Outcome names are the whole conditional-routing story: the library evaluates no expressions, so a
-sequence flow's `ConditionOutcome` is matched against an outcome name the completing work reported.
-Note that faulting does not name an error code — which error a catcher matches is a property of the
+A sequence flow's `ConditionOutcome` is matched against an outcome name the completing work reported.
+The library evaluates no expressions itself. A definition whose flows carry condition expressions runs
+only when the host has an evaluator: set `InMemoryBpmnHostOptions.Conditions` (or
+`BpmnSimulationOptions.Conditions`) to an `IBpmnConditionEvaluator`, which also declares the
+`ConditionEvaluation` capability. `InMemoryConditions` answers by flow id, with no language in it:
+
+```csharp
+var conditions = new InMemoryConditions()
+    .When("to-approve", holds: true)
+    .When("to-batch", request => BpmnConditionResult.Of(request.Body.Contains("1000")));
+
+var host = new InMemoryBpmnHost(new InMemoryBpmnHostOptions { Conditions = conditions });
+```
+
+A flow the table has no answer for fails, so the scope faults with `bpmn.condition.failed` instead of
+routing one way by accident. `conditions.Requests` lists every condition asked, in order.
+
+Note that `FaultWork` does not name an error code — which error a catcher matches is a property of the
 model, not of the report. See
 [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
 

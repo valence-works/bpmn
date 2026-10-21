@@ -42,6 +42,9 @@ public sealed class BpmnCapabilityException : BpmnExecutionException
     /// <summary>The capabilities the definition needs and the host did not declare.</summary>
     public BpmnHostCapabilities Missing { get; }
 
-    /// <summary>The element ids that need the missing capabilities, in ordinal order.</summary>
+    /// <summary>
+    /// The element ids that need the missing capabilities, in ordinal order. A missing
+    /// <see cref="BpmnHostCapabilities.ConditionEvaluation"/> contributes the ids of the sequence flows that need it.
+    /// </summary>
     public IReadOnlyList<string> DrivingElementIds { get; }
 }

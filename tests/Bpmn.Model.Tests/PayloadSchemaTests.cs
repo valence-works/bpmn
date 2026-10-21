@@ -363,10 +363,33 @@ public sealed class PayloadSchemaTests
             .Connect("choice", "done", isDefault: true)
             .Build();
 
+        // An expression condition reaches the expression shape and its retained content.
+        process = process with
+        {
+            ExpressionLanguage = "urn:example:language",
+            SequenceFlows =
+            [
+                .. process.SequenceFlows,
+                new BpmnSequenceFlow("retry", "choice", "work")
+                {
+                    ConditionExpression = new BpmnConditionExpression(
+                        "attempts < 3",
+                        "urn:example:other-language",
+                        new BpmnExtensions(ForeignAttributes:
+                        [
+                            new BpmnForeignAttribute(new BpmnQName("http://www.w3.org/2001/XMLSchema-instance", "type"), "bpmn:tFormalExpression")
+                        ]))
+                }
+            ]
+        };
+
         return new BpmnDefinitions(
             Id: "defs",
             TargetNamespace: "https://example.test",
-            Processes: [process]);
+            Processes: [process])
+        {
+            ExpressionLanguage = "urn:example:language"
+        };
     }
 
     /// <summary>

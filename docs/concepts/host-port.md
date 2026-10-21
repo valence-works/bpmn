@@ -1,7 +1,8 @@
 # The host port
 
 The port is the entire interface between the interpreter and the world. It is small on purpose: four
-inputs in, three outputs back, three commands, one callback.
+inputs in, three commands, two read-only callbacks, and an optional error-routing verdict on the
+evaluation.
 
 This page is the contract. For a working implementation, see
 [Hosting the interpreter](../guides/hosting-the-interpreter.md).
@@ -9,17 +10,20 @@ This page is the contract. For a working implementation, see
 ## The signature
 
 ```text
-(graph, prior state, host snapshot, event) -> (next state, continuation, commands)
+(graph, prior state, host snapshot, event) -> (next state, continuation, commands, error disposition?)
 ```
 
-Every entry point is synchronous, takes a request record carrying those four values, and returns a
-value. The interpreter never calls the host, with one narrow exception described below.
+Every entry point is synchronous, takes a request record carrying those four inputs, and returns a
+`BpmnEvaluation`. Its nullable `ErrorDisposition` is populated when a host-reported failure is
+routed or absorbed; otherwise it is `null`. The interpreter never calls the host, with two narrow
+exceptions described [below](#the-callbacks): reading a variable, and evaluating a condition
+expression.
 
 | Entry point | The event it carries | Returns |
 | --- | --- | --- |
 | `Start` | The scope is beginning, optionally at a start event an external trigger matched. | `BpmnEvaluation` |
 | `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names. | `BpmnEvaluation` |
-| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnFaultEvaluation` |
+| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnEvaluation` |
 | `OnWorkSignalled` | A nested scope this one invoked signalled outward. | `BpmnEvaluation` |
 
 Work is named by two values together. The **binding ref** is the interpreter's name for it, taken
@@ -75,9 +79,18 @@ Everything else passes the token on: an unbound task, an unbound exclusive or in
 parallel split, and an escalation throw that nothing interrupting catches. That includes one a
 non-interrupting event subprocess catches, which starts the handler on every pass while the throw's own
 token carries on. The check follows only the flows these elements actually take when a token arrives.
-An arriving token reports no outcome, so a conditional flow out of an unbound element is never taken,
-and a cycle closed only by such a flow is not a cycle the token can follow. When a refused cycle has
-such a flow, the refusal names it, because it is usually the way out the modeler meant.
+An arriving token reports no outcome, so a flow conditioned on an outcome out of an unbound element is
+never taken, and a cycle closed only by such a flow is not a cycle the token can follow. When a refused
+cycle has such a flow, the refusal names it, because it is usually the way out the modeler meant.
+
+A flow whose only condition is an expression is different: the host answers it at run time, and `Build`
+cannot ask. The check treats such a flow as possibly taken and never as certainly taken. An exclusive
+gateway whose way off a cycle is an expression therefore builds, because the answer may take the token
+off the cycle; so does one whose way back is an expression. A task or inclusive split with an
+unconditional flow back is still refused even when an expression offers a way out, because a split
+takes its unconditional flows whatever the expression answers. An exclusive gateway takes the first
+flow that holds in declaration order, and a flow without a condition always holds, so an unconditional
+flow back declared before the expression exit is refused as well.
 
 The check reads the built-in behaviors. An interpreter given a registry that replaces one of them
 behaves as that registry says, but `Build` still answers for the built-in behavior, and a host whose
@@ -136,6 +149,7 @@ call. It is a value, built fresh per evaluation, never held.
 | `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. Never used to find the work a callback reports: in a nested scope the token id it carries belongs to the enclosing scope. |
 | `Variables` | An `IBpmnVariableReader`. | Reading a named value mid-evaluation. |
 | `Capabilities` | What this host can do. | Consistency with the graph it was built against. |
+| `Conditions` | An `IBpmnConditionEvaluator`, or `null`. Init-only, not a positional parameter. | Answering a sequence flow's condition expression mid-evaluation. Required when the graph needs `ConditionEvaluation`. |
 
 `BpmnHostSnapshot.Root(scopeInstanceId, capabilities)` builds the root-scope case: no parent, nothing
 running, no variables.
@@ -257,23 +271,42 @@ It carries a `Code` and an optional JSON `Payload`. There is exactly one code fo
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity
 travelling in the payload. A host multiplexing several kinds of scope signal therefore reserves one
 code rather than tracking a growing namespace.
+Build that payload with `BpmnInterpreter.EscalationPayload` and read it with
+`BpmnInterpreter.TryReadEscalationCode` rather than reproducing its shape; see
+[Errors and escalation](errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 
 If `HasEnclosingScope` is false, the interpreter will not emit this command. It asks nothing of a
 host it knows cannot answer.
 
-### The fault disposition
+### The error disposition
 
-`OnWorkFaulted` returns a `BpmnFaultEvaluation`: an evaluation plus a `BpmnErrorDisposition`.
+`BpmnEvaluation.ErrorDisposition` is a nullable `BpmnErrorDisposition`. It reports how BPMN handled a
+host-reported failure without making the host adopt an incident or retry policy:
 
 - `Caught(CatchingElementId, ErrorCode?)` — an error boundary event or an error event subprocess took
-  the failure. The process continues down that path. From BPMN's point of view nothing went wrong. A
+  the failure and this evaluation returned without fault. Recovery work may still be running. A
   null `ErrorCode` means the catcher is a catch-all.
-- `Propagated` — nothing in this scope matched. The continuation is a `Fault`, and the failure is now
-  the enclosing scope's problem, or at the root, yours.
+- `Propagated` — the final evaluation has a `Fault` continuation. This means no catcher in the scope
+  matched, or a catcher's route faulted during this evaluation; the failure is now the enclosing
+  scope's problem, or at the root, yours.
+- `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-Note what the fault request does not carry: an error code. The host reports that work failed and
-describes why in human terms; which BPMN error a catcher matches is a property of the model, not
-something the host names.
+The disposition is present for failed work reported by `OnWorkFaulted`, and for a call-activity
+completion reported by `OnWorkCompleted` with
+the outcome `Faulted`, `DispatchFailed`, or `Cancelled`. Those call-activity outcomes use the same
+error-catcher routing as a fault report. A late failure for work or a scope that was already stopped
+is reported as `Absorbed`.
+
+The property is `null` when no host-reported failure was routed or absorbed. That includes normal
+starts, completions and signals, transaction cancellation, and an event subprocess activated on an
+unrelated path. In particular, a transaction's `Cancelled` completion is distinct from a call
+activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a separate transcript
+field and is unchanged.
+
+Note what `BpmnWorkFaultedRequest` does not carry: an error code. The host reports that work failed
+and describes why in human terms. Today every error catcher takes any failure. This changes in 0.4.0:
+[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) adds an error code to the
+fault request and to the `Fault` continuation, and makes a coded catcher catch only its own code.
 
 This is the only place the library says anything about failure policy, and it says the minimum: what
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
@@ -301,16 +334,18 @@ record would match it: the reported unit has already left `LiveWork`, so if the 
 the slot of the record the report resolves to under another handle, that record belongs to other
 work. That includes a report with no iteration id that would fall back to the binding's only record. A state an earlier version persisted
 records no handles, so a late callback against it is never absorbed. A late completion throws. A
-late fault faults the scope, with the disposition `Propagated`, or throws when the snapshot still
-lists its slot under another handle.
+late fault faults the scope, or throws when the snapshot still lists its slot under another handle.
 
-## The one callback
+## The callbacks
+
+There are two, of the same shape. Neither can be hoisted into the snapshot as a value, because which
+variable or which condition is needed depends on which element the propagation loop reaches, and that
+is not known before the loop runs. Both are synchronous, read-only and side-effect free, and neither
+has an async path.
+
+### Variables
 
 `IBpmnVariableReader` lets the interpreter pull a named variable mid-evaluation.
-
-It cannot be hoisted into the snapshot, because which variable is needed depends on which element the
-propagation loop reaches, and that is not known before the loop runs. It is synchronous, read-only
-and side-effect free.
 
 ```csharp
 public interface IBpmnVariableReader
@@ -346,6 +381,75 @@ define. The library never assigns meaning to your type system.
 
 If your host would need to await something to answer a read, pre-resolve it before the evaluation.
 There is deliberately no async path here.
+
+### Conditions
+
+`IBpmnConditionEvaluator` answers a sequence flow's `<conditionExpression>`. It travels on the snapshot
+as `Conditions`, beside `Variables`, and is needed only by a host that declares
+[`ConditionEvaluation`](capabilities.md).
+
+```csharp
+public interface IBpmnConditionEvaluator
+{
+    BpmnConditionResult Evaluate(BpmnConditionRequest request);
+}
+
+public sealed record BpmnConditionRequest(
+    string ElementId,   // the element whose outgoing flows are being chosen
+    string FlowId,      // the flow whose condition this is
+    string Site,        // BpmnConditionSites.SequenceFlow
+    string Body,        // the expression text exactly as modeled
+    string? Language,   // the flow's language, else the process default, else null
+    string? Iteration); // the multi-instance iteration id, or null outside one
+```
+
+The library still contains no expression language. It decides **which** conditions are asked, **when**
+and in **what order**, and **what the answers mean** for routing. Your evaluator decides only what one
+expression evaluates to, against your own data, in your own language. `Language` is null when the
+document declares none, not BPMN's nominal XPath: what a missing language means is your call.
+`Iteration` names the multi-instance instance the routed token belongs to. The instances of a
+multi-instance activity never route on their own: the activity routes once, after its last instance,
+outside any iteration, and a multi-instance subprocess body runs as its own scope with its own snapshot.
+So with the built-in behaviors it is null today; it exists so the request does not change shape when a
+routing site inside an iteration does.
+
+The answer is one of three:
+
+| Answer | Meaning |
+| --- | --- |
+| `BpmnConditionResult.True` | The condition holds. |
+| `BpmnConditionResult.False` | It does not. |
+| `BpmnConditionResult.Failed(faultCode, message)` | It could not be evaluated. The scope faults with `faultCode`, or with `bpmn.condition.failed` when that is null. The one exception is an escalation throw whose escalation an interrupting event subprocess of its own scope caught: its successor is stopped anyway, so the answer stays on the trace and the token ends. |
+
+A failure is a verdict on the scope, like `bpmn.gateway.no-flow-selected`, not a BPMN error raised by
+bound work, so no error boundary or error event subprocess takes it. An evaluator that throws has broken
+the port: the exception surfaces from the entry point as a `BpmnExecutionException` naming the element
+and flow, with yours as its `InnerException`. So does a host that declared `ConditionEvaluation` and
+left `Conditions` null.
+
+When the interpreter asks:
+
+- A flow with a `conditionOutcome` is matched on the outcome and its expression is never evaluated,
+  even when it has one.
+- The default flow is never evaluated. It is taken only when nothing else was.
+- An exclusive gateway visits its non-default flows in declaration order and takes the first that holds.
+  Nothing after it is evaluated. A flow without any condition holds.
+- An inclusive gateway, a task, and every other element that routes like one evaluates every expression
+  in declaration order, stopping only at a failure, and takes every flow that holds plus every flow
+  without a condition.
+- A gateway that binds decision work evaluates when that work completes, together with the outcome
+  match. Every other element evaluates when it routes: on token arrival when it binds nothing, on
+  completion when it does.
+- Nothing holds and there is no default: an exclusive or inclusive gateway faults the scope with
+  `bpmn.gateway.no-flow-selected`, and any other element that has outgoing flows faults it with
+  `bpmn.flow.none-taken`. An element with no outgoing flow at all is an implicit end. An escalation throw
+  that an interrupting event subprocess of its own scope caught does not fault: the activation stops its
+  successor anyway, so a failed answer or no flow taken there ends the token.
+
+Every evaluation adds a `ConditionEvaluated` diagnostic naming the element, the flow and the answer,
+before the routing or fault it led to. Given the same inputs and the same answers, an evaluation is
+still byte-for-byte reproducible; that now rests on your evaluator being a function of its inputs, as
+it already rested on your variable reader.
 
 ## Invariants a host must uphold
 

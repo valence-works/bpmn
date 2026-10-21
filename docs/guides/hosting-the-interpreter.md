@@ -12,11 +12,12 @@ If you only want to run a process and do not want to build any of this, use
 Every entry point is synchronous, takes a request record, and returns a value:
 
 ```text
-(graph, prior state, host snapshot, event) -> (next state, continuation, commands)
+(graph, prior state, host snapshot, event) -> (next state, continuation, commands, error disposition?)
 ```
 
-Nothing is called back. Nothing is awaited. The interpreter computes a decision and hands it to you;
-you apply it in whatever idiom and on whatever thread your system prefers.
+Nothing is awaited, and nothing is called back except to read: a variable, or the answer to a
+condition expression. The interpreter computes a decision and hands it to you; you apply it in
+whatever idiom and on whatever thread your system prefers.
 
 ```csharp
 var interpreter = BpmnInterpreter.CreateDefault();
@@ -31,7 +32,7 @@ var evaluation = interpreter.Start(new BpmnStartRequest(graph, priorState: null,
 | --- | --- | --- |
 | `Start` | `BpmnStartRequest(Graph, PriorState, Host, StartSignal?)` | `BpmnEvaluation` |
 | `OnWorkCompleted` | `BpmnWorkCompletedRequest(Graph, PriorState, Host, CompletedBindingRef, CompletedHandle, OutcomeNames, CompletedIterationId?)` | `BpmnEvaluation` |
-| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?) { FaultedIterationId }` | `BpmnFaultEvaluation` |
+| `OnWorkFaulted` | `BpmnWorkFaultedRequest(Graph, PriorState, Host, FaultedBindingRef, FaultedHandle, FaultMessage?) { FaultedIterationId }` | `BpmnEvaluation` |
 | `OnWorkSignalled` | `BpmnWorkSignalledRequest(Graph, PriorState, Host, SignallingBindingRef, SignallingHandle, Code, Payload?, SignallingIterationId?)` | `BpmnEvaluation` |
 
 Work is identified by two values together: the **binding ref**, which the interpreter assigned and
@@ -78,6 +79,18 @@ var boundWork = result.Bindings
 `BpmnCapabilityException` when the definition needs a capability you did not declare — see
 [Host capabilities](../concepts/capabilities.md).
 
+#### Nested bodies
+
+Each subprocess body runs as its own scope with its own graph, which you build when the subprocess
+starts. A body that cannot run would then be refused mid-run, after earlier work has already happened.
+`Build` prevents that for the bodies it can see: it refuses an error end event, which nothing executes
+yet, in any body your bound work carries in `NestedProcess`.
+
+A body carries no bound work of its own, so the bodies nested inside it, at any depth, are visible only
+to you. Build the graph of every body the root can reach before you run the root, and discard or cache
+the result: the refusal then reaches the caller up front, wherever the body sits. The reference host,
+`InMemoryBpmnHost`, does this whenever it starts a root.
+
 #### Recurring timer starts
 
 Graph construction refuses a timer start unless it declares exactly one nonblank `interval` or
@@ -109,6 +122,7 @@ call. It is a value, constructed fresh per evaluation, never held.
 | `InvocationCorrelation` | The `Correlation` dictionary the host carried into this invocation, echoed back verbatim. Empty for a process started directly. |
 | `Variables` | An `IBpmnVariableReader`. |
 | `Capabilities` | What this host can do. Must match what the graph was built with. |
+| `Conditions` | An `IBpmnConditionEvaluator`, or `null`. An init-only property, set with `with { Conditions = ... }`. Required when you declare `ConditionEvaluation`. |
 
 ```csharp
 public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string Handle);
@@ -154,7 +168,50 @@ The read outcomes are distinct, and the difference matters:
 If your host would need to await something to answer, pre-resolve it before the evaluation. There is
 no async escape hatch here, deliberately.
 
-### 4. A place to keep state
+### 4. A condition evaluator, if you evaluate expressions
+
+Documents written by modeling tools route on `<conditionExpression>` bodies in some expression
+language. The library contains no language. If you want to run such documents, you supply the second
+callback, of the same shape as the variable reader:
+
+```csharp
+public sealed class MyConditions : IBpmnConditionEvaluator
+{
+    public BpmnConditionResult Evaluate(BpmnConditionRequest request) =>
+        request.Language switch
+        {
+            null or "https://www.omg.org/spec/DMN/20191111/FEEL/" => EvaluateFeel(request.Body), // your own engine
+            _ => BpmnConditionResult.Failed("my.condition.unsupported-language", $"Cannot evaluate '{request.Language}'.")
+        };
+}
+
+var graph = BpmnGraph.Build(definition, boundWork, BpmnHostCapabilities.Full | BpmnHostCapabilities.ConditionEvaluation);
+var snapshot = BpmnHostSnapshot.Root(instanceId, BpmnHostCapabilities.Full | BpmnHostCapabilities.ConditionEvaluation)
+    with { Conditions = new MyConditions() };
+```
+
+Declare `ConditionEvaluation` to `Build` and on every snapshot, and put the evaluator on every
+snapshot. Without the capability, `Build` refuses any definition with a flow whose only condition is an
+expression, naming the flows; the import reports nothing about them, because the capability is the
+check. `Full` does not include `ConditionEvaluation`: it is the one capability that means embedding a
+language.
+
+The request carries the element whose flows are being chosen, the flow, the expression body exactly as
+modeled, and its language: the flow's own, else the process default from
+`definitions/@expressionLanguage`, else `null`. Answer `True`, `False`, or `Failed(faultCode, message)`;
+a failure faults the scope with your code, or `bpmn.condition.failed`. Evaluate against the same
+process data your variable reader serves, and keep the answer a function of the request and that data:
+an evaluation is reproducible only while your answers are.
+
+The interpreter decides the rest: which flows are asked and in what order, that a flow with a
+`conditionOutcome` is matched on the outcome instead, that the default flow is never asked, and what
+happens when nothing holds. [The host port](../concepts/host-port.md#conditions) has the rules. Every
+answer is recorded as a `ConditionEvaluated` diagnostic.
+
+`Bpmn.Runtime.InMemory` ships `InMemoryConditions`, a table of answers by flow id with no language in
+it, for tests and samples.
+
+### 5. A place to keep state
 
 `BpmnExecutionState` is the interpreter's memory: tokens, active children, diagnostics, races, loops,
 compensation log, and a sequence counter that every generated id derives from. Treat it as opaque. It
@@ -237,30 +294,42 @@ Timers, human tasks, HTTP calls, message subscriptions, nested processes and lon
 listeners are all `StartWork`. The interpreter does not distinguish them, because the difference is
 entirely about how you run them.
 
-### The fault disposition
+### The error disposition
 
-`OnWorkFaulted` returns a `BpmnFaultEvaluation`, which is an evaluation plus a disposition:
+`BpmnEvaluation.ErrorDisposition` is nullable. `OnWorkFaulted` sets it when the reported failure
+is routed or absorbed, and call-activity completions do the same for the failure outcomes `Faulted`,
+`DispatchFailed`, or `Cancelled`:
 
 ```csharp
 var evaluation = interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
     graph, state, snapshot, work.BindingRef, work.Handle, "Credit limit exceeded")
     { FaultedIterationId = work.IterationId });
 
-var summary = evaluation.Disposition switch
+var summary = evaluation.ErrorDisposition switch
 {
     BpmnErrorDisposition.Caught caught => $"caught at {caught.CatchingElementId} ({caught.ErrorCode ?? "any"})",
-    BpmnErrorDisposition.Propagated    => "nothing here caught it; the continuation is a Fault",
+    BpmnErrorDisposition.Propagated    => "the error was not handled; the continuation is a Fault",
+    BpmnErrorDisposition.Absorbed      => "the work or scope had already stopped",
+    null                               => "no failure was routed or absorbed",
     _                                  => "unknown"
 };
 ```
 
 Note what the request does **not** carry: an error code. The host reports that work failed and why in
-human terms. Which BPMN error a catcher matches is a property of the model — an error boundary event
-declares its code, and a code-less one catches anything — not something the host names.
+human terms, and today every error catcher takes any failure. In 0.4.0,
+[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) lets the host name the error, and
+makes a coded catcher catch only that code. A host that crosses scopes will then pass a child's
+`Fault.ErrorCode` up with the parent's fault report.
 
-`Caught` means an error boundary event or an error event subprocess took the failure and the process
-continues along that path. `Propagated` means no catcher matched, the continuation is a
-`BpmnContinuation.Fault`, and the failure is yours to surface.
+`Caught` means an error boundary event or an error event subprocess took the failure and this
+evaluation returned without fault. Recovery work may still be running. `Propagated` means the final
+continuation is always a `BpmnContinuation.Fault`: no catcher matched, or a catcher's route faulted
+during this evaluation. `Absorbed` means
+the failure belonged to work or a scope that had already stopped. Ordinary starts, completions and
+signals, transaction cancellation, and an event subprocess activated on another path leave
+`ErrorDisposition` null. The transaction's `Cancelled` completion is different from a call activity's
+`Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` remains an independent transcript
+field.
 
 You need this because **BPMN has no concept of an incident**. Fault records, alerting, retry policy
 and operator dashboards are engine-operations concerns, and the specification says nothing about any
@@ -311,7 +380,9 @@ public sealed class MinimalHost : IBpmnVariableReader
 
     public IReadOnlyList<FaultRecord> Faults => _faults;
 
-    // --- The interpreter's one callback -------------------------------------------------
+    // --- The interpreter's variable callback --------------------------------------------
+    // A host that evaluates condition expressions also puts an IBpmnConditionEvaluator on the
+    // snapshot (see section 4) and declares ConditionEvaluation.
 
     public bool TryRead(string name, out BpmnValue value)
     {
@@ -335,7 +406,7 @@ public sealed class MinimalHost : IBpmnVariableReader
         var work = Take(handle);
 
         Apply(_interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
-            _graph, _state, Snapshot(), work.BindingRef, handle, outcomeNames, work.IterationId)));
+            _graph, _state, Snapshot(), work.BindingRef, handle, outcomeNames, work.IterationId)), work);
     }
 
     public void FaultWork(string handle, string message)
@@ -345,12 +416,7 @@ public sealed class MinimalHost : IBpmnVariableReader
         var evaluation = _interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
             _graph, _state, Snapshot(), work.BindingRef, handle, message) { FaultedIterationId = work.IterationId });
 
-        // BPMN has no incidents. Recording one is this host's decision, and the
-        // disposition is what makes it an informed decision.
-        if (evaluation.Disposition is BpmnErrorDisposition.Propagated)
-            _faults.Add(new FaultRecord(work.BindingRef, message));
-
-        Apply(evaluation);
+        Apply(evaluation, work, message);
     }
 
     /// A nested scope signalled outward; this scope is where it lands.
@@ -364,10 +430,16 @@ public sealed class MinimalHost : IBpmnVariableReader
 
     // --- Applying what came back --------------------------------------------------------
 
-    private void Apply(BpmnEvaluation evaluation)
+    private void Apply(BpmnEvaluation evaluation, BpmnLiveWork? reportedWork = null, string? reportedMessage = null)
     {
         // Persist this before acting on the commands, if you persist at all.
         _state = evaluation.State.Prune();
+
+        // This host records only unhandled reported failures, from fault callbacks or call completions.
+        if (reportedWork is not null
+            && evaluation.ErrorDisposition is BpmnErrorDisposition.Propagated
+            && evaluation.Continuation is BpmnContinuation.Fault failure)
+            _faults.Add(new FaultRecord(reportedWork.BindingRef, reportedMessage ?? failure.Message));
 
         foreach (var command in evaluation.Commands)   // order matters
         {
@@ -489,6 +561,8 @@ command shape constrains when decisions are made, not when work happens.
 
 - [ ] Build the graph once per definition, not per instance.
 - [ ] Declare capabilities honestly. `Full` is a claim, not a default.
+- [ ] Declare `ConditionEvaluation` only if you put an `IBpmnConditionEvaluator` on every snapshot, and
+      keep its answers a function of the request and your process data.
 - [ ] Persist `evaluation.State.Prune()` before acting on commands, if you persist.
 - [ ] Apply commands in the order returned.
 - [ ] Report a callback with the same binding ref and handle the work was started under, and with
@@ -506,7 +580,7 @@ command shape constrains when decisions are made, not when work happens.
 - [ ] Pass outcome names on completion when a conditional sequence flow depends on them.
 - [ ] Make `CancelWorkSubtree` recursive. It is not "cancel this one thing".
 - [ ] Route `SignalEnclosingScope` to the immediate parent scope, not to the root.
-- [ ] Decide your failure policy from `BpmnErrorDisposition`, not from every fault.
+- [ ] Decide your failure policy from `BpmnEvaluation.ErrorDisposition`, not from every fault.
 
 ## Two traps that are easy to hit and hard to diagnose
 
