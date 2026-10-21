@@ -22,6 +22,8 @@ sequential and parallel modes. It returns a fault verdict with the host's exact 
 without creating iterations. A malformed refusal lacking a usable code falls back to the existing
 collection-unreadable code; missing message metadata gets a deterministic diagnostic. It never
 becomes an empty loop or an external-storage fault. The interpreter remains synchronous and pure.
+Empty or whitespace-only host messages remain unchanged on the fault verdict. The diagnostic uses
+fallback text because diagnostic records require a nonblank message.
 
 Keep the existing three-argument constructor and deconstructor. New metadata is declared as
 explicitly named, nullable init properties and omitted from JSON when null, so existing value JSON

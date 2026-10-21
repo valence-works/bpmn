@@ -1413,9 +1413,10 @@ public sealed class BpmnInterpreter
         if (value.Presence == BpmnValuePresence.Refused)
         {
             var faultCode = string.IsNullOrWhiteSpace(value.FaultCode) ? CollectionUnreadableFaultCode : value.FaultCode;
-            var message = value.FaultMessage
-                ?? $"BPMN multi-instance element '{element.ElementId}' collection variable '{variableName}' was refused by the host.";
-            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, message);
+            var fallbackMessage = $"BPMN multi-instance element '{element.ElementId}' collection variable '{variableName}' was refused by the host.";
+            var message = value.FaultMessage ?? fallbackMessage;
+            var diagnosticMessage = string.IsNullOrWhiteSpace(message) ? fallbackMessage : message;
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, diagnosticMessage);
             return (state, null, new BpmnFault(faultCode, message));
         }
 

@@ -373,7 +373,8 @@ wrong answers. A refusal is also distinct: return `true` with `BpmnValue.Refused
 Both sequential and parallel collection loops return the host's exact fault code and message without
 starting iterations. A malformed refused value without a usable code faults as
 `bpmn.loop.collection-unreadable`; a missing message gets a deterministic diagnostic. Empty host
-messages are preserved. See [the decision](../adr/0008-variable-read-refusals-preserve-host-faults.md).
+messages are preserved on the fault verdict; the diagnostic uses fallback text for empty or
+whitespace-only messages. See [the decision](../adr/0008-variable-read-refusals-preserve-host-faults.md).
 
 Values cross the boundary as JSON with a host-interpreted type hint. `BpmnValueTypes` names the two
 hints the interpreter itself understands — `integer` and `any` — and every other string is yours to

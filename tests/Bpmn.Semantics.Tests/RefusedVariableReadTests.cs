@@ -31,6 +31,26 @@ public sealed class RefusedVariableReadTests
     }
 
     [Theory]
+    [InlineData(false, "")]
+    [InlineData(true, "")]
+    [InlineData(false, " \t")]
+    [InlineData(true, " \t")]
+    public void A_blank_refusal_message_is_preserved_on_the_fault_with_a_nonblank_diagnostic(bool sequential, string message)
+    {
+        const string faultCode = "storage.read-refused";
+        var variables = new InMemoryVariables().SetRefused(CollectionVariable, faultCode, message);
+
+        var evaluation = Start(CollectionLoop(sequential), variables);
+
+        var fault = evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>();
+        fault.Code.ShouldBe(faultCode);
+        fault.Message.ShouldBe(message);
+        evaluation.State.Diagnostics.Last().Message.ShouldBe(
+            "BPMN multi-instance element 'Review' collection variable 'reviewers' was refused by the host.");
+        AssertNoIterationStarted(evaluation);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData(" ")]
