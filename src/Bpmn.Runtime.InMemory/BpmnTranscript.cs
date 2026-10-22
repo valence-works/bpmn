@@ -32,9 +32,18 @@ public abstract record BpmnTranscriptTrigger
     /// <param name="OutcomeNames">The outcome names it reported.</param>
     public sealed record WorkCompleted(InMemoryWorkItem Work, IReadOnlyCollection<string> OutcomeNames) : BpmnTranscriptTrigger
     {
+        /// <summary>The BPMN error reported with the completion, for a call activity whose called process faulted with one; <c>null</c> otherwise.</summary>
+        public string? ErrorCode { get; init; }
+
+        /// <summary>
+        /// Why the called process failed, for a call activity's Faulted completion: the called scope's fault code and
+        /// message. The completion itself carries no message, so this keeps the cause in the caller's transcript.
+        /// </summary>
+        public string? Cause { get; init; }
+
         /// <inheritdoc />
         public override string Describe() =>
-            $"completed {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}{Outcomes(OutcomeNames)}";
+            $"completed {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}{Outcomes(OutcomeNames)}{Error(ErrorCode)}{(Cause is null ? string.Empty : $": {Cause}")}";
     }
 
     /// <summary>A timer came due, which completes the work it was scheduled for.</summary>
@@ -50,9 +59,12 @@ public abstract record BpmnTranscriptTrigger
     /// <param name="Message">The human-readable failure description the host reported.</param>
     public sealed record WorkFaulted(InMemoryWorkItem Work, string? Message) : BpmnTranscriptTrigger
     {
+        /// <summary>The BPMN error the host reported the work raised, or <c>null</c> when it named none.</summary>
+        public string? ErrorCode { get; init; }
+
         /// <inheritdoc />
         public override string Describe() =>
-            $"faulted {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}: {Message ?? "(no message)"}";
+            $"faulted {Work.ElementId} ({Work.BindingRef}){Iteration(Work)}{Error(ErrorCode)}: {Message ?? "(no message)"}";
     }
 
     /// <summary>A nested scope signalled outward, and this scope is where it landed.</summary>
@@ -69,6 +81,9 @@ public abstract record BpmnTranscriptTrigger
 
     private static string Outcomes(IReadOnlyCollection<string> outcomeNames) =>
         outcomeNames.Count == 0 ? string.Empty : $" outcomes=[{string.Join(", ", outcomeNames)}]";
+
+    private static string Error(string? errorCode) =>
+        errorCode is null ? string.Empty : $" error={errorCode}";
 }
 
 /// <summary>One token's change of position or status during a single evaluation.</summary>
@@ -87,7 +102,8 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 
 /// <summary>
 /// One evaluation, recorded. An entry says what provoked the interpreter, what it decided, what it asked the
-/// host to do, which tokens moved, and — for a fault — whether BPMN caught the error or let it out.
+/// host to do, which tokens moved, and whether a host-reported failure was caught, propagated or absorbed,
+/// including a call activity's failure outcome and an error an error end event threw.
 /// <para>
 /// This is the artefact that makes the interpreter's behavior visible. A failing test prints the transcript
 /// and the reason is usually in it; the alternative is inferring token flow from a final state, which is
@@ -105,7 +121,11 @@ public sealed record BpmnTokenMove(string TokenId, string ElementId, BpmnTokenSt
 /// <param name="Continuation">What the interpreter decided the scope should do next.</param>
 /// <param name="Commands">What the interpreter asked the host to do, in the order it must be done.</param>
 /// <param name="TokenMoves">The tokens minted or moved by this evaluation.</param>
-/// <param name="Disposition">For a fault, whether a BPMN catcher took the error or it propagated; otherwise <c>null</c>.</param>
+/// <param name="Disposition">
+/// The evaluation's error-routing or absorption verdict for a host-reported failure; <c>null</c> for other
+/// evaluations. Includes call-activity failure outcomes and errors thrown by error end events as well as work
+/// faults.
+/// </param>
 public sealed record BpmnTranscriptEntry(
     int Index,
     int Sequence,
@@ -149,6 +169,7 @@ public sealed record BpmnTranscriptEntry(
     {
         BpmnErrorDisposition.Caught caught => $"Caught by {caught.CatchingElementId} [{caught.ErrorCode ?? "any error"}]",
         BpmnErrorDisposition.Propagated => "Propagated",
+        BpmnErrorDisposition.Absorbed => "Absorbed",
         _ => disposition.ToString()
     };
 

@@ -41,6 +41,9 @@ public static class BpmnElementFamilies
     /// <summary>The escalation end event family: raises an escalation to the enclosing scope, then consumes its token (none-end semantics).</summary>
     public const string EndEventEscalation = "endEvent.escalation";
 
+    /// <summary>The error end event family: throws the error it declares, which an error event subprocess of its scope catches, or which ends the scope with a fault carrying the error's code.</summary>
+    public const string EndEventError = "endEvent.error";
+
     /// <summary>The message end event family: a bound-work send — starts the bound publish work, then consumes its token on that work's completion (none-end semantics).</summary>
     public const string EndEventMessage = "endEvent.message";
     public const string Task = "task";
@@ -186,6 +189,17 @@ public static class BpmnElementFamilies
     public static bool IsCallActivity(BpmnElement element) =>
         StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.CallActivity);
 
+    /// <summary>
+    /// True for an element whose built-in behavior takes every outgoing flow without testing any condition:
+    /// every start event, a parallel gateway, and an event-based gateway. A condition expression on such a flow
+    /// would never be evaluated, so graph build refuses one rather than ignore it, and capability analysis does
+    /// not count it.
+    /// </summary>
+    internal static bool TakesEveryOutgoingFlow(BpmnElement element) =>
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.StartEvent) ||
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ParallelGateway) ||
+        StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EventBasedGateway);
+
     /// <summary>The host families a boundary event may attach to: the task family and embedded subprocesses.</summary>
     public static bool IsBoundaryHostFamily(BpmnElement element) =>
         TaskElementTypes.Contains(element.ElementType) ||
@@ -272,10 +286,12 @@ public static class BpmnElementFamilies
                 return EndEventEscalation;
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Message))
                 return EndEventMessage;
+            if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Error))
+                return EndEventError;
         }
 
         throw new BpmnExecutionException(
-            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, and message end events are supported.");
+            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, and message end events are supported.");
     }
 
     /// <summary>

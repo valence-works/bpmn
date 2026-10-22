@@ -40,8 +40,24 @@ public static class BpmnPayloadFormat
     /// 1.2.0 adds the polymorphic <c>BpmnWorkBinding</c> contract from interchange as a schema root,
     /// so hosts can transfer definitions and their bindings together. Existing model shapes are unchanged.
     /// </para>
+    /// <para>
+    /// 1.3.0 adds three optional properties: <c>BpmnSequenceFlow.ConditionExpression</c> (with the new
+    /// <c>BpmnConditionExpression</c> shape) and <c>ExpressionLanguage</c> on <c>BpmnDefinitions</c> and
+    /// <c>BpmnProcessDefinition</c>. A 1.2.0 document reads as before, with the properties absent; one that
+    /// carried an author's expression as a retained foreign child still writes it back. See ADR 0011.
+    /// </para>
+    /// <para>
+    /// 1.4.0 adds one value to <c>BpmnDiagnosticKind</c>, <c>ConditionEvaluated</c>, appended after every
+    /// existing value so none is renumbered. Execution state written by 1.4.0 may carry it; a 1.3.0 document
+    /// reads as before. See ADR 0011.
+    /// </para>
+    /// <para>
+    /// 1.5.0 appends two values to <c>BpmnDiagnosticKind</c>, <c>ErrorThrown</c> and <c>ErrorCaught</c>, after
+    /// every existing value so none is renumbered. Execution state written by 1.5.0 may carry them; a 1.4.0
+    /// document reads as before. See ADR 0012.
+    /// </para>
     /// </summary>
-    public const string Version = "1.2.0";
+    public const string Version = "1.5.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

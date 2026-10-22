@@ -56,6 +56,12 @@ public sealed record InMemoryWorkItem(
     string ScopeInstanceId,
     TimeSpan StartedAt)
 {
+    /// <summary>
+    /// The scope-local token ID from the command that started this unit, echoed on live snapshots and
+    /// callbacks. Independent invocations may share a binding and a null iteration ID.
+    /// </summary>
+    public string? WorkTokenId { get; init; }
+
     /// <summary>Whether the virtual clock owns finishing this work.</summary>
     public bool IsTimer => Kind == InMemoryWorkKind.Timer;
 

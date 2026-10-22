@@ -33,7 +33,7 @@ public sealed class LateCallbackTests
     private static BpmnEvaluation Complete(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
         Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, [], iterationId));
 
-    private static BpmnFaultEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
+    private static BpmnEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
         Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, "boom") { FaultedIterationId = iterationId });
 
     /// <summary>
@@ -85,6 +85,7 @@ public sealed class LateCallbackTests
         var late = Fault(graph, fired, "long", LongUnit.Handle, [EscalateUnit]);
 
         ShouldHaveBeenAbsorbed(late, fired, LongUnit.Handle);
+        late.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Absorbed.Instance);
     }
 
     [Fact]
@@ -212,6 +213,10 @@ public sealed class LateCallbackTests
             : Complete(graph, terminated, "long", FirstPass.Handle, live);
 
         late.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        if (asFault)
+            late.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Absorbed.Instance);
+        else
+            late.ErrorDisposition.ShouldBeNull("a late completion carries no failure disposition");
         late.Commands.ShouldBe(secondPassStillListed
             ?
             [
@@ -279,7 +284,7 @@ public sealed class LateCallbackTests
         var late = Fault(graph, retried, "review", firstPass[0].Handle, live, firstPass[0].IterationId);
 
         ShouldHaveBeenAbsorbed(late, retried, firstPass[0].Handle);
-        ((BpmnFaultEvaluation)late).Disposition.ShouldNotBeOfType<BpmnErrorDisposition.Caught>("no later instance failed");
+        late.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Absorbed.Instance, "the earlier pass had already been stopped");
     }
 
     [Fact]
@@ -299,7 +304,7 @@ public sealed class LateCallbackTests
 
         var evaluation = Fault(graph, retried, "review", "h-never-started", live, firstPass[0].IterationId);
 
-        evaluation.Disposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance, "the second pass did not fail, so its error boundary must not fire");
+        evaluation.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Propagated.Instance, "the second pass did not fail, so its error boundary must not fire");
         evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().Code.ShouldBe("bpmn.work.faulted");
     }
 
