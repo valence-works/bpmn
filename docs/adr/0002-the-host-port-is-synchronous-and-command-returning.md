@@ -90,3 +90,25 @@ command shape constrains only when decisions are made, not when work happens.
 
 **An event/observer model.** Rejected. Observers make ordering and failure handling implicit, and
 give no natural place for the non-fault-continuation invariant to live.
+
+## 2026-10-17 amendment: scheduling provenance
+
+`StartWork.ProducedByHandle` exposes the interpreter's existing `producedBy` value for ordinary
+element work. Routing after completion or a caught work fault supplies that work's handle, including
+when propagation crosses synchronous elements or fans out. Scope-driven propagation, including
+initial propagation, uses the scope instance identity. The value is opaque reporting data, not an
+ownership or callback-matching key, and does not imply that its producer succeeded.
+
+Scope-owned starts leave the property null: multi-instance instances, compensation handlers,
+boundary and event-subprocess listeners, and event-subprocess bodies. Their host schedules on
+behalf of the current scope, even when their tokens record a triggering work handle. Hosts may use
+their scope identity when the property is null.
+
+The property is init-only and is not added to the positional record parameters. Existing
+constructors and seven-value deconstruction therefore retain their signatures; old callers get
+null by default. This adds no capability or command kind, and does not change persisted execution
+state or the process-model schema. Serialized `StartWork` commands do gain an additive
+`ProducedByHandle` field. Older command JSON that omits it still deserializes with a null value;
+hosts that validate or store commands with a closed schema must accommodate the new field.
+Copying the token's `ProducingWorkHandle` for every start was rejected because it would wrongly
+attribute scope-owned starts, especially event-subprocess bodies, to the triggering work.
