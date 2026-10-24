@@ -30,6 +30,7 @@ public enum BpmnBindingSlot
 /// <param name="Slot">Which channel of the element this binding fills.</param>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
 [JsonDerivedType(typeof(BpmnWorkBinding.TimerWait), "timerWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.TimerDateWait), "timerDateWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.MessageWait), "messageWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.SignalWait), "signalWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.MessagePublish), "messagePublish")]
@@ -50,6 +51,17 @@ public abstract record BpmnWorkBinding(
         string BindingRef,
         BpmnBindingSlot Slot,
         [property: JsonPropertyName("isoDuration")] string IsoDuration) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+
+    /// <summary>
+    /// A wait that ends at an ISO-8601 instant, the <c>&lt;timeDate&gt;</c> of a timer catch event, timer boundary
+    /// event, or timer event-subprocess trigger. The instant is kept as written; the host parses and schedules it.
+    /// </summary>
+    public sealed record TimerDateWait(
+        string ProcessId,
+        string ElementId,
+        string BindingRef,
+        BpmnBindingSlot Slot,
+        [property: JsonPropertyName("isoDate")] string IsoDate) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named message: a message catch event, message boundary event, receive task, or message event-subprocess trigger.</summary>
     public sealed record MessageWait(

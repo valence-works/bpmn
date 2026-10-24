@@ -32,7 +32,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | `callActivity` | Supported | Behaves as a member of the task family; the host resolves and runs the called process. A `calledElement`-less call activity reads with an `Info` finding. |
 | `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. A `Faulted` outcome carries the called process's error in `BpmnWorkCompletedRequest.ErrorCode`, so a coded catcher can match it; `DispatchFailed` and `Cancelled` carry no error and reach only catch-alls. The returned `BpmnEvaluation.ErrorDisposition` reports whether routing caught, propagated or absorbed the failure. |
 | `subProcess`, embedded | Supported | The nested body travels as a `NestedProcess` work binding. |
-| `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. |
+| `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. A timer trigger is a one-shot `<timeDuration>` or `<timeDate>`; a `<timeCycle>` trigger drops the event subprocess. A non-interrupting duration trigger re-arms after each fire; a date trigger fires once. |
 | `transaction` | Supported | Modeled as `subProcess` with `isTransaction: true`. May not also carry loop characteristics. |
 | Event subprocess with more than one start event | Dropped | The body must declare exactly one. |
 | Second code-less catch-all error event subprocess in one scope, or two claiming the same error code | Dropped | A scope may carry several error event subprocesses with distinct codes and at most one catch-all. The same rule applies to escalation event subprocesses. |
@@ -57,7 +57,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | None (plain) | Supported | |
 | Message, signal | Supported | Matched on the resolved message or signal **name**. An unresolvable `messageRef` / `signalRef` degrades to a plain start. |
-| Timer | Supported | Must be a **recurring schedule**: exactly one nonblank ISO-8601 `interval` or `cron` expression. Graph build rejects a missing or ambiguous choice; `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts. A timer start that is not recurring degrades on import. |
+| Timer | Supported | A **recurring schedule** (`<timeCycle>`: an ISO-8601 `interval` or a `cron` expression) or a **single start at a date** (`<timeDate>`: an ISO-8601 `date`). Exactly one nonblank `interval`, `cron` or `date`; graph build rejects a missing or ambiguous choice, and `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts (`Kind` is `Interval`, `Cron` or `Date`). A timer start with neither a cycle nor a date (a `<timeDuration>` start) degrades on import. |
 | Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code it catches: only that code, preferred over a catch-all in the same scope. One with no ref is the catch-all. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |
@@ -81,7 +81,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 
 | Construct | Status | Notes |
 | --- | --- | --- |
-| Catch: timer | Supported | Requires a one-shot `<timeDuration>`. A timer catch without one is dropped. |
+| Catch: timer | Supported | A one-shot `<timeDuration>` (a `timerWait`) or `<timeDate>` (a `timerDateWait`, firing once at that instant). A `<timeCycle>` catch, or one with neither, is dropped. |
 | Catch: message, signal | Supported | Dropped when the name cannot be resolved. |
 | Catch: anything else, or more than one definition | Dropped | |
 | Throw: message | Supported | Publishes by name; dropped when the name cannot be resolved, because a throw must say what it publishes. |
@@ -98,7 +98,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Non-interrupting (`cancelActivity: false`) | Supported | The boundary path runs alongside the still-running activity. |
 | Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. Its `errorRef` resolves to the code it catches: a coded boundary catches **only** that code, and wins over the host's catch-all. One with no code is the catch-all. A second code-less one on the same host, or a duplicate code, is dropped. |
 | Escalation | Supported | May be non-interrupting. A code-less boundary is the catch-all; a second code-less one on the same host, or a duplicate code, is dropped. |
-| Timer | Supported | Requires a one-shot `<timeDuration>`; without one it is dropped. |
+| Timer | Supported | A one-shot `<timeDuration>` or `<timeDate>`; a `<timeCycle>` boundary, or one with neither, is dropped. Interrupting or not, a timer boundary fires once. |
 | Message, signal | Supported | Dropped when the name cannot be resolved. |
 | Cancel | Supported | Only on a transaction host, and at most one per transaction. |
 | Compensation | Supported | Must associate with a flow-less compensation handler activity, or it is dropped. |

@@ -44,6 +44,13 @@ public static class BpmnEventDefinitionProperties
     public const string Cron = "cron";
 
     /// <summary>
+    /// An ISO-8601 instant from a timer's <c>&lt;timeDate&gt;</c>: the one moment the timer fires. Kept verbatim
+    /// (trimmed), never parsed; the host that schedules the timer reads it. Valid on a timer start, catch, boundary or
+    /// event-subprocess start, mutually exclusive with <see cref="Interval"/> and <see cref="Cron"/>.
+    /// </summary>
+    public const string Date = "date";
+
+    /// <summary>
     /// The element id a compensate throw/end event targets: compensate only that element's
     /// registrations. Absent → compensate everything registered in this process. Set on a
     /// <see cref="BpmnEventDefinitionTypes.Compensation"/> definition of a throw/end event.

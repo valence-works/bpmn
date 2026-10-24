@@ -127,8 +127,9 @@ Three things a consumer generating types should know, all of them described in t
   an error end event throws and when an error catcher takes an error. See
   [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0 adds one optional
   property, `script` on an element (the `bpmnScript` shape), which carries a script task's `scriptFormat`
-  and `<script>` body. A 1.5.0 payload reads as before, with it absent. Format 1.7.0, the current version,
-  adds the `signalPublish` work-binding case, the broadcast a signal throw or signal end event binds. See
+  and `<script>` body. A 1.5.0 payload reads as before, with it absent. Format 1.7.0 adds the
+  `signalPublish` work-binding case, the broadcast a signal throw or signal end event binds. Format 1.8.0,
+  the current version, adds the `timerDateWait` case, the wait a timer at a `<timeDate>` binds. See
   [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
 
 Regenerate the schema after any model change:

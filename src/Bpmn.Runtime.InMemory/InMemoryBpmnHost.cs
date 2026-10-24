@@ -276,7 +276,8 @@ public sealed class InMemoryBpmnHost
     /// <para>
     /// A duration the model states but states wrongly throws, naming the text. A duration the model does not
     /// state at all is not an error: the work simply becomes something the caller finishes by hand, which is
-    /// the honest reading of "the definition never said how long".
+    /// the honest reading of "the definition never said how long". A timer at a date is such a timer: the virtual
+    /// clock has no calendar to place its instant on.
     /// </para>
     /// </summary>
     internal bool TryResolveTimer(BpmnGraph graph, string bindingRef, out TimeSpan duration)
