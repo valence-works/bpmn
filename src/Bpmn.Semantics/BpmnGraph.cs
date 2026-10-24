@@ -581,6 +581,12 @@ public sealed class BpmnGraph
             if (family == BpmnElementFamilies.StartEventTimer)
                 _ = BpmnTimerStartSchedule.Resolve(element);
 
+            // A start's cycle is checked by its schedule above, and an event-subprocess start's by its parent's
+            // catcher below; a timer catch or boundary checks its own.
+            if (family is BpmnElementFamilies.IntermediateCatchEvent or BpmnElementFamilies.BoundaryEvent
+                && TimerDefinition(element) is { } timer)
+                _ = BpmnTimerCycleRules.Resolve(timer.Properties, $"BPMN timer {element.ElementType} '{element.ElementId}'", [element.ElementId]);
+
             if (element.BindingRef is not null)
             {
                 if (!boundWorkByRef.ContainsKey(element.BindingRef))
@@ -866,16 +872,19 @@ public sealed class BpmnGraph
 
     /// <summary>
     /// Validates a message/signal/timer event-subprocess body start's stimulus facts: message/signal
-    /// declare a non-empty <c>name</c>; a timer declares a non-empty <c>interval</c> (<c>timeDuration</c>-shaped) or
-    /// <c>date</c> (<c>timeDate</c>-shaped), and no <c>cron</c> (cyclic timers are not supported for event subprocesses).
+    /// declare a non-empty <c>name</c>; a timer declares a <c>cycle</c> (<c>timeCycle</c>-shaped, see
+    /// <see cref="BpmnTimerCycleRules"/>), or else exactly one non-empty <c>interval</c> (<c>timeDuration</c>-shaped) or
+    /// <c>date</c> (<c>timeDate</c>-shaped), and no <c>cron</c> outside a cycle.
     /// </summary>
     private static void ValidateExternalTriggerDefinition(BpmnElement element, BpmnElement bodyStart, string definitionType)
     {
         var properties = bodyStart.EventDefinitions.Single().Properties;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Timer))
         {
+            if (BpmnTimerCycleRules.Resolve(properties, $"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}'", [element.ElementId, bodyStart.ElementId]) is not null)
+                return;
             if (properties.TryGetValue(BpmnEventDefinitionProperties.Cron, out var cron) && !string.IsNullOrWhiteSpace(cron))
-                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule; cron/timeCycle timers are not supported for event subprocesses (only a one-shot interval, re-armed per non-interrupting fire, or a date, which fires once).") { ElementIds = [element.ElementId] };
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule without a cycle; a cron timer event subprocess declares its timeCycle as '{BpmnEventDefinitionProperties.Cycle}'.") { ElementIds = [element.ElementId] };
             if (!HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && !HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
                 throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval or date; a timer event subprocess needs a one-shot duration interval or a date.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
             // Both would leave whether the listener re-arms after a non-interrupting fire to whichever one wins.
@@ -887,6 +896,10 @@ public sealed class BpmnGraph
         if (!properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) || string.IsNullOrWhiteSpace(name))
             throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no event name; a {definitionType} event subprocess resolves its stimulus from a non-empty name.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
     }
+
+    /// <summary>An element's timer event definition, or <c>null</c> when it declares none.</summary>
+    internal static BpmnEventDefinition? TimerDefinition(BpmnElement element) =>
+        element.EventDefinitions.FirstOrDefault(definition => StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer));
 
     private static bool HasNonBlank(IReadOnlyDictionary<string, string> properties, string key) =>
         properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value);
@@ -1350,7 +1363,7 @@ public enum BpmnEventSubprocessTriggerKind
 
     /// <summary>
     /// A timer-triggered event subprocess: armed as a scope listener at scope start (a one-shot <c>Delay</c>). A duration
-    /// timer is re-armed per non-interrupting fire for repetition; a date timer fires once (see <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>).
+    /// or cycle timer is re-armed per non-interrupting fire for repetition; a date timer fires once (see <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>).
     /// </summary>
     Timer
 }

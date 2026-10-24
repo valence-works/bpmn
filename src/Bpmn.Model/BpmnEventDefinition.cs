@@ -37,10 +37,14 @@ public static class BpmnEventDefinitionProperties
     /// <summary>The event name a message/signal start (or catch) resolves its stimulus from (drives <c>EventStimulus.Hash</c>).</summary>
     public const string Name = "name";
 
-    /// <summary>An ISO-8601 duration for a timer start's recurring interval (mutually exclusive with <see cref="Cron"/>).</summary>
+    /// <summary>
+    /// An ISO-8601 duration: a timer start's recurring interval, the period of a <see cref="Cycle"/>, or the one-shot
+    /// delay of a catch, boundary or event-subprocess timer declared with <c>&lt;timeDuration&gt;</c> (mutually exclusive
+    /// with <see cref="Cron"/>).
+    /// </summary>
     public const string Interval = "interval";
 
-    /// <summary>A cron expression for a timer start's recurring schedule (mutually exclusive with <see cref="Interval"/>).</summary>
+    /// <summary>A cron expression for a timer's recurring schedule, the text of a cron <see cref="Cycle"/> (mutually exclusive with <see cref="Interval"/>).</summary>
     public const string Cron = "cron";
 
     /// <summary>
@@ -49,6 +53,26 @@ public static class BpmnEventDefinitionProperties
     /// event-subprocess start, mutually exclusive with <see cref="Interval"/> and <see cref="Cron"/>.
     /// </summary>
     public const string Date = "date";
+
+    /// <summary>
+    /// A timer's <c>&lt;timeCycle&gt;</c> as written (trimmed): an ISO-8601 repeating interval, a bare duration, or a cron
+    /// expression (see <see cref="BpmnTimerCycle"/>). Valid on a timer start, catch, boundary or event-subprocess start.
+    /// It is the cycle's source of truth: <see cref="Interval"/> or <see cref="Cron"/>, <see cref="Repetitions"/> and
+    /// <see cref="Start"/> beside it are its parts, and must agree with it. Mutually exclusive with <see cref="Date"/>.
+    /// </summary>
+    public const string Cycle = "cycle";
+
+    /// <summary>
+    /// How many times a <see cref="Cycle"/> fires, the <c>n</c> of <c>R&lt;n&gt;/</c>, as a decimal; absent when it
+    /// repeats without end.
+    /// </summary>
+    public const string Repetitions = "repetitions";
+
+    /// <summary>
+    /// The instant of a <see cref="Cycle"/>'s first occurrence, the start of <c>R[n]/&lt;start&gt;/&lt;duration&gt;</c>,
+    /// kept as written; absent when the cycle does not say.
+    /// </summary>
+    public const string Start = "start";
 
     /// <summary>
     /// The element id a compensate throw/end event targets: compensate only that element's

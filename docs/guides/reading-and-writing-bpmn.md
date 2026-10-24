@@ -455,7 +455,7 @@ var rewritten = writer.Write(definitions, bindings);
 
 The envelope belongs to the host. Its two components use the library's
 [published schema](../reference/packages.md#the-serialization-is-owned-and-versioned); validate each
-binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `timerDateWait`, `messageWait`, `signalWait`,
+binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `timerDateWait`, `timerCycleWait`, `messageWait`, `signalWait`,
 `messagePublish`, `signalPublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
 Keep `kind` first when a client rebuilds a binding object: the default serializer writes it there,
 and [System.Text.Json requires discriminator metadata first by default](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism).

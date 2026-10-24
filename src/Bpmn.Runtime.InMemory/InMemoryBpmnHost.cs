@@ -328,11 +328,18 @@ public sealed class InMemoryBpmnHost
         element.EventDefinitions.FirstOrDefault(definition =>
             StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer));
 
-    private static string? ReadInterval(BpmnEventDefinition definition) =>
-        definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval)
-        && !string.IsNullOrWhiteSpace(interval)
-            ? interval
+    private static string? ReadInterval(BpmnEventDefinition definition)
+    {
+        if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) && !string.IsNullOrWhiteSpace(interval))
+        {
+            return interval;
+        }
+
+        // A definition built in code may carry only its cycle; the cycle's period is then the wait.
+        return definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Cycle, out var cycleText) && BpmnTimerCycle.TryParse(cycleText, out var cycle)
+            ? cycle.IsoDuration
             : null;
+    }
 
     private void FireTimer(PendingTimer timer)
     {

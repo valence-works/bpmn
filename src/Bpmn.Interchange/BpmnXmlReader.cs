@@ -353,9 +353,9 @@ public sealed class BpmnXmlReader
                         break;
                     }
                     // A message, signal, or timer event-subprocess body start declares its trigger plus
-                    // isInterrupting, and uses a one-shot <timeDuration> rather than the recurring <timeCycle>
-                    // a process-level timer start uses. A body start whose trigger is unusable degrades to a
-                    // plain start, which then drops the whole event subprocess.
+                    // isInterrupting. Its timer is read like a catch's: a <timeDuration>, then a <timeDate>, then a
+                    // <timeCycle>. A body start whose trigger is unusable degrades to a plain start, which then
+                    // drops the whole event subprocess.
                     if (isEventSubprocessBody)
                     {
                         var bodyStartDefinition = ResolveEventSubprocessBodyStartDefinition(id, child, messageSignalNames, context);
@@ -1178,7 +1178,7 @@ public sealed class BpmnXmlReader
 
         if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer))
         {
-            context.Bind(OneShotTimerWait(processId, id, listenerRef, BpmnBindingSlot.ScopeListener, definition.Properties));
+            context.Bind(TimerWaitFor(processId, id, listenerRef, BpmnBindingSlot.ScopeListener, definition.Properties));
             return new EventSubprocessImport(listenerRef);
         }
 
@@ -1187,9 +1187,9 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>
-    /// Resolves a message, signal, or timer event-subprocess body start. A timer body start is a one-shot
-    /// <c>&lt;timeDuration&gt;</c> or <c>&lt;timeDate&gt;</c>; a <c>&lt;timeCycle&gt;</c> body start, or an
-    /// unresolvable name, degrades to a plain start, which drops the event subprocess.
+    /// Resolves a message, signal, or timer event-subprocess body start. A timer body start is a
+    /// <c>&lt;timeDuration&gt;</c>, a <c>&lt;timeDate&gt;</c> or a <c>&lt;timeCycle&gt;</c>; a timer with none of them
+    /// usable, or an unresolvable name, degrades to a plain start, which drops the event subprocess.
     /// </summary>
     private static BpmnEventDefinition? ResolveEventSubprocessBodyStartDefinition(string id, XElement child, IReadOnlyDictionary<string, string> messageSignalNames, ReadContext context)
     {
@@ -1199,12 +1199,15 @@ public sealed class BpmnXmlReader
             return ResolveEventSubprocessMessageSignal(id, signalDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames, context);
         if (child.Element(BpmnXmlNames.Model + "timerEventDefinition") is { } timerDefinition)
         {
-            var properties = ResolveOneShotTimerProperties(timerDefinition);
+            var properties = ResolveCatchTimerProperties(timerDefinition);
             if (properties is null)
             {
-                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer that is neither a one-shot <timeDuration> nor a <timeDate>; it read as a plain start and the event subprocess was dropped.", id);
+                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer with no usable <timeDuration>, <timeDate> or <timeCycle>; it read as a plain start and the event subprocess was dropped.", id);
                 return null;
             }
+            // The interpreter re-arms a non-interrupting listener after every fire and cannot yet count them.
+            if (properties.TryGetValue(BpmnEventDefinitionProperties.Repetitions, out var repetitions) && !((bool?)child.Attribute("isInterrupting") ?? true))
+                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a non-interrupting timer cycle of {repetitions} repetitions; it re-arms after every fire without end, because the repetition count is not honoured yet.", id);
             return new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties);
         }
 
@@ -1273,7 +1276,7 @@ public sealed class BpmnXmlReader
                 var properties = ResolveStartTimerProperties(definition);
                 if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Degraded, $"Start event '{id}' declares a timer event definition with neither a <timeCycle> nor a <timeDate>; only a recurring interval or cron start, or a start at a date, is supported, so it read as a plain start event.", id);
+                    context.Report(BpmnImportIssueSeverity.Degraded, $"Start event '{id}' declares a timer event definition with no usable <timeCycle> or <timeDate>; only a cycle (an ISO-8601 repeating interval R[n]/[start/]duration, a duration, or a cron expression) or a date is supported, so it read as a plain start event.", id);
                     return null;
                 }
 
@@ -1324,14 +1327,14 @@ public sealed class BpmnXmlReader
             }
             case "timerEventDefinition":
             {
-                var properties = ResolveOneShotTimerProperties(definition);
+                var properties = ResolveCatchTimerProperties(definition);
                 if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares a timer event definition with neither a <timeDuration> nor a <timeDate>; only a one-shot catch timer is supported, so it was dropped.", id);
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares a timer event definition with no usable <timeDuration>, <timeDate> or <timeCycle>, so it was dropped.", id);
                     return null;
                 }
 
-                context.Bind(OneShotTimerWait(processId, id, bindingRef, BpmnBindingSlot.Primary, properties));
+                context.Bind(TimerWaitFor(processId, id, bindingRef, BpmnBindingSlot.Primary, properties));
                 return new CatchEventImport(new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties), bindingRef);
             }
             default:
@@ -1527,14 +1530,18 @@ public sealed class BpmnXmlReader
             }
             case "timerEventDefinition":
             {
-                var properties = ResolveOneShotTimerProperties(definition);
+                var properties = ResolveCatchTimerProperties(definition);
                 if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' declares a timer event definition with neither a <timeDuration> nor a <timeDate>; only a one-shot boundary timer is supported, so it was dropped.", id);
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' declares a timer event definition with no usable <timeDuration>, <timeDate> or <timeCycle>, so it was dropped.", id);
                     return null;
                 }
 
-                var timerBindingRef = context.Bind(OneShotTimerWait(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, properties));
+                // A timer boundary fires once; re-arming a non-interrupting one for the cycle's later occurrences is not supported yet.
+                if (properties.ContainsKey(BpmnEventDefinitionProperties.Cycle) && !cancelActivity)
+                    context.Report(BpmnImportIssueSeverity.Degraded, $"Non-interrupting boundary event '{id}' declares a timer cycle; it fires once, at the cycle's first occurrence, because re-arming for later occurrences is not supported yet.", id);
+
+                var timerBindingRef = context.Bind(TimerWaitFor(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, properties));
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element), bindingRef: timerBindingRef,
                     eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties)],
                     attachedToRef: attachedToRef, cancelActivity: cancelActivity);
@@ -1759,46 +1766,34 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>
-    /// Maps a start timer's <c>&lt;timeCycle&gt;</c> to a recurring interval or cron schedule: text beginning
-    /// with <c>P</c> or <c>R</c> is an ISO-8601 duration, with any repetition prefix stripped; anything else is
-    /// a cron expression. A start with no usable cycle falls back to its <c>&lt;timeDate&gt;</c>, a single start at
-    /// that instant; a start with neither returns <c>null</c>.
+    /// Maps a start timer to its schedule: its <c>&lt;timeCycle&gt;</c> (see <see cref="ResolveTimerCycle"/>), which a
+    /// start reads first because a start is recurring by nature, and otherwise its <c>&lt;timeDate&gt;</c>, a single
+    /// start at that instant. A start with neither usable returns <c>null</c>.
     /// </summary>
     private static IReadOnlyDictionary<string, string>? ResolveStartTimerProperties(XElement definition) =>
-        ResolveStartTimerCycle(definition) ?? ResolveTimerDate(definition);
-
-    private static IReadOnlyDictionary<string, string>? ResolveStartTimerCycle(XElement definition)
-    {
-        if (definition.Element(BpmnXmlNames.Model + "timeCycle") is not { } timeCycle)
-            return null;
-
-        var text = timeCycle.Value.Trim();
-        if (text.Length == 0)
-            return null;
-
-        if (text[0] is 'P' or 'R')
-        {
-            var interval = StripRepetitionPrefix(text);
-            return interval.Length == 0
-                ? null
-                : new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = interval };
-        }
-
-        return new Dictionary<string, string> { [BpmnEventDefinitionProperties.Cron] = text };
-    }
+        ResolveTimerCycle(definition) ?? ResolveTimerDate(definition);
 
     /// <summary>
-    /// Maps a one-shot timer, a catch, boundary or event-subprocess start, to its event-definition properties: a
+    /// Maps a catch, boundary or event-subprocess start timer to its event-definition properties: a
     /// <c>&lt;timeDuration&gt;</c> to its ISO-8601 duration under <see cref="BpmnEventDefinitionProperties.Interval"/>,
-    /// otherwise a <c>&lt;timeDate&gt;</c> to its instant under <see cref="BpmnEventDefinitionProperties.Date"/>.
-    /// <c>null</c> for a cycle timer, or one whose text is blank.
+    /// otherwise a <c>&lt;timeDate&gt;</c> to its instant under <see cref="BpmnEventDefinitionProperties.Date"/>, otherwise
+    /// a <c>&lt;timeCycle&gt;</c> (see <see cref="ResolveTimerCycle"/>). BPMN allows only one of them; the order keeps a
+    /// document that declares several reading as it did before cycles were read here. <c>null</c> when none is usable.
     /// </summary>
-    private static IReadOnlyDictionary<string, string>? ResolveOneShotTimerProperties(XElement definition)
+    private static IReadOnlyDictionary<string, string>? ResolveCatchTimerProperties(XElement definition)
     {
         if (TimerText(definition, "timeDuration") is { } duration)
             return new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = duration };
-        return ResolveTimerDate(definition);
+        return ResolveTimerDate(definition) ?? ResolveTimerCycle(definition);
     }
+
+    /// <summary>
+    /// A timer's <c>&lt;timeCycle&gt;</c> as its <see cref="BpmnTimerCycle"/> properties: the text as written under
+    /// <see cref="BpmnEventDefinitionProperties.Cycle"/>, beside its duration or cron, repetition count and start.
+    /// <c>null</c> when absent, blank, or not a shape <see cref="BpmnTimerCycle.TryParse"/> reads.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ResolveTimerCycle(XElement definition) =>
+        BpmnTimerCycle.TryParse(TimerText(definition, "timeCycle"), out var cycle) ? cycle.ToProperties() : null;
 
     /// <summary>A timer's <c>&lt;timeDate&gt;</c> as <see cref="BpmnEventDefinitionProperties.Date"/>, kept as written; <c>null</c> when absent or blank.</summary>
     private static IReadOnlyDictionary<string, string>? ResolveTimerDate(XElement definition) =>
@@ -1812,19 +1807,18 @@ public sealed class BpmnXmlReader
         return string.IsNullOrEmpty(text) ? null : text;
     }
 
-    /// <summary>The wait a one-shot timer binds: a <see cref="BpmnWorkBinding.TimerDateWait"/> for a date, otherwise a <see cref="BpmnWorkBinding.TimerWait"/> for its duration.</summary>
-    private static BpmnWorkBinding OneShotTimerWait(string processId, string elementId, string bindingRef, BpmnBindingSlot slot, IReadOnlyDictionary<string, string> properties) =>
-        properties.TryGetValue(BpmnEventDefinitionProperties.Date, out var date)
+    /// <summary>
+    /// The wait a catch, boundary or event-subprocess timer binds: a <see cref="BpmnWorkBinding.TimerCycleWait"/> for a
+    /// cycle, a <see cref="BpmnWorkBinding.TimerDateWait"/> for a date, otherwise a <see cref="BpmnWorkBinding.TimerWait"/>
+    /// for its duration.
+    /// </summary>
+    private static BpmnWorkBinding TimerWaitFor(string processId, string elementId, string bindingRef, BpmnBindingSlot slot, IReadOnlyDictionary<string, string> properties)
+    {
+        if (properties.TryGetValue(BpmnEventDefinitionProperties.Cycle, out var text) && BpmnTimerCycle.TryParse(text, out var cycle))
+            return new BpmnWorkBinding.TimerCycleWait(processId, elementId, bindingRef, slot, cycle.Text, cycle.IsoDuration, cycle.Cron, cycle.Repetitions, cycle.Start);
+        return properties.TryGetValue(BpmnEventDefinitionProperties.Date, out var date)
             ? new BpmnWorkBinding.TimerDateWait(processId, elementId, bindingRef, slot, date)
             : new BpmnWorkBinding.TimerWait(processId, elementId, bindingRef, slot, properties[BpmnEventDefinitionProperties.Interval]);
-
-    /// <summary>Strips an ISO-8601 repetition prefix (<c>R.../</c>) from a recurring cycle, leaving the bare duration.</summary>
-    private static string StripRepetitionPrefix(string text)
-    {
-        if (text[0] != 'R')
-            return text;
-        var slash = text.IndexOf('/');
-        return slash >= 0 ? text[(slash + 1)..].Trim() : text;
     }
 
     /// <summary>The message name an element carries: a message event definition's resolved name, or a send/receive task's recorded name.</summary>

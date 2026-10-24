@@ -491,8 +491,14 @@ public sealed class BpmnXmlWriter
                 var interval = Property(definition, BpmnEventDefinitionProperties.Interval) ?? context.TimerDurationFor(element);
                 var cron = Property(definition, BpmnEventDefinitionProperties.Cron);
                 var date = Property(definition, BpmnEventDefinitionProperties.Date) ?? (isCatch ? context.TimerDateFor(element) : null);
+                var cycle = Property(definition, BpmnEventDefinitionProperties.Cycle) ?? (isCatch ? context.TimerCycleFor(element) : null);
 
-                if (date is not null)
+                if (cycle is not null)
+                {
+                    // A cycle at any position, written back exactly as it was read.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", cycle));
+                }
+                else if (date is not null)
                 {
                     // A timer at an instant, one-shot at every position: a start, a catch, a boundary or an
                     // event-subprocess start.
@@ -1081,6 +1087,10 @@ public sealed class BpmnXmlWriter
         /// <summary>The duration an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? TimerDurationFor(BpmnElement element) =>
             WorkFor(element) is BpmnWorkBinding.TimerWait timer && !string.IsNullOrWhiteSpace(timer.IsoDuration) ? timer.IsoDuration.Trim() : null;
+
+        /// <summary>The cycle an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerCycleFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerCycleWait timer && !string.IsNullOrWhiteSpace(timer.Cycle) ? timer.Cycle.Trim() : null;
 
         /// <summary>The instant an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? TimerDateFor(BpmnElement element) =>
