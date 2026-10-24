@@ -60,6 +60,15 @@ public sealed class TimerDateTests
         error.ElementIds.ShouldBe(["TimerHandler", "BodyStart"]);
     }
 
+    [Fact]
+    public void A_timer_event_subprocess_with_both_a_duration_and_a_date_is_refused()
+    {
+        var error = Should.Throw<BpmnExecutionException>(() => EventSubprocessGraph(Properties((BpmnEventDefinitionProperties.Interval, "PT1M"), (BpmnEventDefinitionProperties.Date, Instant))));
+
+        error.Message.ShouldContain("declares both an interval and a date");
+        error.ElementIds.ShouldBe(["TimerHandler", "BodyStart"]);
+    }
+
     [Theory]
     [InlineData(BpmnEventDefinitionProperties.Interval, "PT1M", new[] { "timer-handler", "timer-listener" })]
     [InlineData(BpmnEventDefinitionProperties.Date, Instant, new[] { "timer-handler" })]

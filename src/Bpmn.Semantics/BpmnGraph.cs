@@ -878,6 +878,9 @@ public sealed class BpmnGraph
                 throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule; cron/timeCycle timers are not supported for event subprocesses (only a one-shot interval, re-armed per non-interrupting fire, or a date, which fires once).") { ElementIds = [element.ElementId] };
             if (!HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && !HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
                 throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval or date; a timer event subprocess needs a one-shot duration interval or a date.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
+            // Both would leave whether the listener re-arms after a non-interrupting fire to whichever one wins.
+            if (HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares both an interval and a date; a timer event subprocess needs exactly one.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
             return;
         }
 
