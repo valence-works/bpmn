@@ -479,6 +479,13 @@ public sealed class BpmnXmlReader
                 case "intermediateThrowEvent":
                 {
                     if (id is null) break;
+                    // A link beside any other definition goes to the compensate pass, which drops it with a finding,
+                    // before the escalation and message branches below could read it as one of theirs.
+                    if (child.Element(BpmnXmlNames.Model + "linkEventDefinition") is not null && SoleEventDefinition(child, "linkEventDefinition") is null)
+                    {
+                        pendingCompensateThrows.Add(child);
+                        break;
+                    }
                     // An escalation throw must say what it escalates; a ref-less one is dropped and its flows
                     // cascade-drop as unresolved references.
                     if (child.Element(BpmnXmlNames.Model + "escalationEventDefinition") is { } escalationThrowDefinition)

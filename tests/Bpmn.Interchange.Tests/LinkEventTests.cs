@@ -79,6 +79,19 @@ public sealed class LinkEventTests
     }
 
     [Fact]
+    public void A_link_throw_beside_a_message_definition_is_dropped_not_read_as_a_message_throw()
+    {
+        var withMessage = Document("""<bpmn:linkEventDefinition name="Ship" /><bpmn:messageEventDefinition messageRef="Msg" />""", Named)
+            .Replace("""<bpmn:process id="P" isExecutable="true">""", """<bpmn:message id="Msg" name="Shipped" /><bpmn:process id="P" isExecutable="true">""");
+
+        var read = _reader.Read(withMessage);
+
+        read.Definitions.Processes.Single().Elements.ShouldNotContain(element => element.ElementId == "GoToShipping");
+        read.Bindings.ShouldNotContain(binding => binding.ElementId == "GoToShipping");
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "GoToShipping" && issue.Severity == BpmnImportIssueSeverity.Dropped);
+    }
+
+    [Fact]
     public void Both_are_written_back_with_their_link_name_and_read_again_unchanged()
     {
         var first = _reader.Read(Document(Named, Named));
