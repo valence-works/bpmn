@@ -367,6 +367,18 @@ public sealed class PayloadSchemaTests
         process = process with
         {
             ExpressionLanguage = "urn:example:language",
+            // A script task reaches the script shape and its retained content.
+            Elements =
+            [
+                .. process.Elements,
+                new BpmnElement("script", BpmnElementTypes.ScriptTask, bindingRef: "script")
+                {
+                    Script = new BpmnScript(
+                        "total = items.length",
+                        "text/javascript",
+                        new BpmnExtensions(ForeignAttributes: [new BpmnForeignAttribute(new BpmnQName("urn:vendor", "engine"), "nashorn")]))
+                }
+            ],
             SequenceFlows =
             [
                 .. process.SequenceFlows,

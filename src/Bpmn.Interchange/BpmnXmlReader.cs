@@ -325,7 +325,7 @@ public sealed class BpmnXmlReader
             context.CountElement(localName);
 
             if (id is not null && IsRetainableFlowNode(localName)
-                && context.Capture(child, IsFlowNodeChildConsumed) is { IsEmpty: false } captured)
+                && context.Capture(child, IsFlowNodeChildConsumedIn(child)) is { IsEmpty: false } captured)
                 retainedByElementId[id] = captured;
 
             switch (localName)
@@ -627,7 +627,10 @@ public sealed class BpmnXmlReader
                         var unboundRef = context.Bind(new BpmnWorkBinding.UnboundTask(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, taskType));
                         elements.Add(new BpmnElement(id, taskType, name: NameOf(child), bindingRef: unboundRef, defaultFlowId: DefaultOf(child),
                             loopCharacteristics: ResolveLoopCharacteristics(child, id, isActivity: true, declaredVariableNames, context),
-                            isForCompensation: IsForCompensationOf(child)));
+                            isForCompensation: IsForCompensationOf(child))
+                        {
+                            Script = taskType == BpmnElementTypes.ScriptTask ? context.CaptureScript(child, ScriptOf(child)) : null
+                        });
                         if (taskType != BpmnElementTypes.Task)
                             context.Report(BpmnImportIssueSeverity.Info, $"{Capitalize(localName)} '{id}' declares no implementation; the host must supply the work bound to it.", id);
                         break;
@@ -1777,7 +1780,10 @@ public sealed class BpmnXmlReader
         new(element.ElementId, element.ElementType, element.Name, element.BindingRef, laneId ?? element.LaneId,
             element.DefaultFlowId, element.EventDefinitions, element.Properties, element.AttachedToRef, element.CancelActivity,
             element.LoopCharacteristics, isForCompensation ?? element.IsForCompensation, element.CompensationHandlerElementId,
-            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef, extensions ?? element.Extensions);
+            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef, extensions ?? element.Extensions)
+        {
+            Script = element.Script
+        };
 
     /// <summary>The activities BPMN lets a boundary event attach to, and therefore also the activities that can act as a compensation handler.</summary>
     private static bool IsBoundaryHost(string elementType) =>
@@ -1811,6 +1817,18 @@ public sealed class BpmnXmlReader
         || BpmnXmlNames.TaskLocalNamesToElementTypes.ContainsKey(localName)
         || BpmnXmlNames.GatewayLocalNamesToElementTypes.ContainsKey(localName);
 
+
+    /// <summary>
+    /// The children of one flow node the reader interprets: <see cref="IsFlowNodeChildConsumed"/>, plus a script
+    /// task's first <c>&lt;script&gt;</c>, which is read onto <see cref="BpmnElement.Script"/>. A second one,
+    /// which BPMN does not allow, stays retained.
+    /// </summary>
+    private static Func<XElement, bool> IsFlowNodeChildConsumedIn(XElement flowNode) =>
+        ScriptOf(flowNode) is { } script ? child => child == script || IsFlowNodeChildConsumed(child) : IsFlowNodeChildConsumed;
+
+    /// <summary>The first <c>&lt;script&gt;</c> of a <c>scriptTask</c>, or <c>null</c> for any other element or a task without one.</summary>
+    private static XElement? ScriptOf(XElement flowNode) =>
+        flowNode.Name == BpmnXmlNames.Model + "scriptTask" ? flowNode.Element(BpmnXmlNames.Model + "script") : null;
 
     private static bool IsFlowNodeChildConsumed(XElement child) =>
         child.Name.Namespace == BpmnXmlNames.Model
@@ -1912,6 +1930,10 @@ public sealed class BpmnXmlReader
         /// <summary>Reads an author's <c>conditionExpression</c>, against this read's fidelity and vendor namespace.</summary>
         public BpmnConditionExpression CaptureConditionExpression(XElement source) =>
             BpmnExtensionCapture.CaptureConditionExpression(source, Fidelity, Vendor, Retention);
+
+        /// <summary>Reads a <c>scriptTask</c>'s script, against this read's fidelity and vendor namespace.</summary>
+        public BpmnScript? CaptureScript(XElement scriptTask, XElement? script) =>
+            BpmnExtensionCapture.CaptureScript(scriptTask, script, Fidelity, Vendor, Retention);
 
         public string Bind(BpmnWorkBinding binding)
         {

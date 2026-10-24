@@ -61,7 +61,8 @@ Format 1.3.0 adds optional properties for condition expressions and the expressi
 recorded in [ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md).
 Format 1.4.0 appends the `ConditionEvaluated` diagnostic kind for the same decision. Format 1.5.0
 appends the `ErrorThrown` and `ErrorCaught` diagnostic kinds, as recorded in
-[ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md).
+[ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0 adds an optional
+`script` property on an element, a script task's format and body.
 
 ### What publishing it exposed
 

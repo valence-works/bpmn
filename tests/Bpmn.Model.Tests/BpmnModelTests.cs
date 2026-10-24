@@ -156,6 +156,65 @@ public sealed class BpmnModelTests
     }
 
     [Fact]
+    public void A_script_round_trips_through_json_under_its_published_wire_names()
+    {
+        var element = new BpmnElement("script-1", BpmnElementTypes.ScriptTask)
+        {
+            Script = new BpmnScript(
+                " total = 1 ",
+                "text/javascript",
+                new BpmnExtensions(ForeignAttributes: [new BpmnForeignAttribute(new BpmnQName("urn:vendor", "engine"), "nashorn")]))
+        };
+
+        var node = JsonSerializer.SerializeToNode(element)!.AsObject();
+        var script = node["script"]!.AsObject();
+        script["body"]!.GetValue<string>().ShouldBe(" total = 1 ", "the body is kept exactly as authored");
+        script["format"]!.GetValue<string>().ShouldBe("text/javascript");
+        script["extensions"]!["foreignAttributes"]!.AsArray().Count.ShouldBe(1);
+
+        var restored = JsonSerializer.Deserialize<BpmnElement>(node.ToJsonString()).ShouldNotBeNull();
+        restored.Script.ShouldBe(element.Script, "retained content compares by value");
+    }
+
+    [Fact]
+    public void An_element_without_a_script_reads_from_json_with_none()
+    {
+        var restored = JsonSerializer.Deserialize<BpmnElement>("{\"elementId\":\"t\",\"elementType\":\"scriptTask\"}").ShouldNotBeNull();
+
+        restored.Script.ShouldBeNull();
+    }
+
+    [Fact]
+    public void A_script_requires_a_body_and_normalizes_a_blank_format()
+    {
+        Should.Throw<ArgumentNullException>(() => new BpmnScript(null!));
+
+        var script = new BpmnScript("", "  ");
+        script.Body.ShouldBe("");
+        script.Format.ShouldBeNull();
+        script.Extensions.ShouldBe(BpmnExtensions.Empty);
+        new BpmnScript("x", " text/javascript ").Format.ShouldBe("text/javascript");
+    }
+
+    [Fact]
+    public void Marking_a_default_flow_from_a_script_task_keeps_its_script()
+    {
+        var script = new BpmnScript("x = 1", "text/javascript");
+
+        var process = new BpmnProcessBuilder("p")
+            .StartEvent("start")
+            .Element(new BpmnElement("run", BpmnElementTypes.ScriptTask, bindingRef: "run") { Script = script })
+            .EndEvent("done")
+            .Connect("start", "run")
+            .Connect("run", "done", isDefault: true)
+            .Build();
+
+        var run = process.Elements.Single(element => element.ElementId == "run");
+        run.DefaultFlowId.ShouldNotBeNull();
+        run.Script.ShouldBe(script);
+    }
+
+    [Fact]
     public void A_condition_expression_requires_a_body_and_normalizes_a_blank_language()
     {
         Should.Throw<ArgumentNullException>(() => new BpmnConditionExpression(null!));
