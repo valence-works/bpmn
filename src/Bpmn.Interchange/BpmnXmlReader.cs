@@ -479,6 +479,13 @@ public sealed class BpmnXmlReader
                 case "intermediateThrowEvent":
                 {
                     if (id is null) break;
+                    // A link beside any other definition goes to the compensate pass, which drops it with a finding,
+                    // before the escalation and message branches below could read it as one of theirs.
+                    if (child.Element(BpmnXmlNames.Model + "linkEventDefinition") is not null && SoleEventDefinition(child, "linkEventDefinition") is null)
+                    {
+                        pendingCompensateThrows.Add(child);
+                        break;
+                    }
                     // An escalation throw must say what it escalates; a ref-less one is dropped and its flows
                     // cascade-drop as unresolved references.
                     if (child.Element(BpmnXmlNames.Model + "escalationEventDefinition") is { } escalationThrowDefinition)
@@ -500,6 +507,20 @@ public sealed class BpmnXmlReader
                         elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
                             bindingRef: bindingRef, defaultFlowId: DefaultOf(child),
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
+                        break;
+                    }
+                    // A link throw jumps to the link catch of its name and binds no work. A throw must say where it
+                    // jumps, so an unnamed one is dropped. Beside another definition it goes to the compensate pass.
+                    if (SoleEventDefinition(child, "linkEventDefinition") is { } linkThrowDefinition)
+                    {
+                        if (LinkNameOf(linkThrowDefinition) is not { } linkName)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Link throw event '{id}' declares a link event definition with no name; a throw must say which catch it jumps to, so it was dropped.", id);
+                            break;
+                        }
+
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Link, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = linkName })]));
                         break;
                     }
                     // As on an end event, only a sole signal definition is read as a broadcast; beside another
@@ -1289,7 +1310,7 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>The event definition and binding ref of a resolved intermediate catch event.</summary>
-    private readonly record struct CatchEventImport(BpmnEventDefinition Definition, string BindingRef);
+    private readonly record struct CatchEventImport(BpmnEventDefinition Definition, string? BindingRef);
 
     /// <summary>
     /// Resolves an intermediate catch event into its event definition plus the wait it binds, or reports a
@@ -1301,7 +1322,7 @@ public sealed class BpmnXmlReader
         var definitions = element.Elements().Where(IsEventDefinition).ToArray();
         if (definitions.Length != 1)
         {
-            context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares {definitions.Length} event definitions; exactly one timer, message, or signal definition is required, so it was dropped.", id);
+            context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares {definitions.Length} event definitions; exactly one timer, message, signal, or link definition is required, so it was dropped.", id);
             return null;
         }
 
@@ -1309,6 +1330,17 @@ public sealed class BpmnXmlReader
         var bindingRef = context.BindingRefFor(id);
         switch (definition.Name.LocalName)
         {
+            case "linkEventDefinition":
+            {
+                // A link catch is where a link throw of its name lands; it binds no work.
+                if (LinkNameOf(definition) is not { } linkName)
+                {
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Link catch event '{id}' declares a link event definition with no name; no throw could jump to it, so it was dropped.", id);
+                    return null;
+                }
+
+                return new CatchEventImport(new BpmnEventDefinition(BpmnEventDefinitionTypes.Link, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = linkName }), BindingRef: null);
+            }
             case "messageEventDefinition":
             case "signalEventDefinition":
             {
@@ -1858,6 +1890,10 @@ public sealed class BpmnXmlReader
         element.Name.Namespace == BpmnXmlNames.Model && element.Name.LocalName.EndsWith("EventDefinition", StringComparison.Ordinal);
 
     private static string? IdOf(XElement element) => (string?)element.Attribute("id");
+
+    /// <summary>The trimmed <c>name</c> of a <c>&lt;linkEventDefinition&gt;</c>, or <c>null</c> when it is absent or blank.</summary>
+    private static string? LinkNameOf(XElement linkDefinition) =>
+        ((string?)linkDefinition.Attribute("name"))?.Trim() is { Length: > 0 } name ? name : null;
     private static string? NameOf(XElement element) => (string?)element.Attribute("name");
     private static string? DefaultOf(XElement element) => (string?)element.Attribute("default");
 

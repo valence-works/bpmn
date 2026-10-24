@@ -34,7 +34,10 @@ public sealed class BpmnEventDefinition
 /// </summary>
 public static class BpmnEventDefinitionProperties
 {
-    /// <summary>The event name a message/signal start (or catch) resolves its stimulus from (drives <c>EventStimulus.Hash</c>).</summary>
+    /// <summary>
+    /// The event name a message/signal start (or catch) resolves its stimulus from (drives <c>EventStimulus.Hash</c>).
+    /// On a <see cref="BpmnEventDefinitionTypes.Link"/> definition, the link name that pairs a throw with its catch.
+    /// </summary>
     public const string Name = "name";
 
     /// <summary>
@@ -111,4 +114,11 @@ public static class BpmnEventDefinitionTypes
     /// on a boundary event attached to a transaction host it routes the cancellation path in the parent scope.
     /// </summary>
     public const string Cancel = "cancel";
+
+    /// <summary>
+    /// A link event definition: an intermediate throw jumps its token to the intermediate catch of the same
+    /// <see cref="BpmnEventDefinitionProperties.Name"/> in the same scope, as if a sequence flow joined them. It binds
+    /// no work. Valid only on intermediate throw and catch events.
+    /// </summary>
+    public const string Link = "link";
 }

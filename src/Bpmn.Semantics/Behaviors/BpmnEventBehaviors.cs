@@ -247,6 +247,40 @@ public sealed class SignalEndEventBehavior : IBpmnElementBehavior
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ConsumeToken());
 }
 
+/// <summary>
+/// Link intermediate throw event: jumps its token to the link catch of the same name in its scope. The graph joins
+/// the two with a synthesized link flow (see <see cref="BpmnGraph.IsLinkFlow"/>), which is the throw's only outbound
+/// flow, so the jump is an ordinary emission along it and counts as a flow everywhere the graph reasons about flows.
+/// </summary>
+public sealed class LinkThrowEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateThrowEventLink;
+    public string DisplayName => "Link Throw Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(context.OutboundFlows.Select(flow => flow.FlowId).ToArray()));
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN link throw event '{context.Element.ElementId}' cannot bind work.");
+}
+
+/// <summary>
+/// Link intermediate catch event: where a link throw of the same name lands. It binds no work, so on token arrival it
+/// routes its outbound flows by the shared task selection rules, as a task with no work would.
+/// </summary>
+public sealed class LinkCatchEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateCatchEventLink;
+    public string DisplayName => "Link Catch Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN link catch event '{context.Element.ElementId}' was reached, but no outbound sequence flow's condition held and no default flow is declared."));
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN link catch event '{context.Element.ElementId}' cannot bind work.");
+}
+
 /// <summary>Terminate end event: consume every live token and complete the process immediately.</summary>
 public sealed class TerminateEndEventBehavior : IBpmnElementBehavior
 {

@@ -29,6 +29,12 @@ public static class BpmnElementFamilies
     public const string EndEventCancel = "endEvent.cancel";
     public const string IntermediateCatchEvent = "intermediateCatchEvent.catch";
 
+    /// <summary>The link intermediate catch event family: the landing point of a link throw of the same name, which binds no work and routes its outbound flows at once.</summary>
+    public const string IntermediateCatchEventLink = "intermediateCatchEvent.link";
+
+    /// <summary>The link intermediate throw event family: jumps its token to the link catch of the same name in its scope, within the same evaluation.</summary>
+    public const string IntermediateThrowEventLink = "intermediateThrowEvent.link";
+
     /// <summary>The compensate intermediate throw event family: triggers a compensation replay, then routes its outbound flows.</summary>
     public const string IntermediateThrowEventCompensation = "intermediateThrowEvent.compensation";
 
@@ -225,9 +231,11 @@ public static class BpmnElementFamilies
                 $"BPMN intermediate catch event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.");
 
         var definitionType = element.EventDefinitions.Single().Type;
+        if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Link))
+            return IntermediateCatchEventLink;
         if (!SupportedCatchEventDefinitionTypes.Contains(definitionType))
             throw new BpmnExecutionException(
-                $"BPMN intermediate catch event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, and signal catch events are supported.");
+                $"BPMN intermediate catch event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, signal, and link catch events are supported.");
 
         return IntermediateCatchEvent;
     }
@@ -312,8 +320,9 @@ public static class BpmnElementFamilies
     /// <summary>
     /// Resolves an intermediate throw event. Exactly one
     /// <see cref="BpmnEventDefinitionTypes.Compensation"/>, <see cref="BpmnEventDefinitionTypes.Escalation"/>,
-    /// <see cref="BpmnEventDefinitionTypes.Message"/> or <see cref="BpmnEventDefinitionTypes.Signal"/> definition
-    /// → that throw family; any other (or no) definition is rejected.
+    /// <see cref="BpmnEventDefinitionTypes.Message"/>, <see cref="BpmnEventDefinitionTypes.Signal"/> or
+    /// <see cref="BpmnEventDefinitionTypes.Link"/> definition → that throw family; any other (or no) definition is
+    /// rejected.
     /// </summary>
     private static string ResolveIntermediateThrowEvent(BpmnElement element)
     {
@@ -330,8 +339,10 @@ public static class BpmnElementFamilies
             return IntermediateThrowEventMessage;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Signal))
             return IntermediateThrowEventSignal;
+        if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Link))
+            return IntermediateThrowEventLink;
 
         throw new BpmnExecutionException(
-            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate, escalation, message, and signal throw events are supported.");
+            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate, escalation, message, signal, and link throw events are supported.");
     }
 }
