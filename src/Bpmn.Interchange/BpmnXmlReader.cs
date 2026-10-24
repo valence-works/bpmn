@@ -1226,9 +1226,6 @@ public sealed class BpmnXmlReader
                 context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer with no usable <timeDuration>, <timeDate> or <timeCycle>; it read as a plain start and the event subprocess was dropped.", id);
                 return null;
             }
-            // The interpreter re-arms a non-interrupting listener after every fire and cannot yet count them.
-            if (properties.TryGetValue(BpmnEventDefinitionProperties.Repetitions, out var repetitions) && !((bool?)child.Attribute("isInterrupting") ?? true))
-                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a non-interrupting timer cycle of {repetitions} repetitions; it re-arms after every fire without end, because the repetition count is not honoured yet.", id);
             return new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties);
         }
 

@@ -1457,6 +1457,12 @@
             }
           ]
         },
+        "fireCount": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "stoppedHandle": {
           "type": [
             "string",

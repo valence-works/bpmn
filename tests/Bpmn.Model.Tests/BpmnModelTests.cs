@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Bpmn.Model;
+using Bpmn.Model.State;
 using Shouldly;
 using Xunit;
 
@@ -265,6 +266,30 @@ public sealed class BpmnModelTests
         var flow = restored.Processes.Single().SequenceFlows.Single();
         flow.ConditionOutcome.ShouldBe("ok");
         flow.ConditionExpression.ShouldBeNull();
+    }
+
+    [Fact]
+    public void A_listener_token_fire_count_round_trips_through_json_under_its_published_wire_name()
+    {
+        var token = new BpmnToken("token:7", "TimerHandler", status: BpmnTokenStatus.AwaitingChild, kind: BpmnTokenKind.Listener) { FireCount = 2 };
+
+        var node = JsonSerializer.SerializeToNode(token)!.AsObject();
+        node["fireCount"]!.GetValue<int>().ShouldBe(2);
+
+        var restored = JsonSerializer.Deserialize<BpmnToken>(node.ToJsonString()).ShouldNotBeNull();
+        restored.ShouldBe(token);
+        restored.ShouldNotBe(token with { FireCount = 3 }, "the count takes part in value equality");
+    }
+
+    [Fact]
+    public void A_token_written_before_fire_counts_reads_with_none()
+    {
+        const string json = """{"tokenId":"token:3","atElementId":"TimerHandler","status":1,"kind":0}""";
+
+        var restored = JsonSerializer.Deserialize<BpmnToken>(json).ShouldNotBeNull();
+
+        restored.Kind.ShouldBe(BpmnTokenKind.Listener);
+        restored.FireCount.ShouldBeNull();
     }
 
     [Fact]

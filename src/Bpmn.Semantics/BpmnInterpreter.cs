@@ -949,7 +949,9 @@ public sealed class BpmnInterpreter
     /// listener token is consumed (its work record was already dropped at the top of <see cref="OnWorkCompleted"/>).
     /// A <b>non-interrupting</b> catcher re-arms a fresh listener FIRST (deterministic ids from <c>Sequence</c>; timer
     /// repetition falls out of the re-arm loop, each arm a single one-shot timer) and then activates the body
-    /// non-interrupting alongside untouched scope work. A catcher that <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>,
+    /// non-interrupting alongside untouched scope work. The re-armed listener carries the fires so far as its
+    /// <see cref="BpmnToken.FireCount"/>, and a catcher whose <see cref="BpmnEventSubprocessCatcher.Repetitions"/> that count
+    /// has reached is not re-armed. A catcher that <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>,
     /// a timer at a date, is not re-armed. An <b>interrupting</b> catcher does not re-arm: the activation's
     /// <see cref="StopOtherLiveWork"/> drains every other live token — including sibling scope listeners (ordinary live
     /// tokens there, their suspended work riding the carried teardowns) — before starting the body.
@@ -966,12 +968,21 @@ public sealed class BpmnInterpreter
     {
         var scopeInstanceId = context.Host.ScopeInstanceId;
 
+        // The fires so far, this one included. It is counted on the listener rather than by tallying activation tokens,
+        // because the listener is the one record that lives from one fire to the next.
+        var fireCount = (listenerToken.FireCount ?? 0) + 1;
+        var spent = !catcher.Interrupting && catcher.Repetitions is { } repetitions && fireCount >= repetitions;
+
         state = UpdateToken(state, listenerToken with { Status = BpmnTokenStatus.Consumed });
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ScopeListenerFired, catcher.ElementId, null, listenerToken.TokenId,
-            $"BPMN {(catcher.Interrupting ? "interrupting" : "non-interrupting")} {catcher.TriggerKind} scope listener for event subprocess '{catcher.ElementId}' fired.");
+            $"BPMN {(catcher.Interrupting ? "interrupting" : "non-interrupting")} {catcher.TriggerKind} scope listener for event subprocess '{catcher.ElementId}' fired."
+            + (spent ? $" Its cycle of {catcher.Repetitions} repetitions has fired {fireCount} times, so it is not re-armed." : string.Empty));
 
-        if (!catcher.Interrupting && !catcher.FiresOnce)
-            state = ArmScopeListener(context, state, catcher, scopeInstanceId);
+        if (!catcher.Interrupting && !catcher.FiresOnce && !spent)
+        {
+            // Only a counted cycle needs the count; an unbounded listener carries none.
+            state = ArmScopeListener(context, state, catcher, scopeInstanceId, catcher.Repetitions is null ? null : fireCount);
+        }
 
         var activation = ActivateEventSubprocess(context, graph, state, catcher, listenerToken.IterationKey,
             liveWorkSnapshot, pendingCancellations, completedHandle, $"scope listener '{catcher.ElementId}' fired");
@@ -1029,18 +1040,19 @@ public sealed class BpmnInterpreter
     }
 
     /// <summary>
-    /// Arms a fresh scope listener in one shot: mints a <see cref="BpmnTokenKind.Listener"/>
-    /// token and starts its listener work together. Used to re-arm after a non-interrupting fire, which always
-    /// then starts the body, so the evaluation defers and is never terminal.
+    /// Arms a fresh scope listener in one shot: mints a <see cref="BpmnTokenKind.Listener"/> token carrying
+    /// <paramref name="fireCount"/>, the fires so far of a counted cycle, and starts its listener work together. Used to re-arm after a
+    /// non-interrupting fire, which always then starts the body, so the evaluation defers and is never terminal.
     /// </summary>
     private static BpmnExecutionState ArmScopeListener(
         BpmnEvaluationContext context,
         BpmnExecutionState state,
         BpmnEventSubprocessCatcher catcher,
-        string producedBy)
+        string producedBy,
+        int? fireCount)
     {
         var listenerToken = NewToken(state, catcher.ElementId, flowId: null, parentTokenId: null, BpmnTokenStatus.AwaitingChild,
-            producingWorkHandle: producedBy, iterationKey: null, kind: BpmnTokenKind.Listener);
+            producingWorkHandle: producedBy, iterationKey: null, kind: BpmnTokenKind.Listener, fireCount: fireCount);
         state = AddToken(state, listenerToken);
         return StartScopeListenerWorkFor(context, state, catcher, listenerToken.TokenId);
     }

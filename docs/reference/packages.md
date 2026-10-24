@@ -130,8 +130,9 @@ Three things a consumer generating types should know, all of them described in t
   and `<script>` body. A 1.5.0 payload reads as before, with it absent. Format 1.7.0 adds the
   `signalPublish` work-binding case, the broadcast a signal throw or signal end event binds. Format 1.8.0
   adds the `timerDateWait` case, the wait a timer at a `<timeDate>` binds. Format 1.9.0, the current
-  version, adds the `timerCycleWait` case, the wait a timer on a `<timeCycle>` binds. See
-  [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
+  version, adds the `timerCycleWait` case, the wait a timer on a `<timeCycle>` binds, and one optional
+  property, `fireCount` on a token, the fires so far of a scope listener re-armed for a counted timer cycle. A 1.8.0 payload reads
+  as before, with it absent. See [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
 
 Regenerate the schema after any model change:
 
