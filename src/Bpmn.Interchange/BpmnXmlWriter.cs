@@ -358,6 +358,8 @@ public sealed class BpmnXmlWriter
             AppendEventDefinition(throwEvent, element, message, context, isCatch: false);
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
             AppendEventDefinition(throwEvent, element, signal, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Link) is { } link)
+            AppendEventDefinition(throwEvent, element, link, context, isCatch: false);
         return throwEvent;
     }
 
@@ -483,6 +485,14 @@ public sealed class BpmnXmlWriter
                         isMessage ? "messageRef" : "signalRef",
                         isMessage ? context.MessageDeclarationId(name) : context.SignalDeclarationId(name));
                 host.Add(child);
+                break;
+            }
+            case BpmnEventDefinitionTypes.Link:
+            {
+                var link = new XElement(BpmnXmlNames.Model + "linkEventDefinition");
+                if (Property(definition, BpmnEventDefinitionProperties.Name) is { } linkName)
+                    link.SetAttributeValue("name", linkName);
+                host.Add(link);
                 break;
             }
             case BpmnEventDefinitionTypes.Timer:

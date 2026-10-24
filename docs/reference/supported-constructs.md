@@ -61,7 +61,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code it catches: only that code, preferred over a catch-all in the same scope. One with no ref is the catch-all. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |
-| Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. |
+| Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. BPMN allows a link only on an intermediate throw or catch event. |
 
 ### End events
 
@@ -75,7 +75,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
 | Error | Supported | Throws the code its `errorRef` resolves to, or an error with no code when it has no ref. An error event subprocess of its own scope that declares the code, else the scope's catch-all, catches it and interrupts the scope; otherwise the scope faults with `bpmn.error.thrown` and `Fault.ErrorCode` set to the code, for the enclosing scope to catch. |
-| Conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
+| Conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. BPMN allows a link only on an intermediate throw or catch event. |
 
 ### Intermediate events
 
@@ -83,12 +83,14 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | Catch: timer | Supported | A one-shot `<timeDuration>` (a `timerWait`), a `<timeDate>` (a `timerDateWait`, firing once at that instant) or a `<timeCycle>` (a `timerCycleWait`, firing once, at the cycle's first occurrence). A catch with none of them usable is dropped. |
 | Catch: message, signal | Supported | Dropped when the name cannot be resolved. |
+| Catch: link | Supported | Where a link throw of the same `name` lands; it binds no work and routes its outgoing flows at once, as an unbound task would. Graph build refuses an incoming sequence flow (a link catch is reached only by a throw) and two catches with one name in a scope, naming the elements. Dropped when it has no name. |
 | Catch: anything else, or more than one definition | Dropped | |
 | Throw: message | Supported | Publishes by name; dropped when the name cannot be resolved, because a throw must say what it publishes. |
 | Throw: escalation | Supported | Requires a code; a ref-less escalation throw is dropped. |
 | Throw: signal | Supported | Broadcasts by name and continues: it binds `SignalPublish` work, and delivering the signal to its catchers is the host's. Dropped when the name cannot be resolved, because a throw must say what it broadcasts. |
 | Throw: compensation | Supported | A ref-less throw compensates everything registered; an `activityRef` is kept only when it names an element carrying a compensation boundary. |
-| Throw: anything else | Dropped | Only message, signal, escalation and compensate throws are supported. |
+| Throw: link | Supported | Jumps its token to the link catch of the same `name` in its own scope (a subprocess body is its own scope), within the same evaluation. The graph joins the two with a synthesized link flow, `link:<throw id>`, which `BpmnGraph.IsLinkFlow` names and `BpmnGraph.SequenceFlows` leaves out; a jump back to an earlier catch is a loop like any other, and a cycle made only of links is refused as one that can never wait. Graph build refuses an outgoing sequence flow and a name no catch in the scope has, naming the elements. Dropped when it has no name. A link binds no work. |
+| Throw: anything else | Dropped | Only message, signal, escalation, compensate and link throws are supported. |
 
 ## Boundary events
 

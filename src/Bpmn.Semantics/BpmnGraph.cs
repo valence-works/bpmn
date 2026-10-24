@@ -22,12 +22,14 @@ public sealed class BpmnGraph
     private readonly ILookup<string, BpmnSequenceFlow> _inboundByTarget;
     private readonly ILookup<string, BpmnElement> _boundariesByHost;
     private readonly IReadOnlySet<string> _backwardFlowIds;
+    private readonly IReadOnlySet<string> _linkFlowIds;
     private readonly IReadOnlyList<BpmnEventSubprocessCatcher> _eventSubprocesses;
 
     private BpmnGraph(
         BpmnProcessDefinition definition,
         IReadOnlyCollection<BpmnElement> elements,
         IReadOnlyCollection<BpmnSequenceFlow> sequenceFlows,
+        IReadOnlyCollection<BpmnSequenceFlow> linkFlows,
         IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef,
         bool isTransaction,
         IReadOnlyList<BpmnEventSubprocessCatcher> eventSubprocesses)
@@ -39,12 +41,17 @@ public sealed class BpmnGraph
         _boundWorkByRef = boundWorkByRef;
         _eventSubprocesses = eventSubprocesses;
         _elementsById = elements.ToDictionary(element => element.ElementId, StringComparer.Ordinal);
-        _flowsById = sequenceFlows.ToDictionary(flow => flow.FlowId, StringComparer.Ordinal);
+
+        // A link throw reaches its catch along a synthesized flow, so every rule that reasons about flows (routing,
+        // reachability, loop-back detection, the cycle-that-cannot-wait check) sees the jump as the edge it is.
+        var routingFlows = sequenceFlows.Concat(linkFlows).ToArray();
+        _linkFlowIds = linkFlows.Select(flow => flow.FlowId).ToHashSet(StringComparer.Ordinal);
+        _flowsById = routingFlows.ToDictionary(flow => flow.FlowId, StringComparer.Ordinal);
         _elementsByBindingRef = elements
             .Where(element => element.BindingRef is not null)
             .ToDictionary(element => element.BindingRef!, StringComparer.Ordinal);
-        _outboundBySource = sequenceFlows.ToLookup(flow => flow.SourceRef, StringComparer.Ordinal);
-        _inboundByTarget = sequenceFlows.ToLookup(flow => flow.TargetRef, StringComparer.Ordinal);
+        _outboundBySource = routingFlows.ToLookup(flow => flow.SourceRef, StringComparer.Ordinal);
+        _inboundByTarget = routingFlows.ToLookup(flow => flow.TargetRef, StringComparer.Ordinal);
         _boundariesByHost = elements
             .Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.BoundaryEvent) && element.AttachedToRef is not null)
             .ToLookup(element => element.AttachedToRef!, StringComparer.Ordinal);
@@ -70,7 +77,11 @@ public sealed class BpmnGraph
 
     public IReadOnlyCollection<BpmnElement> Elements { get; }
 
-    /// <summary>Every sequence flow in the process.</summary>
+    /// <summary>
+    /// Every sequence flow the definition declares. The synthesized link flows (see <see cref="IsLinkFlow"/>) are not
+    /// among them, although <see cref="OutboundFlows"/>, <see cref="InboundFlows"/> and <see cref="GetRequiredFlow"/>
+    /// include them.
+    /// </summary>
     public IReadOnlyCollection<BpmnSequenceFlow> SequenceFlows { get; }
 
     /// <summary>The process's start events.</summary>
@@ -117,8 +128,9 @@ public sealed class BpmnGraph
         var variableNames = definition.Variables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
+        var linkFlows = LinkFlows(elements, flows);
 
-        var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
+        var graph = new BpmnGraph(definition, elements, flows, linkFlows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
         graph.RefuseCyclesThatCannotWait();
         return graph;
     }
@@ -315,6 +327,88 @@ public sealed class BpmnGraph
         ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
         return _backwardFlowIds.Contains(flowId);
     }
+
+    /// <summary>
+    /// Whether <paramref name="flowId"/> is a synthesized link flow: the edge from a link throw to the link catch of the
+    /// same name in this scope, with the id <c>link:</c> followed by the throw's element id. A token that takes a
+    /// link jump reports that id as the flow it arrived by. The definition declares no such flow.
+    /// </summary>
+    public bool IsLinkFlow(string flowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
+        return _linkFlowIds.Contains(flowId);
+    }
+
+    /// <summary>The id of the synthesized flow a link throw jumps along: <c>link:</c> followed by the throw's element id, which no BPMN id can equal.</summary>
+    private static string LinkFlowId(string throwElementId) => $"link:{throwElementId}";
+
+    /// <summary>
+    /// Validates the scope's link events and returns one synthesized flow per link throw, from the throw to the link
+    /// catch of the same name. A link pairs throws and catches within one scope only; a subprocess body is its own
+    /// graph. Refuses, naming the elements and flows involved: a link event with no name or with bound work, two
+    /// catches with one name, a throw with no catch of its name, a sequence flow into a catch or out of a throw, and a
+    /// declared flow whose id is the one the throw's link flow needs.
+    /// </summary>
+    private static IReadOnlyCollection<BpmnSequenceFlow> LinkFlows(IReadOnlyCollection<BpmnElement> elements, IReadOnlyCollection<BpmnSequenceFlow> flows)
+    {
+        var throws = elements.Where(element => BpmnElementFamilies.Resolve(element) == BpmnElementFamilies.IntermediateThrowEventLink).ToArray();
+        var catches = elements.Where(element => BpmnElementFamilies.Resolve(element) == BpmnElementFamilies.IntermediateCatchEventLink).ToArray();
+        if (throws.Length == 0 && catches.Length == 0)
+        {
+            return [];
+        }
+
+        foreach (var link in throws.Concat(catches))
+        {
+            var kind = Array.IndexOf(throws, link) >= 0 ? "throw" : "catch";
+            if (LinkName(link) is null)
+                throw new BpmnExecutionException($"BPMN link {kind} event '{link.ElementId}' must declare a non-empty link name; the name is what pairs a throw with its catch.") { ElementIds = [link.ElementId] };
+            if (link.BindingRef is not null || link.ListenerBindingRef is not null)
+                throw new BpmnExecutionException($"BPMN link {kind} event '{link.ElementId}' cannot bind work; a link only moves the token to its catch.") { ElementIds = [link.ElementId] };
+        }
+
+        var catchesByName = new Dictionary<string, BpmnElement>(StringComparer.Ordinal);
+        foreach (var named in catches.GroupBy(element => LinkName(element)!, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            if (named.Count() > 1)
+                throw new BpmnExecutionException($"BPMN link catch events {string.Join(", ", named.Select(element => $"'{element.ElementId}'"))} share the link name '{named.Key}'; a scope may have only one catch per link name, so a throw knows where to jump.") { ElementIds = [.. named.Select(element => element.ElementId)] };
+            catchesByName[named.Key] = named.Single();
+        }
+
+        foreach (var linkCatch in catches)
+        {
+            var inbound = flows.Where(flow => StringComparer.Ordinal.Equals(flow.TargetRef, linkCatch.ElementId)).ToArray();
+            if (inbound.Length > 0)
+                throw new BpmnExecutionException($"BPMN link catch event '{linkCatch.ElementId}' has incoming sequence flows {string.Join(", ", inbound.Select(flow => $"'{flow.FlowId}'"))}; a link catch is reached only by a link throw.") { ElementIds = [linkCatch.ElementId, .. inbound.Select(flow => flow.FlowId)] };
+        }
+
+        var declaredFlowIds = flows.Select(flow => flow.FlowId).ToHashSet(StringComparer.Ordinal);
+        var linkFlows = new List<BpmnSequenceFlow>(throws.Length);
+        foreach (var linkThrow in throws)
+        {
+            var outbound = flows.Where(flow => StringComparer.Ordinal.Equals(flow.SourceRef, linkThrow.ElementId)).ToArray();
+            if (outbound.Length > 0)
+                throw new BpmnExecutionException($"BPMN link throw event '{linkThrow.ElementId}' has outgoing sequence flows {string.Join(", ", outbound.Select(flow => $"'{flow.FlowId}'"))}; a link throw continues only at its catch.") { ElementIds = [linkThrow.ElementId, .. outbound.Select(flow => flow.FlowId)] };
+
+            var name = LinkName(linkThrow)!;
+            if (!catchesByName.TryGetValue(name, out var linkCatch))
+                throw new BpmnExecutionException($"BPMN link throw event '{linkThrow.ElementId}' jumps to link '{name}', but no link catch event in its scope has that name.") { ElementIds = [linkThrow.ElementId] };
+
+            var flowId = LinkFlowId(linkThrow.ElementId);
+            if (declaredFlowIds.Contains(flowId))
+                throw new BpmnExecutionException($"BPMN sequence flow id '{flowId}' is the id of link throw event '{linkThrow.ElementId}''s link flow; rename the sequence flow.") { ElementIds = [flowId, linkThrow.ElementId] };
+
+            linkFlows.Add(new BpmnSequenceFlow(flowId, linkThrow.ElementId, linkCatch.ElementId));
+        }
+
+        return linkFlows;
+    }
+
+    /// <summary>The trimmed link name a link event's definition declares, or <c>null</c> when it declares none.</summary>
+    private static string? LinkName(BpmnElement element) =>
+        element.EventDefinitions.Single().Properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name.Trim()
+            : null;
 
     /// <summary>
     /// Classifies the graph's backward (loop-closing) sequence flows once at construction. A
@@ -533,11 +627,13 @@ public sealed class BpmnGraph
         {
             case BpmnElementFamilies.ParallelGateway:
             case BpmnElementFamilies.EventBasedGateway:
+            case BpmnElementFamilies.IntermediateThrowEventLink:
                 return outbound;
             case BpmnElementFamilies.ExclusiveGateway:
                 return BpmnFlowSelector.CertainExclusiveFlowOnArrival(element, outbound);
             case BpmnElementFamilies.Task:
             case BpmnElementFamilies.InclusiveGateway:
+            case BpmnElementFamilies.IntermediateCatchEventLink:
                 return BpmnFlowSelector.CertainTaskFlowsOnArrival(element, outbound);
             case BpmnElementFamilies.IntermediateThrowEventEscalation:
                 // Validation already refused a throw without a code; without one, nothing in the scope could catch it.

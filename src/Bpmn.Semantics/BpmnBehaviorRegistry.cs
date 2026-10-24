@@ -45,6 +45,8 @@ public sealed class BpmnBehaviorRegistry : IBpmnBehaviorRegistry
             new EscalationThrowEventBehavior(),
             new MessageThrowEventBehavior(),
             new SignalThrowEventBehavior(),
+            new LinkThrowEventBehavior(),
+            new LinkCatchEventBehavior(),
             new TaskBehavior(),
             new SubProcessBehavior(),
             new ExclusiveGatewayBehavior(),
