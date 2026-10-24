@@ -69,11 +69,12 @@ characteristics, a binding supplied twice. Those throw `BpmnExecutionException`;
 an undeclared capability throws `BpmnCapabilityException`. A graph that builds is a graph the
 interpreter is willing to run.
 
-A refusal's `ElementIds` lists the elements and sequence flows its message names, in the same order, so
-a host can point at them (mark them in a designer, say) without parsing the message. It is empty for a
-refusal about the definition as a whole, such as one with no start event, and it can name an element the
-definition does not contain when that absence is the defect, such as a flow's missing target. A
-`BpmnCapabilityException`'s ids are its `DrivingElementIds`.
+A refusal's `ElementIds` lists the elements and sequence flows it is about, so a host can point at them
+(mark them in a designer, say) without parsing the message. Most refusals list them in the order the
+message names them. A `BpmnCapabilityException` lists its `DrivingElementIds`, in their ordinal order.
+`ElementIds` is empty for a refusal about the definition as a whole, such as one with no start event. It
+can name an element the definition does not contain when that absence is the defect, such as a flow's
+missing target.
 
 #### A cycle must be able to wait
 
@@ -81,7 +82,8 @@ Cycles are executable, but one structural problem is specific to them. If every 
 passes a token straight on, a token that enters it is routed around the cycle forever within one
 evaluation, and the evaluation never returns to the host. `Build` refuses such a definition with a
 `BpmnExecutionException` that names the cycle's element ids in flow order, starting where the loop-back
-flow lands; its `ElementIds` are those ids, in that order.
+flow lands; its `ElementIds` are those ids, in that order, followed by the conditional flows the
+message says the cycle never takes.
 
 A cycle can wait when at least one element on it can hold a token:
 

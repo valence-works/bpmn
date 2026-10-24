@@ -18,17 +18,14 @@ public class BpmnExecutionException : Exception
     {
     }
 
-    /// <summary>Creates the exception with a message and the ids of the elements and sequence flows it is about.</summary>
-    public BpmnExecutionException(string message, IReadOnlyList<string> elementIds) : base(message)
-    {
-        ElementIds = elementIds;
-    }
-
     /// <summary>
-    /// The ids of the elements and sequence flows the exception is about, in the order its message names them. Empty
-    /// when it names none. An id can name an element the definition does not contain, when that absence is the defect.
+    /// The ids of the elements and sequence flows the exception is about, so a host can point at them without parsing
+    /// <see cref="Exception.Message"/>. Empty when it is about none of them, such as a definition with no start event.
+    /// An id can name an element the definition does not contain, when that absence is the defect. A capability refusal
+    /// lists its <see cref="BpmnCapabilityException.DrivingElementIds"/>, in their ordinal order; other refusals list
+    /// their ids in the order the message names them.
     /// </summary>
-    public IReadOnlyList<string> ElementIds { get; } = [];
+    public IReadOnlyList<string> ElementIds { get; init; } = [];
 }
 
 /// <summary>
@@ -45,8 +42,9 @@ public sealed class BpmnCapabilityException : BpmnExecutionException
 {
     /// <summary>Creates the exception from an unmet requirement set.</summary>
     public BpmnCapabilityException(string message, BpmnHostCapabilities missing, IReadOnlyList<string> drivingElementIds)
-        : base(message, drivingElementIds)
+        : base(message)
     {
+        ElementIds = drivingElementIds;
         Missing = missing;
         DrivingElementIds = drivingElementIds;
     }

@@ -49,6 +49,16 @@ public sealed class RefusalElementIdsTests
         Build(definition).ElementIds.ShouldBeEmpty();
     }
 
+    [Fact]
+    public void A_message_and_a_null_inner_exception_still_construct_one_with_no_ids()
+    {
+        // ElementIds is an init property rather than a constructor argument, so this call is not ambiguous.
+        var exception = new BpmnExecutionException("Refused.", null!);
+
+        exception.InnerException.ShouldBeNull();
+        exception.ElementIds.ShouldBeEmpty();
+    }
+
     private static BpmnExecutionException Build(BpmnProcessDefinition definition) =>
         Should.Throw<BpmnExecutionException>(() => BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), BpmnHostCapabilities.Full));
 }

@@ -65,8 +65,9 @@ public sealed class CyclesThatNeverWaitTests
 
         refusal.ShouldNotBeOfType<BpmnCapabilityException>("this is a structural refusal, not a missing capability");
         refusal.Message.ShouldContain($"has a cycle that can never wait: {expectedCycle}.");
-        refusal.ElementIds.Select(id => $"'{id}'").Append($"'{refusal.ElementIds[0]}'").ShouldBe(expectedCycle.Split(" -> "),
-            customMessage: "the ids are the cycle's elements, in the order the message names them");
+        var cycle = expectedCycle.Split(" -> ");
+        refusal.ElementIds.Take(cycle.Length - 1).Select(id => $"'{id}'").Append($"'{refusal.ElementIds[0]}'").ShouldBe(cycle,
+            customMessage: "the ids open with the cycle's elements, in the order the message names them");
     }
 
     [Fact]
@@ -75,10 +76,12 @@ public sealed class CyclesThatNeverWaitTests
         var (gatewayLoop, _) = Refused["gateways and an unbound task"]();
         var (selfLoop, _) = Refused["an unbound task looping on itself"]();
 
-        Should.Throw<BpmnExecutionException>(() => Build(gatewayLoop)).Message
-            .ShouldContain("'Check' binds no decision, so its conditional flow 'flow-Check-End' is never taken.");
-        Should.Throw<BpmnExecutionException>(() => Build(selfLoop)).Message
-            .ShouldNotContain("never taken", customMessage: "a cycle with no conditional flow has nothing to explain");
+        var gatewayRefusal = Should.Throw<BpmnExecutionException>(() => Build(gatewayLoop));
+        gatewayRefusal.Message.ShouldContain("'Check' binds no decision, so its conditional flow 'flow-Check-End' is never taken.");
+        gatewayRefusal.ElementIds.ShouldBe(["Merge", "Note", "Check", "flow-Check-End"], "the flows it never takes follow the cycle's elements");
+        var selfRefusal = Should.Throw<BpmnExecutionException>(() => Build(selfLoop));
+        selfRefusal.Message.ShouldNotContain("never taken", customMessage: "a cycle with no conditional flow has nothing to explain");
+        selfRefusal.ElementIds.ShouldBe(["Spin"]);
     }
 
     /// <summary>Each shape, and the cycle its refusal must name: in flow order, opening where the loop-back flow lands.</summary>
