@@ -212,6 +212,41 @@ public sealed class MessageEndEventBehavior : IBpmnElementBehavior
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ConsumeToken());
 }
 
+/// <summary>
+/// Signal intermediate throw event: a bound-work broadcast. On token arrival it starts the element's bound publish
+/// work; that work completes immediately (fire-and-continue), which routes the throw token's outbound flows by the
+/// shared task selection rules. Delivering the signal to its catchers is the host's. Graph validation guarantees
+/// the binding exists.
+/// </summary>
+public sealed class SignalThrowEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateThrowEventSignal;
+    public string DisplayName => "Signal Throw Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN signal throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
+}
+
+/// <summary>
+/// Signal end event: a bound-work broadcast with none-end semantics. On token arrival it starts the element's bound
+/// publish work; when that work completes the token is consumed. Graph validation guarantees the binding exists.
+/// </summary>
+public sealed class SignalEndEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.EndEventSignal;
+    public string DisplayName => "Signal End Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ConsumeToken());
+}
+
 /// <summary>Terminate end event: consume every live token and complete the process immediately.</summary>
 public sealed class TerminateEndEventBehavior : IBpmnElementBehavior
 {

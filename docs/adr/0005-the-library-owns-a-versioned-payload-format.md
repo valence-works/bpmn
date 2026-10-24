@@ -62,7 +62,8 @@ recorded in [ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synch
 Format 1.4.0 appends the `ConditionEvaluated` diagnostic kind for the same decision. Format 1.5.0
 appends the `ErrorThrown` and `ErrorCaught` diagnostic kinds, as recorded in
 [ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0 adds an optional
-`script` property on an element, a script task's format and body.
+`script` property on an element, a script task's format and body. Format 1.7.0 adds the `signalPublish`
+work-binding case, as recorded in [ADR 0007](0007-work-bindings-have-a-json-contract.md).
 
 ### What publishing it exposed
 

@@ -47,6 +47,16 @@ versioning and a reviewed schema diff. The previous uncontracted CLR/PascalCase 
 alternate accepted format; callers should use the published 1.2 contract. Existing 1.0/1.1 definitions
 and execution-state documents remain valid under the expanded schema.
 
+## Revisions
+
+**1.7.0: `signalPublish`.** A signal throw or signal end event binds the broadcast of its named signal,
+`BpmnWorkBinding.SignalPublish`, with the discriminator `signalPublish` and one property, `signalName`. It
+mirrors `messagePublish`; delivering the signal to every catcher stays the host's. Like a message
+publish it is ordinary bound work the host starts and completes, so it needs no host capability;
+`ScopeSignalling` is unrelated, being the escalation channel to an enclosing scope. The revision is additive:
+every 1.6.0 document is a valid 1.7.0 document. A reader that predates it rejects the new discriminator, as
+this ADR requires of any unknown kind, rather than reading the binding with its data lost.
+
 ## Alternatives considered
 
 **Let each host invent a discriminator and names.** Rejected for the same reason as ADR 0005: each

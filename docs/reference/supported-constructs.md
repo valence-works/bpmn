@@ -70,11 +70,12 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | None (plain) | Supported | Consumes a token; the process completes when none remain. |
 | Terminate | Supported | Ends the process, discarding remaining tokens and tearing down the work still running. Late child completions are ignored. |
 | Message | Supported | Publishes by name and ends. An unresolvable name degrades to a plain end event. |
+| Signal | Supported | Broadcasts by name and ends: it binds `SignalPublish` work, and delivering the signal to its catchers is the host's. An unresolvable `signalRef` degrades to a plain end event. |
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
 | Error | Supported | Throws the code its `errorRef` resolves to, or an error with no code when it has no ref. An error event subprocess of its own scope that declares the code, else the scope's catch-all, catches it and interrupts the scope; otherwise the scope faults with `bpmn.error.thrown` and `Fault.ErrorCode` set to the code, for the enclosing scope to catch. |
-| Signal, conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
+| Conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
 
 ### Intermediate events
 
@@ -85,8 +86,9 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Catch: anything else, or more than one definition | Dropped | |
 | Throw: message | Supported | Publishes by name; dropped when the name cannot be resolved, because a throw must say what it publishes. |
 | Throw: escalation | Supported | Requires a code; a ref-less escalation throw is dropped. |
+| Throw: signal | Supported | Broadcasts by name and continues: it binds `SignalPublish` work, and delivering the signal to its catchers is the host's. Dropped when the name cannot be resolved, because a throw must say what it broadcasts. |
 | Throw: compensation | Supported | A ref-less throw compensates everything registered; an `activityRef` is kept only when it names an element carrying a compensation boundary. |
-| Throw: signal, and everything else | Dropped | Only message, escalation and compensate throws are supported. |
+| Throw: anything else | Dropped | Only message, signal, escalation and compensate throws are supported. |
 
 ## Boundary events
 

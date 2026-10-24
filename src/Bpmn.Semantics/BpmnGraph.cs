@@ -629,6 +629,12 @@ public sealed class BpmnGraph
                     if (element.BindingRef is null)
                         throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{element.ElementId}' requires bound work (the send that publishes the message).") { ElementIds = [element.ElementId] };
                     break;
+                case BpmnElementFamilies.IntermediateThrowEventSignal:
+                case BpmnElementFamilies.EndEventSignal:
+                    // A signal throw/end is a bound-work broadcast — it binds the work that publishes the signal.
+                    if (element.BindingRef is null)
+                        throw new BpmnExecutionException($"BPMN signal {(StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{element.ElementId}' requires bound work (the broadcast that publishes the signal).") { ElementIds = [element.ElementId] };
+                    break;
             }
         }
 
@@ -1078,10 +1084,10 @@ public sealed class BpmnGraph
             : null;
 
     /// <summary>
-    /// Message throw/end rules. A message throw/end event is a bound-work send: its single message event
-    /// definition must carry a non-empty <c>name</c> (a send must say what it publishes), and it binds a synthesized
-    /// the work that publishes it (the bound-work requirement is enforced in the per-family switch above). Rejects
-    /// deterministically with the offending element named.
+    /// Message and signal throw/end rules. A message throw/end event is a bound-work send and a signal throw/end
+    /// event a bound-work broadcast: its single event definition must carry a non-empty <c>name</c> (a send or
+    /// broadcast must say what it publishes), and it binds the work that publishes it (the bound-work requirement
+    /// is enforced in the per-family switch above). Rejects deterministically with the offending element named.
     /// </summary>
     private static void ValidateMessageThrowEnd(IReadOnlyCollection<BpmnElement> elements)
     {
@@ -1089,6 +1095,12 @@ public sealed class BpmnGraph
         {
             if (ReadMessageName(sender) is null)
                 throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(sender.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{sender.ElementId}' must declare a non-empty message name; a send must say what it publishes.") { ElementIds = [sender.ElementId] };
+        }
+
+        foreach (var broadcaster in elements.Where(BpmnElementFamilies.IsSignalThrowOrEnd))
+        {
+            if (ReadMessageName(broadcaster) is null)
+                throw new BpmnExecutionException($"BPMN signal {(StringComparer.Ordinal.Equals(broadcaster.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{broadcaster.ElementId}' must declare a non-empty signal name; a broadcast must say what it publishes.") { ElementIds = [broadcaster.ElementId] };
         }
     }
 

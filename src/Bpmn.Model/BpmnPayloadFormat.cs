@@ -61,8 +61,13 @@ public static class BpmnPayloadFormat
     /// script task's <c>scriptFormat</c> and <c>&lt;script&gt;</c> body. A 1.5.0 document reads as before, with
     /// the property absent; one that carried a script as a retained foreign child still writes it back.
     /// </para>
+    /// <para>
+    /// 1.7.0 adds one work-binding case, <c>signalPublish</c> (<c>BpmnWorkBinding.SignalPublish</c>): the
+    /// broadcast a signal throw or signal end event binds. A 1.6.0 document reads as before; a reader that
+    /// predates 1.7.0 rejects the new discriminator rather than dropping the binding. See ADR 0007.
+    /// </para>
     /// </summary>
-    public const string Version = "1.6.0";
+    public const string Version = "1.7.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

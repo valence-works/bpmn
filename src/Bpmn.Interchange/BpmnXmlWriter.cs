@@ -342,6 +342,8 @@ public sealed class BpmnXmlWriter
             endEvent.Add(BuildErrorEventDefinition(element, error, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(endEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(endEvent, element, signal, context, isCatch: false);
         return endEvent;
     }
 
@@ -354,6 +356,8 @@ public sealed class BpmnXmlWriter
             throwEvent.Add(BuildEscalationEventDefinition(escalation, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(throwEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(throwEvent, element, signal, context, isCatch: false);
         return throwEvent;
     }
 
@@ -1077,6 +1081,7 @@ public sealed class BpmnXmlWriter
             BpmnWorkBinding.MessageWait wait when isMessage => Trimmed(wait.MessageName),
             BpmnWorkBinding.MessagePublish publish when isMessage => Trimmed(publish.MessageName),
             BpmnWorkBinding.SignalWait signal when !isMessage => Trimmed(signal.SignalName),
+            BpmnWorkBinding.SignalPublish broadcast when !isMessage => Trimmed(broadcast.SignalName),
             _ => null
         };
 

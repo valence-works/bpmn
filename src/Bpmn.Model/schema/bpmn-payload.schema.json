@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.6.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.7.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.6.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
-  "x-payloadFormatVersion": "1.6.0",
+  "description": "Version 1.7.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.7.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState",
@@ -1539,6 +1539,9 @@
           "$ref": "#/$defs/messagePublish"
         },
         {
+          "$ref": "#/$defs/signalPublish"
+        },
+        {
           "$ref": "#/$defs/callProcess"
         },
         {
@@ -1684,6 +1687,40 @@
       "required": [
         "kind",
         "definition",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "signalPublish": {
+      "type": "object",
+      "title": "SignalPublish",
+      "properties": {
+        "kind": {
+          "const": "signalPublish",
+          "type": "string"
+        },
+        "signalName": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "signalName",
         "processId",
         "elementId",
         "bindingRef",

@@ -432,6 +432,24 @@ public sealed class BpmnXmlReader
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
                         break;
                     }
+                    // A signal end event broadcasts and then ends, like a message end event; a signal it cannot
+                    // name degrades to a plain end event the same way.
+                    if (child.Element(BpmnXmlNames.Model + "signalEventDefinition") is { } signalEndDefinition)
+                    {
+                        var name = ResolveMessageSignalName(signalEndDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
+                        if (name is null)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Degraded, $"Signal end event '{id}' declares a signal event definition with no resolvable name (missing or unresolvable signalRef); it read as a plain end event.", id);
+                            elements.Add(new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(child)));
+                            break;
+                        }
+
+                        var bindingRef = context.Bind(new BpmnWorkBinding.SignalPublish(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, name));
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(child),
+                            bindingRef: bindingRef,
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
+                        break;
+                    }
                     // A cancel end event is only meaningful inside a transaction; outside one it degrades.
                     if (child.Element(BpmnXmlNames.Model + "cancelEventDefinition") is not null)
                     {
@@ -481,6 +499,21 @@ public sealed class BpmnXmlReader
                         elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
                             bindingRef: bindingRef, defaultFlowId: DefaultOf(child),
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
+                        break;
+                    }
+                    if (child.Element(BpmnXmlNames.Model + "signalEventDefinition") is { } signalThrowDefinition)
+                    {
+                        var name = ResolveMessageSignalName(signalThrowDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
+                        if (name is null)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Signal throw event '{id}' declares a signal event definition with no resolvable name (missing or unresolvable signalRef); a throw must say what it broadcasts, so it was dropped.", id);
+                            break;
+                        }
+
+                        var bindingRef = context.Bind(new BpmnWorkBinding.SignalPublish(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, name));
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
+                            bindingRef: bindingRef, defaultFlowId: DefaultOf(child),
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
                         break;
                     }
                     // Anything else is resolved in the compensate pass: a compensate throw with a resolvable
