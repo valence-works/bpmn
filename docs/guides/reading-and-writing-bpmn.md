@@ -311,6 +311,7 @@ foreach (var binding in result.Bindings)
         BpmnWorkBinding.MessageWait message    => $"await message '{message.MessageName}'",
         BpmnWorkBinding.SignalWait signal      => $"await signal '{signal.SignalName}'",
         BpmnWorkBinding.MessagePublish publish => $"publish message '{publish.MessageName}'",
+        BpmnWorkBinding.SignalPublish cast     => $"broadcast signal '{cast.SignalName}'",
         BpmnWorkBinding.CallProcess call       => $"call '{call.CalledElement}'" +
                                                   (call.WaitForCompletion ? " and wait" : ""),
         BpmnWorkBinding.NestedProcess nested   => $"run nested process '{nested.Definition.ProcessId}'",
@@ -454,7 +455,7 @@ var rewritten = writer.Write(definitions, bindings);
 The envelope belongs to the host. Its two components use the library's
 [published schema](../reference/packages.md#the-serialization-is-owned-and-versioned); validate each
 binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `messageWait`, `signalWait`,
-`messagePublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
+`messagePublish`, `signalPublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
 Keep `kind` first when a client rebuilds a binding object: the default serializer writes it there,
 and [System.Text.Json requires discriminator metadata first by default](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism).
 `slot` is numeric like other enums in the format: `0` for Primary and `1` for ScopeListener. Nested

@@ -120,7 +120,7 @@ public sealed class PayloadSchemaTests
         var branches = union["oneOf"]!.AsArray();
         var discriminatorValues = new List<string>();
 
-        branches.Count.ShouldBe(7);
+        branches.Count.ShouldBe(8);
 
         foreach (var branch in branches)
         {
@@ -136,6 +136,7 @@ public sealed class PayloadSchemaTests
             "messagePublish",
             "messageWait",
             "nestedProcess",
+            "signalPublish",
             "signalWait",
             "timerWait",
             "unboundTask"
@@ -218,7 +219,8 @@ public sealed class PayloadSchemaTests
             { nameof(BpmnWorkBinding), bindings[3] },
             { nameof(BpmnWorkBinding), bindings[4] },
             { nameof(BpmnWorkBinding), bindings[5] },
-            { nameof(BpmnWorkBinding), bindings[6] }
+            { nameof(BpmnWorkBinding), bindings[6] },
+            { nameof(BpmnWorkBinding), bindings[7] }
         };
     }
 
@@ -432,6 +434,7 @@ public sealed class PayloadSchemaTests
             new BpmnWorkBinding.MessageWait("process", "message", "message:listener", BpmnBindingSlot.ScopeListener, "Started"),
             new BpmnWorkBinding.SignalWait("process", "signal", "signal:primary", BpmnBindingSlot.Primary, "Ready"),
             new BpmnWorkBinding.MessagePublish("process", "publish", "publish:primary", BpmnBindingSlot.Primary, "Completed"),
+            new BpmnWorkBinding.SignalPublish("process", "broadcast", "broadcast:primary", BpmnBindingSlot.Primary, "Closed"),
             new BpmnWorkBinding.CallProcess("process", "call", "call:primary", BpmnBindingSlot.Primary, "called-process", WaitForCompletion: true),
             new BpmnWorkBinding.NestedProcess("process", "nested", "nested:primary", BpmnBindingSlot.Primary, process),
             new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask")

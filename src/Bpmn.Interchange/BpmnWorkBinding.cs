@@ -33,6 +33,7 @@ public enum BpmnBindingSlot
 [JsonDerivedType(typeof(BpmnWorkBinding.MessageWait), "messageWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.SignalWait), "signalWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.MessagePublish), "messagePublish")]
+[JsonDerivedType(typeof(BpmnWorkBinding.SignalPublish), "signalPublish")]
 [JsonDerivedType(typeof(BpmnWorkBinding.CallProcess), "callProcess")]
 [JsonDerivedType(typeof(BpmnWorkBinding.NestedProcess), "nestedProcess")]
 [JsonDerivedType(typeof(BpmnWorkBinding.UnboundTask), "unboundTask")]
@@ -73,6 +74,14 @@ public abstract record BpmnWorkBinding(
         string BindingRef,
         BpmnBindingSlot Slot,
         [property: JsonPropertyName("messageName")] string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+
+    /// <summary>A broadcast of a named signal: a signal throw event or signal end event. Delivery to every catcher is the host's.</summary>
+    public sealed record SignalPublish(
+        string ProcessId,
+        string ElementId,
+        string BindingRef,
+        BpmnBindingSlot Slot,
+        [property: JsonPropertyName("signalName")] string SignalName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A call activity: run a separately defined process the host resolves.</summary>
     public sealed record CallProcess(

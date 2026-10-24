@@ -38,6 +38,9 @@ public static class BpmnElementFamilies
     /// <summary>The message intermediate throw event family: a bound-work send — starts the bound publish work, then routes its outbound flows on that work's fire-and-continue completion.</summary>
     public const string IntermediateThrowEventMessage = "intermediateThrowEvent.message";
 
+    /// <summary>The signal intermediate throw event family: a bound-work broadcast — starts the bound publish work, then routes its outbound flows on that work's fire-and-continue completion.</summary>
+    public const string IntermediateThrowEventSignal = "intermediateThrowEvent.signal";
+
     /// <summary>The escalation end event family: raises an escalation to the enclosing scope, then consumes its token (none-end semantics).</summary>
     public const string EndEventEscalation = "endEvent.escalation";
 
@@ -46,6 +49,9 @@ public static class BpmnElementFamilies
 
     /// <summary>The message end event family: a bound-work send — starts the bound publish work, then consumes its token on that work's completion (none-end semantics).</summary>
     public const string EndEventMessage = "endEvent.message";
+
+    /// <summary>The signal end event family: a bound-work broadcast — starts the bound publish work, then consumes its token on that work's completion (none-end semantics).</summary>
+    public const string EndEventSignal = "endEvent.signal";
     public const string Task = "task";
     public const string SubProcess = "subProcess";
     public const string ExclusiveGateway = "exclusiveGateway";
@@ -148,6 +154,13 @@ public static class BpmnElementFamilies
          StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent)) &&
         element.EventDefinitions.Count == 1 &&
         StringComparer.Ordinal.Equals(element.EventDefinitions.Single().Type, BpmnEventDefinitionTypes.Message);
+
+    /// <summary>True when an element is a signal throw (intermediate) or signal end event: it carries exactly one signal event definition. A signal throw/end is a bound-work broadcast.</summary>
+    public static bool IsSignalThrowOrEnd(BpmnElement element) =>
+        (StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.IntermediateThrowEvent) ||
+         StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent)) &&
+        element.EventDefinitions.Count == 1 &&
+        StringComparer.Ordinal.Equals(element.EventDefinitions.Single().Type, BpmnEventDefinitionTypes.Signal);
 
     /// <summary>True when an element is an escalation throw (intermediate) or escalation end event: it carries exactly one escalation event definition.</summary>
     public static bool IsEscalationThrowOrEnd(BpmnElement element) =>
@@ -286,19 +299,21 @@ public static class BpmnElementFamilies
                 return EndEventEscalation;
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Message))
                 return EndEventMessage;
+            if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Signal))
+                return EndEventSignal;
             if (StringComparer.Ordinal.Equals(type, BpmnEventDefinitionTypes.Error))
                 return EndEventError;
         }
 
         throw new BpmnExecutionException(
-            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, and message end events are supported.");
+            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, message, and signal end events are supported.");
     }
 
     /// <summary>
     /// Resolves an intermediate throw event. Exactly one
-    /// <see cref="BpmnEventDefinitionTypes.Compensation"/> definition → the compensate throw family;
-    /// exactly one <see cref="BpmnEventDefinitionTypes.Escalation"/> definition → the escalation throw family
-    ///; any other (or no) definition is rejected.
+    /// <see cref="BpmnEventDefinitionTypes.Compensation"/>, <see cref="BpmnEventDefinitionTypes.Escalation"/>,
+    /// <see cref="BpmnEventDefinitionTypes.Message"/> or <see cref="BpmnEventDefinitionTypes.Signal"/> definition
+    /// → that throw family; any other (or no) definition is rejected.
     /// </summary>
     private static string ResolveIntermediateThrowEvent(BpmnElement element)
     {
@@ -313,9 +328,10 @@ public static class BpmnElementFamilies
             return IntermediateThrowEventEscalation;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Message))
             return IntermediateThrowEventMessage;
+        if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Signal))
+            return IntermediateThrowEventSignal;
 
-                // Message throws resolve above; this reports the remaining unsupported definition types (for example signal).
         throw new BpmnExecutionException(
-            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate and escalation throw events are supported.");
+            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate, escalation, message, and signal throw events are supported.");
     }
 }
