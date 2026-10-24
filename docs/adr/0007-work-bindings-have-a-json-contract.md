@@ -65,6 +65,14 @@ stays required and a host that only knows durations is never handed a wait witho
 additive: every 1.7.0 document is a valid 1.8.0 document, and a reader that predates it rejects the new
 discriminator rather than mistaking a date for a duration.
 
+**1.9.0: `timerCycleWait`.** A timer catch event, timer boundary event, or timer event-subprocess trigger
+declared with `<timeCycle>` binds a wait on a recurring schedule, `BpmnWorkBinding.TimerCycleWait`, with the
+discriminator `timerCycleWait`. `cycle` is the cycle as written, which a writer emits again verbatim; `isoDuration`
+or `cron`, `repetitions` and `start` are its parts, split but never interpreted, so a host schedules the cycle
+without parsing ISO-8601 repeating intervals itself. One wait ends at one occurrence. It is a new case for the same
+reason as `timerDateWait`: `timerWait.isoDuration` stays a one-shot delay. The revision is additive: every 1.8.0
+document is a valid 1.9.0 document.
+
 ## Alternatives considered
 
 **Let each host invent a discriminator and names.** Rejected for the same reason as ADR 0005: each

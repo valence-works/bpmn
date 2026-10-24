@@ -120,7 +120,7 @@ public sealed class PayloadSchemaTests
         var branches = union["oneOf"]!.AsArray();
         var discriminatorValues = new List<string>();
 
-        branches.Count.ShouldBe(9);
+        branches.Count.ShouldBe(10);
 
         foreach (var branch in branches)
         {
@@ -138,6 +138,7 @@ public sealed class PayloadSchemaTests
             "nestedProcess",
             "signalPublish",
             "signalWait",
+            "timerCycleWait",
             "timerDateWait",
             "timerWait",
             "unboundTask"
@@ -222,7 +223,9 @@ public sealed class PayloadSchemaTests
             { nameof(BpmnWorkBinding), bindings[5] },
             { nameof(BpmnWorkBinding), bindings[6] },
             { nameof(BpmnWorkBinding), bindings[7] },
-            { nameof(BpmnWorkBinding), bindings[8] }
+            { nameof(BpmnWorkBinding), bindings[8] },
+            { nameof(BpmnWorkBinding), bindings[9] },
+            { nameof(BpmnWorkBinding), bindings[10] }
         };
     }
 
@@ -440,7 +443,9 @@ public sealed class PayloadSchemaTests
             new BpmnWorkBinding.CallProcess("process", "call", "call:primary", BpmnBindingSlot.Primary, "called-process", WaitForCompletion: true),
             new BpmnWorkBinding.NestedProcess("process", "nested", "nested:primary", BpmnBindingSlot.Primary, process),
             new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask"),
-            new BpmnWorkBinding.TimerDateWait("process", "deadline", "deadline:primary", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z")
+            new BpmnWorkBinding.TimerDateWait("process", "deadline", "deadline:primary", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z"),
+            new BpmnWorkBinding.TimerCycleWait("process", "reminder", "reminder:primary", BpmnBindingSlot.Primary, "R3/PT1H", "PT1H", null, 3, null),
+            new BpmnWorkBinding.TimerCycleWait("process", "nightly", "nightly:listener", BpmnBindingSlot.ScopeListener, "0 0 2 * * ?", null, "0 0 2 * * ?", null, null)
         ];
     }
 

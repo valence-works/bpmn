@@ -33,7 +33,8 @@ public sealed class InMemoryBpmnHostOptions
     /// <para>
     /// A timer at a date (<c>timeDate</c>) needs one: the <see cref="VirtualClock"/> counts from zero and has no
     /// calendar to place an instant on, so without a supplied delay a date timer's work is left for the caller to
-    /// finish by hand.
+    /// finish by hand. A cycle (<c>timeCycle</c>) waits its period, the duration it carries as <c>interval</c>; it
+    /// ignores the cycle's start instant for the same reason, and a cron cycle, which has no period, needs one too.
     /// </para>
     /// </summary>
     public IReadOnlyDictionary<string, TimeSpan>? TimerDurations { get; set; }

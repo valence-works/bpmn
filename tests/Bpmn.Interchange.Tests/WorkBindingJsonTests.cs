@@ -73,7 +73,8 @@ public sealed class WorkBindingJsonTests
             new BpmnWorkBinding.NestedProcess("orders", "embedded", "node-embedded", BpmnBindingSlot.Primary, NestedDefinition()),
             new BpmnWorkBinding.UnboundTask("orders", "review", "node-review", BpmnBindingSlot.Primary, BpmnElementTypes.UserTask),
             new BpmnWorkBinding.SignalPublish("orders", "announce", "node-announce", BpmnBindingSlot.Primary, "Order closed"),
-            new BpmnWorkBinding.TimerDateWait("orders", "deadline", "node-deadline", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z")
+            new BpmnWorkBinding.TimerDateWait("orders", "deadline", "node-deadline", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z"),
+            new BpmnWorkBinding.TimerCycleWait("orders", "reminder", "node-reminder", BpmnBindingSlot.Primary, "R3/2026-01-01T00:00:00Z/PT1H", "PT1H", null, 3, "2026-01-01T00:00:00Z")
         ];
 
         var json = JsonSerializer.Serialize<IReadOnlyList<BpmnWorkBinding>>(bindings);
@@ -82,7 +83,7 @@ public sealed class WorkBindingJsonTests
 
         serializedBindings.ShouldAllBe(binding => binding.EnumerateObject().First().Name == "kind");
         serializedBindings.Select(binding => binding.GetProperty("kind").GetString()).ShouldBe(
-        ["timerWait", "messageWait", "signalWait", "messagePublish", "callProcess", "callProcess", "nestedProcess", "unboundTask", "signalPublish", "timerDateWait"]);
+        ["timerWait", "messageWait", "signalWait", "messagePublish", "callProcess", "callProcess", "nestedProcess", "unboundTask", "signalPublish", "timerDateWait", "timerCycleWait"]);
         serializedBindings[0].GetProperty("processId").GetString().ShouldBe("orders");
         serializedBindings[0].GetProperty("elementId").GetString().ShouldBe("delay");
         serializedBindings[0].GetProperty("bindingRef").GetString().ShouldBe("node-delay");
@@ -100,6 +101,11 @@ public sealed class WorkBindingJsonTests
         serializedBindings[7].GetProperty("taskType").GetString().ShouldBe(BpmnElementTypes.UserTask);
         serializedBindings[8].GetProperty("signalName").GetString().ShouldBe("Order closed");
         serializedBindings[9].GetProperty("isoDate").GetString().ShouldBe("2026-12-24T18:00:00Z");
+        serializedBindings[10].GetProperty("cycle").GetString().ShouldBe("R3/2026-01-01T00:00:00Z/PT1H");
+        serializedBindings[10].GetProperty("isoDuration").GetString().ShouldBe("PT1H");
+        serializedBindings[10].GetProperty("cron").ValueKind.ShouldBe(JsonValueKind.Null);
+        serializedBindings[10].GetProperty("repetitions").GetInt32().ShouldBe(3);
+        serializedBindings[10].GetProperty("start").GetString().ShouldBe("2026-01-01T00:00:00Z");
         serializedBindings[0].TryGetProperty("ProcessId", out _).ShouldBeFalse();
 
         var decoded = JsonSerializer.Deserialize<IReadOnlyList<BpmnWorkBinding>>(json);
@@ -119,6 +125,7 @@ public sealed class WorkBindingJsonTests
         decoded[7].ShouldBeOfType<BpmnWorkBinding.UnboundTask>().TaskType.ShouldBe(BpmnElementTypes.UserTask);
         decoded[8].ShouldBeOfType<BpmnWorkBinding.SignalPublish>().SignalName.ShouldBe("Order closed");
         decoded[9].ShouldBeOfType<BpmnWorkBinding.TimerDateWait>().IsoDate.ShouldBe("2026-12-24T18:00:00Z");
+        decoded[10].ShouldBe(bindings[10]);
 
         BpmnWorkBinding singleBinding = bindings[0];
         var singleJson = JsonSerializer.Serialize(singleBinding);

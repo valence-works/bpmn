@@ -22,10 +22,12 @@ public enum BpmnTimerStartScheduleKind
 /// </summary>
 public sealed record BpmnTimerStartSchedule
 {
-    private BpmnTimerStartSchedule(BpmnTimerStartScheduleKind kind, string expression)
+    private BpmnTimerStartSchedule(BpmnTimerStartScheduleKind kind, string expression, BpmnTimerCycle? cycle = null)
     {
         Kind = kind;
         Expression = expression;
+        Repetitions = cycle?.Repetitions;
+        Start = cycle?.Start;
     }
 
     /// <summary>Whether the start declares an interval, a cron expression or a date.</summary>
@@ -35,9 +37,20 @@ public sealed record BpmnTimerStartSchedule
     public string Expression { get; }
 
     /// <summary>
-    /// Resolves exactly one nonblank <c>interval</c>, <c>cron</c> or <c>date</c> property from a timer start event.
-    /// Throws <see cref="BpmnExecutionException"/> for a different element/definition or an ambiguous or
-    /// missing schedule. A host must still validate the expression against its scheduler before registration.
+    /// How many times the process starts, from a cycle's <c>R&lt;n&gt;/</c>; <c>null</c> when it starts without end, or for
+    /// a date, which starts it once. A host stops the trigger after this many starts.
+    /// </summary>
+    public int? Repetitions { get; }
+
+    /// <summary>The instant of the first start, from a cycle's <c>R[n]/&lt;start&gt;/&lt;duration&gt;</c>; <c>null</c> when the cycle does not say.</summary>
+    public string? Start { get; }
+
+    /// <summary>
+    /// Resolves exactly one nonblank <c>interval</c>, <c>cron</c> or <c>date</c> property from a timer start event,
+    /// with the repetition count and start instant of its <c>cycle</c>, when it declares one. A <c>cycle</c> with no
+    /// <c>interval</c> or <c>cron</c> beside it supplies them. Throws <see cref="BpmnExecutionException"/> for a different
+    /// element/definition, an ambiguous or missing schedule, or a cycle that does not parse or that its parts disagree
+    /// with. A host must still validate the expression against its scheduler before registration.
     /// </summary>
     public static BpmnTimerStartSchedule Resolve(BpmnElement element)
     {
@@ -47,10 +60,15 @@ public sealed record BpmnTimerStartSchedule
             throw new BpmnExecutionException($"BPMN element '{element.ElementId}' is not a timer start event.");
 
         var properties = element.EventDefinitions.Single().Properties;
+        var cycle = BpmnTimerCycleRules.Resolve(properties, $"BPMN timer start event '{element.ElementId}'", [element.ElementId]);
         var hasInterval = properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval)
             && !string.IsNullOrWhiteSpace(interval);
         var hasCron = properties.TryGetValue(BpmnEventDefinitionProperties.Cron, out var cron)
             && !string.IsNullOrWhiteSpace(cron);
+        if (cycle is not null && !hasInterval && !hasCron)
+        {
+            (hasInterval, interval, hasCron, cron) = (cycle.IsoDuration is not null, cycle.IsoDuration, cycle.Cron is not null, cycle.Cron);
+        }
         var hasDate = properties.TryGetValue(BpmnEventDefinitionProperties.Date, out var date)
             && !string.IsNullOrWhiteSpace(date);
 
@@ -59,10 +77,9 @@ public sealed record BpmnTimerStartSchedule
                 $"BPMN timer start event '{element.ElementId}' must declare exactly one of '{BpmnEventDefinitionProperties.Interval}', '{BpmnEventDefinitionProperties.Cron}' or '{BpmnEventDefinitionProperties.Date}'.");
 
         if (hasInterval)
-            return new BpmnTimerStartSchedule(BpmnTimerStartScheduleKind.Interval, interval!.Trim());
+            return new BpmnTimerStartSchedule(BpmnTimerStartScheduleKind.Interval, interval!.Trim(), cycle);
         if (hasDate)
             return new BpmnTimerStartSchedule(BpmnTimerStartScheduleKind.Date, date!.Trim());
-        return new BpmnTimerStartSchedule(BpmnTimerStartScheduleKind.Cron,
-            string.Join(' ', cron!.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)));
+        return new BpmnTimerStartSchedule(BpmnTimerStartScheduleKind.Cron, BpmnTimerCycleRules.CollapseWhitespace(cron!), cycle);
     }
 }
