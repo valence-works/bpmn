@@ -100,6 +100,19 @@ public sealed class SignalThrowTests
     }
 
     [Fact]
+    public void A_throw_or_end_with_two_signal_definitions_is_reported_not_read_as_one_broadcast()
+    {
+        var second = " signalRef=\"Sig_Closed\" /><bpmn:signalEventDefinition signalRef=\"Sig_Closed\"";
+        var read = _reader.Read(Document(second, second));
+
+        read.Bindings.ShouldNotContain(binding => binding is BpmnWorkBinding.SignalPublish);
+        read.Definitions.Processes.Single().Elements.ShouldNotContain(element => element.ElementId == "Announce");
+        Element(read, "Closed").EventDefinitions.ShouldBeEmpty();
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Announce" && issue.Severity == BpmnImportIssueSeverity.Dropped);
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Closed" && issue.Severity == BpmnImportIssueSeverity.Degraded);
+    }
+
+    [Fact]
     public void Both_are_written_back_with_their_signal_and_read_again_unchanged()
     {
         var first = _reader.Read(Resolvable);

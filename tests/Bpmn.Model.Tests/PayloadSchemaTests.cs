@@ -219,7 +219,8 @@ public sealed class PayloadSchemaTests
             { nameof(BpmnWorkBinding), bindings[3] },
             { nameof(BpmnWorkBinding), bindings[4] },
             { nameof(BpmnWorkBinding), bindings[5] },
-            { nameof(BpmnWorkBinding), bindings[6] }
+            { nameof(BpmnWorkBinding), bindings[6] },
+            { nameof(BpmnWorkBinding), bindings[7] }
         };
     }
 
