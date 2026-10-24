@@ -490,8 +490,15 @@ public sealed class BpmnXmlWriter
                 var timer = new XElement(BpmnXmlNames.Model + "timerEventDefinition");
                 var interval = Property(definition, BpmnEventDefinitionProperties.Interval) ?? context.TimerDurationFor(element);
                 var cron = Property(definition, BpmnEventDefinitionProperties.Cron);
+                var date = Property(definition, BpmnEventDefinitionProperties.Date) ?? (isCatch ? context.TimerDateFor(element) : null);
 
-                if (isCatch)
+                if (date is not null)
+                {
+                    // A timer at an instant, one-shot at every position: a start, a catch, a boundary or an
+                    // event-subprocess start.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeDate", date));
+                }
+                else if (isCatch)
                 {
                     // A catching timer is a one-shot relative delay.
                     if (interval is not null) timer.Add(new XElement(BpmnXmlNames.Model + "timeDuration", interval));
@@ -1074,6 +1081,10 @@ public sealed class BpmnXmlWriter
         /// <summary>The duration an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? TimerDurationFor(BpmnElement element) =>
             WorkFor(element) is BpmnWorkBinding.TimerWait timer && !string.IsNullOrWhiteSpace(timer.IsoDuration) ? timer.IsoDuration.Trim() : null;
+
+        /// <summary>The instant an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerDateFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerDateWait timer && !string.IsNullOrWhiteSpace(timer.IsoDate) ? timer.IsoDate.Trim() : null;
 
         /// <summary>The message or signal name an element's binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? EventNameFor(BpmnElement element, bool isMessage) => WorkFor(element) switch

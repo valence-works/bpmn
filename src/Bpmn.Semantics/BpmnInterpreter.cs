@@ -949,7 +949,8 @@ public sealed class BpmnInterpreter
     /// listener token is consumed (its work record was already dropped at the top of <see cref="OnWorkCompleted"/>).
     /// A <b>non-interrupting</b> catcher re-arms a fresh listener FIRST (deterministic ids from <c>Sequence</c>; timer
     /// repetition falls out of the re-arm loop, each arm a single one-shot timer) and then activates the body
-    /// non-interrupting alongside untouched scope work. An <b>interrupting</b> catcher does not re-arm: the activation's
+    /// non-interrupting alongside untouched scope work. A catcher that <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>,
+    /// a timer at a date, is not re-armed. An <b>interrupting</b> catcher does not re-arm: the activation's
     /// <see cref="StopOtherLiveWork"/> drains every other live token — including sibling scope listeners (ordinary live
     /// tokens there, their suspended work riding the carried teardowns) — before starting the body.
     /// </summary>
@@ -969,7 +970,7 @@ public sealed class BpmnInterpreter
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ScopeListenerFired, catcher.ElementId, null, listenerToken.TokenId,
             $"BPMN {(catcher.Interrupting ? "interrupting" : "non-interrupting")} {catcher.TriggerKind} scope listener for event subprocess '{catcher.ElementId}' fired.");
 
-        if (!catcher.Interrupting)
+        if (!catcher.Interrupting && !catcher.FiresOnce)
             state = ArmScopeListener(context, state, catcher, scopeInstanceId);
 
         var activation = ActivateEventSubprocess(context, graph, state, catcher, listenerToken.IterationKey,

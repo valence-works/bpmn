@@ -842,7 +842,11 @@ public sealed class BpmnGraph
                     throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' requires scope-listener work (a message/signal/timer event subprocess arms a suspending listener at scope start); none is bound.") { ElementIds = [element.ElementId] };
 
                 ValidateExternalTriggerDefinition(element, bodyStart, definitionType);
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, externalTriggerKind, Code: null, interrupting, element.ListenerBindingRef));
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, externalTriggerKind, Code: null, interrupting, element.ListenerBindingRef)
+                {
+                    FiresOnce = externalTriggerKind == BpmnEventSubprocessTriggerKind.Timer
+                                && HasNonBlank(bodyStart.EventDefinitions.Single().Properties, BpmnEventDefinitionProperties.Date)
+                });
             }
             else
             {
@@ -862,8 +866,8 @@ public sealed class BpmnGraph
 
     /// <summary>
     /// Validates a message/signal/timer event-subprocess body start's stimulus facts: message/signal
-    /// declare a non-empty <c>name</c>; a timer declares a non-empty <c>interval</c> (<c>timeDuration</c>-shaped) and
-    /// no <c>cron</c> (cyclic timers are not supported for event subprocesses).
+    /// declare a non-empty <c>name</c>; a timer declares a non-empty <c>interval</c> (<c>timeDuration</c>-shaped) or
+    /// <c>date</c> (<c>timeDate</c>-shaped), and no <c>cron</c> (cyclic timers are not supported for event subprocesses).
     /// </summary>
     private static void ValidateExternalTriggerDefinition(BpmnElement element, BpmnElement bodyStart, string definitionType)
     {
@@ -871,15 +875,21 @@ public sealed class BpmnGraph
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Timer))
         {
             if (properties.TryGetValue(BpmnEventDefinitionProperties.Cron, out var cron) && !string.IsNullOrWhiteSpace(cron))
-                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule; cron/timeCycle timers are not supported for event subprocesses (only a one-shot interval, re-armed per non-interrupting fire).") { ElementIds = [element.ElementId] };
-            if (!properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) || string.IsNullOrWhiteSpace(interval))
-                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval; a timer event subprocess needs a one-shot duration interval.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule; cron/timeCycle timers are not supported for event subprocesses (only a one-shot interval, re-armed per non-interrupting fire, or a date, which fires once).") { ElementIds = [element.ElementId] };
+            if (!HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && !HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval or date; a timer event subprocess needs a one-shot duration interval or a date.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
+            // Both would leave whether the listener re-arms after a non-interrupting fire to whichever one wins.
+            if (HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares both an interval and a date; a timer event subprocess needs exactly one.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
             return;
         }
 
         if (!properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) || string.IsNullOrWhiteSpace(name))
             throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no event name; a {definitionType} event subprocess resolves its stimulus from a non-empty name.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
     }
+
+    private static bool HasNonBlank(IReadOnlyDictionary<string, string> properties, string key) =>
+        properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value);
 
     /// <summary>
     /// Multi-instance loop rules: loop characteristics are valid only on a task-family or
@@ -1338,7 +1348,10 @@ public enum BpmnEventSubprocessTriggerKind
     /// <summary>A signal-triggered event subprocess: armed as a scope listener at scope start, fired by a named-event stimulus.</summary>
     Signal,
 
-    /// <summary>A timer-triggered event subprocess: armed as a scope listener at scope start (a one-shot <c>Delay</c>), re-armed per non-interrupting fire for repetition.</summary>
+    /// <summary>
+    /// A timer-triggered event subprocess: armed as a scope listener at scope start (a one-shot <c>Delay</c>). A duration
+    /// timer is re-armed per non-interrupting fire for repetition; a date timer fires once (see <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>).
+    /// </summary>
     Timer
 }
 
@@ -1358,6 +1371,12 @@ public sealed record BpmnEventSubprocessCatcher(
     bool Interrupting,
     string? ListenerBindingRef = null)
 {
+    /// <summary>
+    /// True when the listener fires at most once, so a non-interrupting fire does not re-arm it: a timer at a date,
+    /// whose instant has passed once it fired. Re-arming it would fire again at once, without end.
+    /// </summary>
+    public bool FiresOnce { get; init; }
+
     /// <summary>True when this catcher is an external-trigger listener (message/signal/timer): armed at scope start with the suspending work named by <see cref="ListenerBindingRef"/>. Escalation and error catchers are dormant.</summary>
     public bool IsExternalTrigger =>
         TriggerKind is BpmnEventSubprocessTriggerKind.Message or BpmnEventSubprocessTriggerKind.Signal or BpmnEventSubprocessTriggerKind.Timer;

@@ -57,6 +57,14 @@ publish it is ordinary bound work the host starts and completes, so it needs no 
 every 1.6.0 document is a valid 1.7.0 document. A reader that predates it rejects the new discriminator, as
 this ADR requires of any unknown kind, rather than reading the binding with its data lost.
 
+**1.8.0: `timerDateWait`.** A timer catch event, timer boundary event, or timer event-subprocess trigger
+declared with `<timeDate>` binds a wait that ends at an instant, `BpmnWorkBinding.TimerDateWait`, with the
+discriminator `timerDateWait` and one property, `isoDate`: the ISO-8601 instant as written, which the host
+parses and schedules. It is a new case rather than an optional field on `timerWait`, so `timerWait.isoDuration`
+stays required and a host that only knows durations is never handed a wait without one. The revision is
+additive: every 1.7.0 document is a valid 1.8.0 document, and a reader that predates it rejects the new
+discriminator rather than mistaking a date for a duration.
+
 ## Alternatives considered
 
 **Let each host invent a discriminator and names.** Rejected for the same reason as ADR 0005: each

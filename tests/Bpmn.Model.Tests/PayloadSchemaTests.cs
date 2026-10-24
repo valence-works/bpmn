@@ -120,7 +120,7 @@ public sealed class PayloadSchemaTests
         var branches = union["oneOf"]!.AsArray();
         var discriminatorValues = new List<string>();
 
-        branches.Count.ShouldBe(8);
+        branches.Count.ShouldBe(9);
 
         foreach (var branch in branches)
         {
@@ -138,6 +138,7 @@ public sealed class PayloadSchemaTests
             "nestedProcess",
             "signalPublish",
             "signalWait",
+            "timerDateWait",
             "timerWait",
             "unboundTask"
         ]);
@@ -220,7 +221,8 @@ public sealed class PayloadSchemaTests
             { nameof(BpmnWorkBinding), bindings[4] },
             { nameof(BpmnWorkBinding), bindings[5] },
             { nameof(BpmnWorkBinding), bindings[6] },
-            { nameof(BpmnWorkBinding), bindings[7] }
+            { nameof(BpmnWorkBinding), bindings[7] },
+            { nameof(BpmnWorkBinding), bindings[8] }
         };
     }
 
@@ -437,7 +439,8 @@ public sealed class PayloadSchemaTests
             new BpmnWorkBinding.SignalPublish("process", "broadcast", "broadcast:primary", BpmnBindingSlot.Primary, "Closed"),
             new BpmnWorkBinding.CallProcess("process", "call", "call:primary", BpmnBindingSlot.Primary, "called-process", WaitForCompletion: true),
             new BpmnWorkBinding.NestedProcess("process", "nested", "nested:primary", BpmnBindingSlot.Primary, process),
-            new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask")
+            new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask"),
+            new BpmnWorkBinding.TimerDateWait("process", "deadline", "deadline:primary", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z")
         ];
     }
 

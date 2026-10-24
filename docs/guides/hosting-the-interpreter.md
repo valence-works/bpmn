@@ -93,21 +93,24 @@ whenever it starts a root.
 
 #### Recurring timer starts
 
-Graph construction refuses a timer start unless it declares exactly one nonblank `interval` or
-`cron` property. Hosts registering recurring triggers use the same resolver:
+Graph construction refuses a timer start unless it declares exactly one nonblank `interval`,
+`cron` or `date` property. Hosts registering timer triggers use the same resolver:
 
 ```csharp
 var schedule = BpmnTimerStartSchedule.Resolve(timerStartElement);
-// schedule.Kind is BpmnTimerStartScheduleKind.Interval or Cron.
+// schedule.Kind is BpmnTimerStartScheduleKind.Interval, Cron or Date.
 // schedule.Expression is normalized for the host's scheduler.
 ```
 
-An interval is trimmed; cron whitespace between fields is collapsed to one space. Blank values
-count as absent. Resolution validates the schedule choice, not ISO-8601 or cron syntax: validate
+An interval or date is trimmed; cron whitespace between fields is collapsed to one space. Blank
+values count as absent. A `Date` start runs once, at that ISO-8601 instant; an `Interval` or `Cron`
+start recurs. Resolution validates the schedule choice, not ISO-8601 or cron syntax: validate
 the expression against your scheduler before registering it. The helper performs no scheduling
 and its result is not a new wire format. Event-subprocess timers retain their narrower rule:
-one nonblank interval and no nonblank cron, representing a one-shot listener re-armed on each
-non-interrupting fire. They are not recurring process-start registrations.
+one nonblank interval or date and no nonblank cron, representing a one-shot listener. A duration
+listener is re-armed on each non-interrupting fire; a date listener
+(`BpmnEventSubprocessCatcher.FiresOnce`) is not, because its instant has passed. They are not
+recurring process-start registrations.
 
 ### 2. A snapshot
 
