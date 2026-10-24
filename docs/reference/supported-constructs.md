@@ -25,7 +25,7 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | `task` | Supported | Abstract task; binds work and completes when the work completes. |
 | `userTask`, `serviceTask`, `manualTask`, `businessRuleTask` | Supported | The element is supported. What it *does* is the host's, bound through an `UnboundTask` work binding. |
-| `scriptTask` | Supported | The element is supported. The **script is not executed** — the host owns the script engine. |
+| `scriptTask` | Supported | The element is supported. Its `scriptFormat` and `<script>` body are modeled as `BpmnElement.Script` and round-trip, but the **script is not executed** — the host owns the script engine. |
 | `businessRuleTask` | Supported | The **decision is not evaluated**; there is no DMN here. |
 | `sendTask` | Supported | Publishes a named message and continues. |
 | `receiveTask` | Supported | Waits for a named message. |
@@ -186,7 +186,8 @@ graph-build time.
 - **DMN.** Business rule tasks are modeled; decisions are not evaluated.
 - **CMMN.**
 - **Expression and script languages.** FEEL, JUEL, JavaScript, Groovy — none, permanently. A host
-  evaluates condition expressions through `IBpmnConditionEvaluator` in its own language.
+  evaluates condition expressions through `IBpmnConditionEvaluator` in its own language, and runs a
+  script task's `BpmnElement.Script` in the work bound to it.
 - **Rendering.** Layout is preserved and synthesized, not drawn.
 - **Vendor server protocols.** This is not a client for anyone's engine.
 

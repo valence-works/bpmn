@@ -56,8 +56,13 @@ public static class BpmnPayloadFormat
     /// every existing value so none is renumbered. Execution state written by 1.5.0 may carry them; a 1.4.0
     /// document reads as before. See ADR 0012.
     /// </para>
+    /// <para>
+    /// 1.6.0 adds one optional property, <c>BpmnElement.Script</c>, with the new <c>BpmnScript</c> shape: a
+    /// script task's <c>scriptFormat</c> and <c>&lt;script&gt;</c> body. A 1.5.0 document reads as before, with
+    /// the property absent; one that carried a script as a retained foreign child still writes it back.
+    /// </para>
     /// </summary>
-    public const string Version = "1.5.0";
+    public const string Version = "1.6.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

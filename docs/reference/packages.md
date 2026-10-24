@@ -123,9 +123,11 @@ Three things a consumer generating types should know, all of them described in t
   kind, `ConditionEvaluated` (24), which execution state records for every condition expression the
   host evaluated; no existing value is renumbered. See
   [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md). Format
-  1.5.0, the current version, appends two more, `ErrorThrown` (25) and `ErrorCaught` (26), recorded when
+  1.5.0 appends two more, `ErrorThrown` (25) and `ErrorCaught` (26), recorded when
   an error end event throws and when an error catcher takes an error. See
-  [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md).
+  [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0, the current
+  version, adds one optional property, `script` on an element (the `bpmnScript` shape), which carries a
+  script task's `scriptFormat` and `<script>` body. A 1.5.0 payload reads as before, with it absent.
 
 Regenerate the schema after any model change:
 

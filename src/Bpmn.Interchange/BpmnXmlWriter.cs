@@ -234,10 +234,12 @@ public sealed class BpmnXmlWriter
             foreach (var flowId in outgoing[element.ElementId])
                 InsertByRank(xmlElement, new XElement(BpmnXmlNames.Model + "outgoing", flowId));
             AppendLoopCharacteristics(xmlElement, element, context.Vendor);
+            if (element.Script is not null && StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+                AppendScript(xmlElement, element.Script, context);
 
             // A subprocess already had the nested process's retained content applied while its body was written.
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                ApplyExtensions(xmlElement, element.Extensions, context.Vendor);
+                ApplyExtensions(xmlElement, WithoutRetainedScript(element), context.Vendor);
 
             container.Add(xmlElement);
         }
@@ -807,6 +809,44 @@ public sealed class BpmnXmlWriter
         ApplyExtensions(element, expression.Extensions with { ForeignAttributes = [] }, context.Vendor);
         element.Add(new XText(expression.Body));
         return element;
+    }
+
+    /// <summary>
+    /// Writes a script task's <c>scriptFormat</c>, and its <c>&lt;script&gt;</c> when the script has a body or
+    /// retained content. A format-only script, which is what a read of a task without a <c>&lt;script&gt;</c>
+    /// produces, writes no element, so the next read models the same script.
+    /// </summary>
+    private static void AppendScript(XElement scriptTask, BpmnScript script, WriteContext context)
+    {
+        if (script.Format is not null)
+            scriptTask.SetAttributeValue("scriptFormat", script.Format);
+        if (script.Body.Length == 0 && script.Extensions.IsEmpty)
+            return;
+
+        var element = new XElement(BpmnXmlNames.Model + "script");
+        foreach (var attribute in script.Extensions.ForeignAttributes)
+            BpmnExtensionCapture.WriteAttribute(element, attribute);
+
+        ApplyExtensions(element, script.Extensions with { ForeignAttributes = [] }, context.Vendor);
+        element.Add(new XText(script.Body));
+        InsertByRank(scriptTask, element);
+    }
+
+    /// <summary>
+    /// Drops a <c>&lt;script&gt;</c> a pre-1.6.0 payload retained as a foreign child, for a script task whose
+    /// script is now modeled, so only one is written.
+    /// </summary>
+    private static BpmnExtensions WithoutRetainedScript(BpmnElement element)
+    {
+        if (element.Script is null || !StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+            return element.Extensions;
+
+        return element.Extensions with
+        {
+            ForeignChildren = element.Extensions.ForeignChildren
+                .Where(child => BpmnExtensionCapture.ToXName(child.Element.Name) != BpmnXmlNames.Model + "script")
+                .ToList()
+        };
     }
 
     /// <summary>

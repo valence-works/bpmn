@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.5.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.6.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.5.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
-  "x-payloadFormatVersion": "1.5.0",
+  "description": "Version 1.6.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.6.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState",
@@ -578,6 +578,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "script": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnScript"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "extensions": {
@@ -1253,6 +1263,29 @@
       },
       "required": [
         "localName"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnScript": {
+      "type": "object",
+      "title": "BpmnScript",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "body",
+        "extensions"
       ],
       "additionalProperties": false
     },

@@ -406,6 +406,18 @@ the same shape that names another outcome, such as `outcome == 'Rejected'` on a 
 `<conditionExpression>` with no generated predicate beside it, and never evaluated, while
 `vw:conditionOutcome` still decides the route.
 
+A script task's `scriptFormat` and `<script>` are modeled the same way, as `BpmnElement.Script`: the
+`Body` is read like an expression's, the `Format` is the task's `scriptFormat`, and any attributes or
+child elements on `<script>` are retained on the script. `Script` is `null` on a task that declares
+neither. A task with a format and no `<script>` reads with an empty body and writes no `<script>`. BPMN
+allows one `<script>`; a second one is reported as `Dropped` and not written back. The
+library never runs a script: the host that runs the task's bound work reads it from the element.
+
+> **Upgrading from payload format 1.5.0.** A script task's `<script>` used to be retained in
+> `element.Extensions.ForeignChildren`, and its `scriptFormat` was dropped. Both are now read into
+> `element.Script`. A 1.5.0 payload that still carries the script as a foreign child is written once
+> and reads back as a modeled script.
+
 What the writer does not do is reproduce the source byte for byte.
 
 **Lossless for content, lossy for formatting.** Preserved: element structure, names, values, document
