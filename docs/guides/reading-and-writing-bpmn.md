@@ -409,7 +409,8 @@ the same shape that names another outcome, such as `outcome == 'Rejected'` on a 
 A script task's `scriptFormat` and `<script>` are modeled the same way, as `BpmnElement.Script`: the
 `Body` is read like an expression's, the `Format` is the task's `scriptFormat`, and any attributes or
 child elements on `<script>` are retained on the script. `Script` is `null` on a task that declares
-neither. A task with a format and no `<script>` reads with an empty body and writes no `<script>`. The
+neither. A task with a format and no `<script>` reads with an empty body and writes no `<script>`. BPMN
+allows one `<script>`; a second one is reported as `Dropped` and not written back. The
 library never runs a script: the host that runs the task's bound work reads it from the element.
 
 > **Upgrading from payload format 1.5.0.** A script task's `<script>` used to be retained in

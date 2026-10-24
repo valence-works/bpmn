@@ -631,6 +631,8 @@ public sealed class BpmnXmlReader
                         {
                             Script = taskType == BpmnElementTypes.ScriptTask ? context.CaptureScript(child, ScriptOf(child)) : null
                         });
+                        if (taskType == BpmnElementTypes.ScriptTask && child.Elements(BpmnXmlNames.Model + "script").Count() is > 1 and var scriptCount)
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Script task '{id}' declares {scriptCount} script elements; BPMN allows at most one, so the first was read and the rest were dropped.", id);
                         if (taskType != BpmnElementTypes.Task)
                             context.Report(BpmnImportIssueSeverity.Info, $"{Capitalize(localName)} '{id}' declares no implementation; the host must supply the work bound to it.", id);
                         break;
@@ -1819,12 +1821,13 @@ public sealed class BpmnXmlReader
 
 
     /// <summary>
-    /// The children of one flow node the reader interprets: <see cref="IsFlowNodeChildConsumed"/>, plus a script
-    /// task's first <c>&lt;script&gt;</c>, which is read onto <see cref="BpmnElement.Script"/>. A second one,
-    /// which BPMN does not allow, stays retained.
+    /// The children of one flow node the reader interprets: <see cref="IsFlowNodeChildConsumed"/>, plus every
+    /// <c>&lt;script&gt;</c> of a script task. The first is read onto <see cref="BpmnElement.Script"/>; any further
+    /// one, which BPMN does not allow, is reported as dropped rather than retained, because the writer writes the
+    /// modeled script in place of a retained one.
     /// </summary>
     private static Func<XElement, bool> IsFlowNodeChildConsumedIn(XElement flowNode) =>
-        ScriptOf(flowNode) is { } script ? child => child == script || IsFlowNodeChildConsumed(child) : IsFlowNodeChildConsumed;
+        ScriptOf(flowNode) is not null ? child => child.Name == BpmnXmlNames.Model + "script" || IsFlowNodeChildConsumed(child) : IsFlowNodeChildConsumed;
 
     /// <summary>The first <c>&lt;script&gt;</c> of a <c>scriptTask</c>, or <c>null</c> for any other element or a task without one.</summary>
     private static XElement? ScriptOf(XElement flowNode) =>

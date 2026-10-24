@@ -237,6 +237,25 @@ public sealed class ScriptTaskTests
     }
 
     [Fact]
+    public void A_second_script_is_reported_as_dropped_and_not_written()
+    {
+        // BPMN allows one <script>. Retaining the second would not keep it either: the writer writes the modeled
+        // script in place of a retained one, so it would vanish on write without a finding.
+        var read = _reader.Read(TaskDocument("""
+            <bpmn:scriptTask id="Run" scriptFormat="text/javascript">
+              <bpmn:script>first = 1</bpmn:script>
+              <bpmn:script>second = 2</bpmn:script>
+            </bpmn:scriptTask>
+            """));
+
+        var run = Run(read);
+        run.Script.ShouldNotBeNull().Body.ShouldBe("first = 1");
+        run.Extensions.ForeignChildren.ShouldBeEmpty();
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Run" && issue.Severity == BpmnImportIssueSeverity.Dropped);
+        WrittenTask(_writer.Write(read)).Elements(Model + "script").ShouldHaveSingleItem().Value.ShouldBe("first = 1");
+    }
+
+    [Fact]
     public void A_pre_1_6_payload_with_a_retained_script_still_writes_it_once()
     {
         // Format 1.5.0 carried a script task's script as a retained foreign child, and dropped its format.
