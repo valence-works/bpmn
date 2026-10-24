@@ -433,8 +433,9 @@ public sealed class BpmnXmlReader
                         break;
                     }
                     // A signal end event broadcasts and then ends, like a message end event; a signal it cannot
-                    // name degrades to a plain end event the same way.
-                    if (child.Element(BpmnXmlNames.Model + "signalEventDefinition") is { } signalEndDefinition)
+                    // name degrades to a plain end event the same way. Only a sole signal definition is read as
+                    // one: beside another definition it falls through, so the other is reported, not lost.
+                    if (SoleEventDefinition(child, "signalEventDefinition") is { } signalEndDefinition)
                     {
                         var name = ResolveMessageSignalName(signalEndDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
                         if (name is null)
@@ -501,7 +502,9 @@ public sealed class BpmnXmlReader
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
                         break;
                     }
-                    if (child.Element(BpmnXmlNames.Model + "signalEventDefinition") is { } signalThrowDefinition)
+                    // As on an end event, only a sole signal definition is read as a broadcast; beside another
+                    // definition the throw goes to the compensate pass, which drops it with a finding.
+                    if (SoleEventDefinition(child, "signalEventDefinition") is { } signalThrowDefinition)
                     {
                         var name = ResolveMessageSignalName(signalThrowDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
                         if (name is null)
@@ -1825,6 +1828,12 @@ public sealed class BpmnXmlReader
         BpmnXmlNames.TaskLocalNamesToElementTypes.Values.Contains(elementType, StringComparer.Ordinal)
         || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.SubProcess)
         || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.CallActivity);
+
+    /// <summary>The element's event definition of the given local name when it is the element's only one.</summary>
+    private static XElement? SoleEventDefinition(XElement element, string localName) =>
+        element.Elements().Where(IsEventDefinition).ToArray() is [var definition] && definition.Name == BpmnXmlNames.Model + localName
+            ? definition
+            : null;
 
     private static bool IsEventDefinition(XElement element) =>
         element.Name.Namespace == BpmnXmlNames.Model && element.Name.LocalName.EndsWith("EventDefinition", StringComparison.Ordinal);

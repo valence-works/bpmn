@@ -79,6 +79,27 @@ public sealed class SignalThrowTests
     }
 
     [Fact]
+    public void A_signal_throw_beside_another_definition_is_dropped_with_a_finding_not_read_as_a_broadcast()
+    {
+        var read = _reader.Read(Document(" signalRef=\"Sig_Closed\" /><bpmn:compensateEventDefinition", " signalRef=\"Sig_Closed\""));
+
+        read.Definitions.Processes.Single().Elements.ShouldNotContain(element => element.ElementId == "Announce");
+        read.Bindings.ShouldNotContain(binding => binding.ElementId == "Announce");
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Announce" && issue.Severity == BpmnImportIssueSeverity.Dropped);
+    }
+
+    [Fact]
+    public void A_signal_end_beside_another_definition_degrades_with_a_finding_not_read_as_a_broadcast()
+    {
+        var read = _reader.Read(Document(" signalRef=\"Sig_Closed\"", " signalRef=\"Sig_Closed\" /><bpmn:terminateEventDefinition"));
+
+        var closed = Element(read, "Closed");
+        closed.EventDefinitions.ShouldHaveSingleItem().Type.ShouldBe(BpmnEventDefinitionTypes.Terminate);
+        closed.BindingRef.ShouldBeNull();
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Closed" && issue.Severity == BpmnImportIssueSeverity.Degraded);
+    }
+
+    [Fact]
     public void Both_are_written_back_with_their_signal_and_read_again_unchanged()
     {
         var first = _reader.Read(Resolvable);
