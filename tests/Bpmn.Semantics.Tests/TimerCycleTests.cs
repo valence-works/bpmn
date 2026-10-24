@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Bpmn.Model;
+using Bpmn.Model.State;
 using Bpmn.Runtime.InMemory;
 using Shouldly;
 using Xunit;
@@ -7,7 +9,8 @@ namespace Bpmn.Semantics.Tests;
 
 /// <summary>
 /// A timer start on a cycle resolves its repetition count and start, a cycle is checked against the parts written beside
-/// it, and a timer catch, boundary or event subprocess on a cycle is accepted.
+/// it, and a timer catch, boundary or event subprocess on a cycle is accepted. A non-interrupting event subprocess on a
+/// counted cycle re-arms until it has fired its count, carried on the listener token across persisted state.
 /// </summary>
 public sealed class TimerCycleTests
 {
@@ -91,19 +94,169 @@ public sealed class TimerCycleTests
     }
 
     [Theory]
-    [InlineData("R3/PT1H")]
-    [InlineData("R/PT1H")]
-    [InlineData("0 0 9 * * ?")]
-    public void A_timer_event_subprocess_on_a_cycle_is_accepted(string cycle)
+    [InlineData("R3/PT1H", 3)]
+    [InlineData("R/PT1H", null)]
+    [InlineData("0 0 9 * * ?", null)]
+    public void A_timer_event_subprocess_on_a_cycle_is_accepted_with_its_count(string cycle, int? repetitions)
     {
         var catcher = BpmnGraph.Build(EventSubprocessParent(), EventSubprocessBoundWork(EventSubprocessBody(Cycle(cycle))), BpmnHostCapabilities.Full)
             .ExternalTriggerEventSubprocesses.ShouldHaveSingleItem();
 
         catcher.TriggerKind.ShouldBe(BpmnEventSubprocessTriggerKind.Timer);
         catcher.FiresOnce.ShouldBeFalse();
+        catcher.Repetitions.ShouldBe(repetitions);
     }
 
+    // --- Event-subprocess repetitions ------------------------------------------------------------------
+
+    [Fact]
+    public void A_non_interrupting_counted_cycle_event_subprocess_fires_its_count_and_then_stops_re_arming()
+    {
+        var run = new EventSubprocessRun(EventSubprocessGraph(Cycle("R3/PT1H")));
+
+        var fires = Enumerable.Range(0, 3).Select(_ => run.FireListener()).ToArray();
+
+        fires.Select(StartedBindings).ShouldBe(
+        [
+            ["timer-handler", "timer-listener"],
+            ["timer-handler", "timer-listener"],
+            ["timer-handler"]
+        ]);
+        run.State.Tokens.ShouldNotContain(token => token.Kind == BpmnTokenKind.Listener && token.Status == BpmnTokenStatus.AwaitingChild);
+        run.Live.ShouldNotContain(work => work.BindingRef == "timer-listener");
+
+        foreach (var body in run.Live.Where(work => work.BindingRef == "timer-handler").ToArray())
+        {
+            run.Complete(body);
+        }
+        var completed = run.Complete(run.Live.ShouldHaveSingleItem());
+
+        completed.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
+        completed.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldBeEmpty("no listener is left for completion to tear down");
+    }
+
+    [Fact]
+    public void A_non_interrupting_uncounted_cycle_event_subprocess_re_arms_after_every_fire()
+    {
+        var run = new EventSubprocessRun(EventSubprocessGraph(Cycle("R/PT1H")));
+
+        for (var fire = 1; fire <= 5; fire++)
+        {
+            StartedBindings(run.FireListener()).ShouldBe(["timer-handler", "timer-listener"]);
+        }
+        run.State.Tokens.ShouldAllBe(token => token.FireCount == null, "nothing bounds the cycle, so nothing counts its fires");
+    }
+
+    [Fact]
+    public void The_fire_count_survives_persisting_and_restoring_the_state_between_fires()
+    {
+        var run = new EventSubprocessRun(EventSubprocessGraph(Cycle("R3/PT1H")));
+        ArmedListener(run.State).FireCount.ShouldBeNull("the listener armed at scope start has not fired");
+
+        StartedBindings(run.FireListener()).ShouldContain("timer-listener");
+        run.Restore().ShouldContain("\"fireCount\":1");
+        StartedBindings(run.FireListener()).ShouldContain("timer-listener");
+        run.Restore().ShouldContain("\"fireCount\":2");
+        ArmedListener(run.State).FireCount.ShouldBe(2);
+
+        StartedBindings(run.FireListener()).ShouldBe(["timer-handler"]);
+        run.State.Tokens.ShouldNotContain(token => token.Kind == BpmnTokenKind.Listener && token.Status == BpmnTokenStatus.AwaitingChild);
+    }
+
+    [Fact]
+    public void An_interrupting_counted_cycle_event_subprocess_does_not_re_arm()
+    {
+        var run = new EventSubprocessRun(EventSubprocessGraph(Cycle("R3/PT1H"), interrupting: true));
+
+        var fired = run.FireListener();
+
+        StartedBindings(fired).ShouldBe(["timer-handler"]);
+        fired.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldContain(cancel => cancel.ElementId == "LongRunning");
+        run.State.Tokens.ShouldAllBe(token => token.FireCount == null);
+    }
+
+    [Fact]
+    public void A_non_interrupting_date_event_subprocess_still_fires_once()
+    {
+        var run = new EventSubprocessRun(EventSubprocessGraph(new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer,
+            Properties((BpmnEventDefinitionProperties.Date, "2026-12-24T18:00:00Z")))));
+
+        StartedBindings(run.FireListener()).ShouldBe(["timer-handler"]);
+        run.State.Tokens.ShouldAllBe(token => token.FireCount == null);
+    }
+
+    /// <summary>
+    /// Drives one scope through the interpreter as a host would, keeping the ledger of the work it started and has not
+    /// yet completed, so every evaluation sees an honest live-work snapshot.
+    /// </summary>
+    private sealed class EventSubprocessRun
+    {
+        private readonly BpmnGraph _graph;
+        private readonly BpmnInterpreter _interpreter = BpmnInterpreter.CreateDefault();
+        private readonly List<BpmnLiveWork> _live = [];
+
+        public EventSubprocessRun(BpmnGraph graph)
+        {
+            _graph = graph;
+            Apply(_interpreter.Start(new BpmnStartRequest(graph, null, Snapshot())));
+        }
+
+        public BpmnExecutionState State { get; private set; } = new();
+
+        public IReadOnlyList<BpmnLiveWork> Live => _live;
+
+        /// <summary>Fires the one armed timer listener.</summary>
+        public BpmnEvaluation FireListener() => Complete(_live.Single(work => work.BindingRef == "timer-listener"));
+
+        public BpmnEvaluation Complete(BpmnLiveWork work)
+        {
+            _live.Remove(work);
+            return Apply(_interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(_graph, State, Snapshot(), work.BindingRef, work.Handle, [])
+            {
+                WorkTokenId = work.WorkTokenId
+            }));
+        }
+
+        /// <summary>Writes the state as JSON and continues from what reads back, as a host persisting between callbacks does.</summary>
+        public string Restore()
+        {
+            var json = JsonSerializer.Serialize(State);
+            State = JsonSerializer.Deserialize<BpmnExecutionState>(json).ShouldNotBeNull();
+            return json;
+        }
+
+        private BpmnEvaluation Apply(BpmnEvaluation evaluation)
+        {
+            State = evaluation.State;
+            foreach (var start in evaluation.Commands.OfType<BpmnHostCommand.StartWork>())
+            {
+                _live.Add(new BpmnLiveWork(start.BindingRef, start.IterationScope?.IterationId, $"handle:{start.TokenId}") { WorkTokenId = start.TokenId });
+            }
+
+            foreach (var cancel in evaluation.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>())
+            {
+                _live.RemoveAll(work => work.Handle == cancel.Handle);
+            }
+            return evaluation;
+        }
+
+        private BpmnHostSnapshot Snapshot() =>
+            BpmnHostSnapshot.Root("scope-1") with { LiveWork = _live.ToArray() };
+    }
+
+    private static string[] StartedBindings(BpmnEvaluation evaluation) =>
+        evaluation.Commands.OfType<BpmnHostCommand.StartWork>()
+            .Select(command => command.BindingRef)
+            .OrderBy(binding => binding, StringComparer.Ordinal)
+            .ToArray();
+
+    private static BpmnToken ArmedListener(BpmnExecutionState state) =>
+        state.Tokens.Where(token => token.Kind == BpmnTokenKind.Listener && token.Status == BpmnTokenStatus.AwaitingChild).ShouldHaveSingleItem();
+
     // --- Fixtures --------------------------------------------------------------------------------------
+
+    private static BpmnGraph EventSubprocessGraph(BpmnEventDefinition timer, bool interrupting = false) =>
+        BpmnGraph.Build(EventSubprocessParent(), EventSubprocessBoundWork(EventSubprocessBody(timer, interrupting)), BpmnHostCapabilities.Full);
 
     private static BpmnProcessDefinition BoundaryProcess(BpmnEventDefinition timer, bool interrupting) =>
         new BpmnProcessBuilder("cycle-boundary")
@@ -117,9 +270,9 @@ public sealed class TimerCycleTests
             .ConnectSequence("Nudge", "Notify", "EndNotified")
             .Build();
 
-    private static BpmnProcessDefinition EventSubprocessBody(BpmnEventDefinition timer) =>
+    private static BpmnProcessDefinition EventSubprocessBody(BpmnEventDefinition timer, bool interrupting = false) =>
         new BpmnProcessBuilder("timer-event-subprocess-body")
-            .Element(new BpmnElement("BodyStart", BpmnElementTypes.StartEvent, cancelActivity: false, eventDefinitions: [timer]))
+            .Element(new BpmnElement("BodyStart", BpmnElementTypes.StartEvent, cancelActivity: interrupting, eventDefinitions: [timer]))
             .Task("BodyWork", bindingRef: "body-work")
             .EndEvent("BodyEnd")
             .ConnectSequence("BodyStart", "BodyWork", "BodyEnd")

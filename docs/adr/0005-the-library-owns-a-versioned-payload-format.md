@@ -64,7 +64,8 @@ appends the `ErrorThrown` and `ErrorCaught` diagnostic kinds, as recorded in
 [ADR 0012](0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0 adds an optional
 `script` property on an element, a script task's format and body. Format 1.7.0 adds the `signalPublish`
 work-binding case, as recorded in [ADR 0007](0007-work-bindings-have-a-json-contract.md). Format 1.8.0 adds
-the `timerDateWait` work-binding case, recorded there too, and format 1.9.0 the `timerCycleWait` case.
+the `timerDateWait` work-binding case, recorded there too, and format 1.9.0 the `timerCycleWait` case
+and an optional `fireCount` property on a token, which counts the fires of a scope listener re-armed for a counted timer cycle.
 
 ### What publishing it exposed
 

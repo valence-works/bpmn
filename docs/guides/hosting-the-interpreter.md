@@ -113,8 +113,11 @@ schedule choice, not ISO-8601 or cron syntax: validate the expression against yo
 registering it. The helper performs no scheduling and its result is not a new wire format.
 
 Event-subprocess timers take a cycle, or else one nonblank interval or date and no nonblank cron.
-A duration or cycle listener is re-armed on each non-interrupting fire, without end: the interpreter
-does not yet count a cycle's repetitions. A date listener (`BpmnEventSubprocessCatcher.FiresOnce`) is
+A duration or uncounted cycle listener is re-armed on each non-interrupting fire, without end. A
+counted cycle (`R<n>/`, `BpmnEventSubprocessCatcher.Repetitions`) is re-armed until it has fired n
+times: the re-armed listener token carries the fires so far as `BpmnToken.FireCount`, so a host that
+persists the state between fires keeps the count with it, and after the nth fire no listener work is
+started. Each arm is still one wait for one occurrence. A date listener (`BpmnEventSubprocessCatcher.FiresOnce`) is
 not re-armed, because its instant has passed. They are not recurring process-start registrations. A
 timer catch or boundary on a cycle binds a `timerCycleWait`, which ends at the cycle's first
 occurrence.

@@ -417,7 +417,7 @@ public sealed class PayloadSchemaTests
     /// </summary>
     private static BpmnExecutionState SampleExecutionState() =>
         new(
-            tokens: [new BpmnToken("tok:1", "work", flowId: "flow:1", status: BpmnTokenStatus.AwaitingChild, kind: BpmnTokenKind.Listener)],
+            tokens: [new BpmnToken("tok:1", "work", flowId: "flow:1", status: BpmnTokenStatus.AwaitingChild, kind: BpmnTokenKind.Listener) { FireCount = 1 }],
             activeWork: [new BpmnActiveWork("node:1", "work", "tok:1", "sequence-flow", iterationId: "iter:1")],
             diagnostics: [new BpmnDiagnosticEvent("diag:1", BpmnDiagnosticKind.Scheduled, "Scheduled work", elementId: "work", details: new Dictionary<string, string> { ["reason"] = "test" })],
             sequence: 7,
