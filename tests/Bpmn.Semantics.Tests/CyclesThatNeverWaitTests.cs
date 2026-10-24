@@ -65,6 +65,8 @@ public sealed class CyclesThatNeverWaitTests
 
         refusal.ShouldNotBeOfType<BpmnCapabilityException>("this is a structural refusal, not a missing capability");
         refusal.Message.ShouldContain($"has a cycle that can never wait: {expectedCycle}.");
+        refusal.ElementIds.Select(id => $"'{id}'").Append($"'{refusal.ElementIds[0]}'").ShouldBe(expectedCycle.Split(" -> "),
+            customMessage: "the ids are the cycle's elements, in the order the message names them");
     }
 
     [Fact]

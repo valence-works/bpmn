@@ -576,7 +576,9 @@ public sealed class ErrorCodeMatchingTests
             .Connect("Second", "SecondEnd")
             .Build();
 
-        Should.Throw<BpmnExecutionException>(() => BuildGraph(definition)).Message.ShouldContain(refusal);
+        var exception = Should.Throw<BpmnExecutionException>(() => BuildGraph(definition));
+        exception.Message.ShouldContain(refusal);
+        exception.ElementIds.ShouldBe(["Charge"]);
     }
 
     [Theory]
@@ -598,7 +600,9 @@ public sealed class ErrorCodeMatchingTests
             ["second"] = Handler("second", second)
         };
 
-        Should.Throw<BpmnExecutionException>(() => BuildGraph(definition, bodies)).Message.ShouldContain(refusal);
+        var exception = Should.Throw<BpmnExecutionException>(() => BuildGraph(definition, bodies));
+        exception.Message.ShouldContain(refusal);
+        exception.ElementIds.ShouldBe(["Second"]);
     }
 
     [Fact]
