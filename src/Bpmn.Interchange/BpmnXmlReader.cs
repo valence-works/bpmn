@@ -1205,6 +1205,9 @@ public sealed class BpmnXmlReader
                 context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer with no usable <timeDuration>, <timeDate> or <timeCycle>; it read as a plain start and the event subprocess was dropped.", id);
                 return null;
             }
+            // The interpreter re-arms a non-interrupting listener after every fire and cannot yet count them.
+            if (properties.TryGetValue(BpmnEventDefinitionProperties.Repetitions, out var repetitions) && !((bool?)child.Attribute("isInterrupting") ?? true))
+                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a non-interrupting timer cycle of {repetitions} repetitions; it re-arms after every fire without end, because the repetition count is not honoured yet.", id);
             return new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties);
         }
 
@@ -1533,6 +1536,10 @@ public sealed class BpmnXmlReader
                     context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' declares a timer event definition with no usable <timeDuration>, <timeDate> or <timeCycle>, so it was dropped.", id);
                     return null;
                 }
+
+                // A timer boundary fires once; re-arming a non-interrupting one for the cycle's later occurrences is not supported yet.
+                if (properties.ContainsKey(BpmnEventDefinitionProperties.Cycle) && !cancelActivity)
+                    context.Report(BpmnImportIssueSeverity.Degraded, $"Non-interrupting boundary event '{id}' declares a timer cycle; it fires once, at the cycle's first occurrence, because re-arming for later occurrences is not supported yet.", id);
 
                 var timerBindingRef = context.Bind(TimerWaitFor(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, properties));
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element), bindingRef: timerBindingRef,

@@ -69,7 +69,8 @@ public sealed class TimerCycleTests
         var definition = Element(read, id).EventDefinitions.ShouldHaveSingleItem();
         definition.Type.ShouldBe(BpmnEventDefinitionTypes.Timer);
         definition.Properties.ShouldBe(CycleProperties, ignoreOrder: true);
-        read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == id && issue.Severity != BpmnImportIssueSeverity.Info);
+        // The non-interrupting boundary's one finding is that it fires once; see the degraded-cycle test below.
+        read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == id && issue.Severity != BpmnImportIssueSeverity.Info && !issue.Message.Contains("fires once"));
     }
 
     [Theory]
@@ -111,6 +112,23 @@ public sealed class TimerCycleTests
         var body = read.Bindings.OfType<BpmnWorkBinding.NestedProcess>().Single(binding => binding.ElementId == "Reminder").Definition;
         body.Elements.Single(element => element.ElementId == "ReminderStart").EventDefinitions.ShouldHaveSingleItem()
             .Properties.ShouldBe(CycleProperties, ignoreOrder: true);
+    }
+
+    [Fact]
+    public void A_non_interrupting_cycle_whose_re_arming_is_not_counted_yet_is_reported_as_degraded()
+    {
+        var read = _reader.Read(Document(Cycle));
+
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "Nudge" && issue.Severity == BpmnImportIssueSeverity.Degraded && issue.Message.Contains("fires once"));
+        read.Analysis.Issues.ShouldContain(issue => issue.ElementId == "ReminderStart" && issue.Severity == BpmnImportIssueSeverity.Degraded && issue.Message.Contains("not honoured"));
+    }
+
+    [Fact]
+    public void An_interrupting_cycle_or_an_uncounted_event_subprocess_cycle_is_not_degraded()
+    {
+        var read = _reader.Read(Document("R/PT1H").Replace("cancelActivity=\"false\"", "cancelActivity=\"true\""));
+
+        read.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Degraded);
     }
 
     [Fact]
