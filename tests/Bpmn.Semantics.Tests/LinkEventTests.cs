@@ -47,6 +47,33 @@ public sealed class LinkEventTests
     }
 
     [Fact]
+    public void Two_throws_of_one_name_each_jump_to_their_catch_which_passes_each_token_on()
+    {
+        var definition = new BpmnProcessBuilder("two-throws")
+            .StartEvent("Start")
+            .ParallelGateway("Split")
+            .Task("Left", bindingRef: "left")
+            .Task("Right", bindingRef: "right")
+            .IntermediateThrowEvent("LeftGoes", Link("meet"))
+            .IntermediateThrowEvent("RightGoes", Link("meet"))
+            .IntermediateCatchEvent("Meet", Link("meet"))
+            .Task("After", bindingRef: "after")
+            .EndEvent("End")
+            .Connect("Start", "Split")
+            .ConnectSequence("Split", "Left", "LeftGoes")
+            .ConnectSequence("Split", "Right", "RightGoes")
+            .ConnectSequence("Meet", "After", "End")
+            .Build();
+        var instance = new InMemoryBpmnHost().Start(definition);
+
+        instance.CompleteWork("left");
+        PendingElements(instance).ShouldBe(["Right", "After"], ignoreOrder: true);
+
+        instance.CompleteWork("right");
+        PendingElements(instance).Count(element => element == "After").ShouldBe(2, "a link catch merges like a task: each arriving token passes on");
+    }
+
+    [Fact]
     public void The_graph_joins_a_throw_to_its_catch_with_a_link_flow_the_definition_does_not_declare()
     {
         var graph = Build(JumpOverTheGap());
