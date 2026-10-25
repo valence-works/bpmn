@@ -68,6 +68,14 @@ the three published payload roots or their format version. See
 [the host-port amendment](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-25-amendment-computed-host-values).
 It is not a change to the already published v0.4.0 packages.
 
+### Retained QName values
+
+The next v0.5.0 release carries optional namespace provenance for retained QName attribute values in
+payload format 1.10.0. Older JSON still reads without that metadata, but cannot recover lost namespace
+context. Export now refuses a recorded namespace collision rather than changing the value's meaning.
+See [the XML guide](../guides/reading-and-writing-bpmn.md#namespace-context-inside-retained-attribute-values)
+for the supported lexical grammar and limitations. This is separate from the host-value change above.
+
 ## The zero-dependency rule
 
 No shipped package references any external NuGet package. Not a JSON library, not a logging
@@ -96,7 +104,7 @@ The types everything else is expressed in.
 - **Layout**: `BpmnDiagram`, `BpmnPlane`, `BpmnShape`, `BpmnEdge`, `BpmnPoint`, `BpmnBounds`,
   `BpmnLabel`, `BpmnLayoutDefaults`.
 - **Retention**: `BpmnExtensions`, `BpmnQName`, `BpmnExtensionElement`, `BpmnForeignAttribute`,
-  `BpmnForeignChild`, `BpmnDocumentation`, `BpmnFidelity`.
+  `BpmnForeignChild`, `BpmnDocumentation`, `BpmnNamespaceBinding`, `BpmnFidelity`.
 - **Values**: `BpmnValue`, `BpmnValuePresence`, `BpmnValueTypes`.
 - **State** (`Bpmn.Model.State`): `BpmnExecutionState`, `BpmnToken`, `BpmnActiveWork`,
   `BpmnDiagnosticEvent`, `BpmnEventRace`, `BpmnLoopState`, `BpmnCompensable`, `BpmnCompensationRun`.
@@ -155,9 +163,13 @@ Three things a consumer generating types should know, all of them described in t
   property, `script` on an element (the `bpmnScript` shape), which carries a script task's `scriptFormat`
   and `<script>` body. A 1.5.0 payload reads as before, with it absent. Format 1.7.0 adds the
   `signalPublish` work-binding case, the broadcast a signal throw or signal end event binds. Format 1.8.0
-  adds the `timerDateWait` case, the wait a timer at a `<timeDate>` binds. Format 1.9.0, the current
-  version, adds the `timerCycleWait` case, the wait a timer on a `<timeCycle>` binds. See
-  [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
+  adds the `timerDateWait` case, the wait a timer at a `<timeDate>` binds. Format 1.9.0
+  adds the `timerCycleWait` case, the wait a timer on a `<timeCycle>` binds. See
+  [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md). Format 1.10.0, the current version,
+  adds optional `valueNamespaces` to retained attributes. Bound and observed unbound prefixes in
+  recognized QName values survive JSON transfer; older payloads omit that metadata. Consumers with
+  an older closed schema must upgrade. See
+  [ADR 0006](../adr/0006-vendor-extensions-are-retained-as-typed-data.md#2026-10-25-amendment-namespace-provenance-in-attribute-values).
 
 Regenerate the schema after any model change:
 

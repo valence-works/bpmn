@@ -165,8 +165,9 @@ foreach (var ns in definitions.Extensions.RetainedNamespaces())
     Console.WriteLine(ns);
 ```
 
-The reader emits one informational finding per retained namespace, so a user can see that their
-annotations survived rather than hoping.
+Import findings summarize retained foreign content by namespace. `RetainedNamespaces()` also includes
+resolved namespace context from recognized QName attribute values; those bindings do not each add an
+import finding and are not necessarily vendor or runtime dependencies.
 
 Retained subtrees are held as data — `BpmnExtensionElement` records with a name, attributes, children
 and text — rather than as live XML nodes. That is deliberate: data survives JSON serialization,
@@ -475,6 +476,22 @@ source-preserving parser, and a semantic round-trip that a diff tool can compare
 one that cannot. The test to write is "read, write, read again, compare the two models" — not
 "compare the two strings".
 
+### Namespace context inside retained attribute values
+
+Payload format 1.10.0 records namespace provenance for retained attribute values that are a single
+prefixed QName, such as `xsd:string`, or a whitespace-separated list of them. It preserves both bound
+and observed unbound prefixes through XML, model JSON, and XML again, including local shadowing.
+Namespace prefix choices in XML names may still change; prefixes inside these values keep their
+recorded meaning. Recognition is lexical: a value such as `urn:value` matches too, regardless of the
+vendor's type system, and can therefore be subject to collision refusal.
+
+If an observed unbound prefix collides with a required writer prefix, export throws
+`BpmnInterchangeException` rather than binding it silently. Arbitrary expressions, unprefixed QName
+values and QName text content are outside this recognition rule. Older JSON without provenance still
+reads, but cannot recover context discarded by an earlier import; re-import the original XML for that.
+See [the retention decision](../adr/0006-vendor-extensions-are-retained-as-typed-data.md#2026-10-25-amendment-namespace-provenance-in-attribute-values)
+for the metadata, collision and editing contract.
+
 ### Passing a document through JSON
 
 Transfer the definitions **and** bindings when a client needs to edit nested subprocesses or call
@@ -513,8 +530,8 @@ A short checklist for BPMN arriving from a modeling tool you do not control:
 
 1. `Analyze` first. Treat any `Dropped` finding as a question for a human.
 2. Check `Definitions.Exporter` — knowing which tool produced a file explains most of its oddities.
-3. Enumerate `Extensions.RetainedNamespaces()` at the document level. Vendor namespaces tell you what
-   the file assumes about its runtime.
+3. Enumerate `Extensions.RetainedNamespaces()` at the document level to inspect foreign content and
+   QName-value context. A datatype namespace alone does not imply a vendor runtime dependency.
 4. Enumerate `Bindings` and look for `UnboundTask`. Those are the elements that will not run until
    someone wires them.
 5. Look up anything exotic in [Supported BPMN constructs](../reference/supported-constructs.md)

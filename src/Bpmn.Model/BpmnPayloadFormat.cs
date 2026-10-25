@@ -80,8 +80,13 @@ public static class BpmnPayloadFormat
     /// already allowed. A 1.8.0 document reads as before; a reader that predates 1.9.0 rejects the new discriminator
     /// rather than dropping the binding. See ADR 0007.
     /// </para>
+    /// <para>
+    /// 1.10.0 adds the optional <c>BpmnForeignAttribute.ValueNamespaces</c> property and
+    /// <c>BpmnNamespaceBinding</c> shape, preserving namespace resolution for recognized QName tokens in retained
+    /// attribute values. A 1.9.0 document reads as before, with value-namespace provenance unknown.
+    /// </para>
     /// </summary>
-    public const string Version = "1.9.0";
+    public const string Version = "1.10.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

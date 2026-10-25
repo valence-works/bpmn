@@ -396,7 +396,16 @@ public sealed class PayloadSchemaTests
                         "urn:example:other-language",
                         new BpmnExtensions(ForeignAttributes:
                         [
-                            new BpmnForeignAttribute(new BpmnQName("http://www.w3.org/2001/XMLSchema-instance", "type"), "bpmn:tFormalExpression")
+                            new BpmnForeignAttribute(
+                                new BpmnQName("http://www.w3.org/2001/XMLSchema-instance", "type"),
+                                "bpmn:tFormalExpression unbound:VendorType")
+                            {
+                                ValueNamespaces =
+                                [
+                                    new BpmnNamespaceBinding("bpmn", "http://www.omg.org/spec/BPMN/20100524/MODEL"),
+                                    new BpmnNamespaceBinding("unbound", null)
+                                ]
+                            }
                         ]))
                 }
             ]

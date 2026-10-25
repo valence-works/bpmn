@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.9.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.10.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.9.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
-  "x-payloadFormatVersion": "1.9.0",
+  "description": "Version 1.10.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.10.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState",
@@ -864,6 +864,15 @@
         },
         "value": {
           "type": "string"
+        },
+        "valueNamespaces": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/bpmnNamespaceBinding"
+          }
         }
       },
       "required": [
@@ -1077,6 +1086,25 @@
       "required": [
         "flowId",
         "extensions"
+      ],
+      "additionalProperties": false
+    },
+    "bpmnNamespaceBinding": {
+      "type": "object",
+      "title": "BpmnNamespaceBinding",
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "ns": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "prefix"
       ],
       "additionalProperties": false
     },

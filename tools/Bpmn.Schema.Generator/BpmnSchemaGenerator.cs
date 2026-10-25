@@ -131,7 +131,7 @@ public static class BpmnSchemaGenerator
             // A property is required when the serializer always writes it and it can never be null.
             // Collections are never null in this model (an absent list is an empty list), so they are
             // required too, which is a real guarantee worth publishing rather than hiding.
-            if (!IsNullable(property))
+            if (!IsNullable(property) && !IsConditionallyIgnored(property))
                 required.Add(name);
         }
 
@@ -300,7 +300,7 @@ public static class BpmnSchemaGenerator
     public static IEnumerable<PropertyInfo> SerializedProperties(Type type) =>
         type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(p => p.GetMethod is not null && p.GetIndexParameters().Length == 0)
-            .Where(p => p.GetCustomAttribute<JsonIgnoreAttribute>() is null);
+            .Where(p => p.GetCustomAttribute<JsonIgnoreAttribute>()?.Condition != JsonIgnoreCondition.Always);
 
     /// <summary>
     /// The name on the wire.
@@ -326,6 +326,9 @@ public static class BpmnSchemaGenerator
 
         return Nullability.Create(property).ReadState is not NullabilityState.NotNull;
     }
+
+    private static bool IsConditionallyIgnored(PropertyInfo property) =>
+        property.GetCustomAttribute<JsonIgnoreAttribute>()?.Condition is JsonIgnoreCondition.WhenWritingDefault or JsonIgnoreCondition.WhenWritingNull;
 
     private static bool TryGetDictionaryValueType(Type type, out Type valueType)
     {

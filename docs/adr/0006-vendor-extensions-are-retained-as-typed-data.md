@@ -35,8 +35,9 @@ public sealed record BpmnExtensions(
     IReadOnlyList<BpmnForeignChild> ForeignChildren);
 ```
 
-Retention is on by default (`BpmnFidelity.Lossless`). The reader emits one informational diagnostic per
-retained namespace, so a user can see that their annotations survived rather than hoping.
+Retention is on by default (`BpmnFidelity.Lossless`). Import diagnostics summarize retained foreign
+content by namespace. `RetainedNamespaces()` also reports resolved QName-value namespace context;
+those bindings do not each generate another diagnostic.
 
 BPMN DI is typed for the same reason: shapes and edges both, with waypoints and label bounds, written
 back out in full.
@@ -82,3 +83,44 @@ case that is its main reason to exist.
 **Model known vendor extensions with typed schemas.** Rejected as scope the library should not take
 on. It would mean tracking three vendors' evolving formats, and the moment one changes, the library is
 wrong. Verbatim retention is correct for all vendors, forever, at a fraction of the cost.
+
+## 2026-10-25 amendment: namespace provenance in attribute values
+
+A prefix inside an attribute value is not merely formatting. For example, retaining `xsd:string`
+without its original `xmlns:xsd` changes how a QName consumer resolves the value. Keeping expanded
+element and attribute names alone does not preserve this information, including after a JSON transfer.
+
+`BpmnForeignAttribute.ValueNamespaces` therefore carries optional per-prefix provenance, as a list of
+`BpmnNamespaceBinding` records with `prefix` and `ns`. A null `ns` means the prefix was observed
+unbound at that attribute's source element. An absent `valueNamespaces` property means no provenance
+was recorded, as in legacy JSON or a manually built attribute. The new init property does not change
+the existing two-argument constructor or deconstruction; retained attributes compare and hash their
+provenance structurally.
+
+Capture recognizes a single prefixed QName or an XML-whitespace-separated list of prefixed QNames.
+Each token must consist of two valid XML NCNames separated by one colon. The whole value must match
+that grammar. Values outside it, such as `https://example.test/type` and arbitrary expressions, are
+opaque text. This is lexical recognition, not vendor schema typing: `urn:value` also matches, even if
+a vendor treats it as a plain string, and can trigger collision refusal. Resolve each prefix in its attribute's
+own scope, preserving local shadowing. Keep the lexical value, except for the existing normalization
+of BPMN `xsi:type` values; provenance then describes the normalized prefix.
+
+The writer restores bound mappings locally, reserves observed unbound prefixes from generated root
+prefixes, and checks their actual resolution before returning XML. A collision with a required fixed
+prefix, or incompatible bindings on one output element, raises `BpmnInterchangeException` rather than
+silently changing the value's meaning. This can reject an export that previously wrote misleading
+namespace context. In particular, an unbound `dc` token conflicts with the writer's required diagram
+namespace; changing the source or choosing a nonconflicting host vendor prefix where applicable is an
+explicit caller decision.
+
+This is a scoped fidelity guarantee. It does not interpret arbitrary vendor expression languages,
+unprefixed QName values that depend on a default namespace, or QName content in element text.
+Legacy JSON cannot reconstruct namespace context already lost; re-import the original XML to acquire
+provenance. A caller changing a retained attribute's value must update or clear its provenance too.
+The semantic-only import mode continues to discard foreign content.
+
+Unlike host-port `BpmnValue` JSON, retained attributes are reachable from the published payload roots.
+The optional metadata adds payload format **1.10.0** under [ADR 0005](0005-the-library-owns-a-versioned-payload-format.md),
+with the generated schema reviewed alongside it. Older payloads omit the metadata and still read;
+a consumer using the older closed schema must upgrade before accepting the new property. Package
+versioning and the stable v0.5.0 release are separate from the payload format.
