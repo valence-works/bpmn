@@ -131,7 +131,7 @@ described under [the continuation](#the-continuation) stops a run on which they 
 
 | Field | Holds |
 | --- | --- |
-| `Tokens` | Every token, live and historical, with status and position. |
+| `Tokens` | Live tokens and terminal records still needed by active work or late-callback matching. |
 | `ActiveWork` | The units of host work currently outstanding. |
 | `Diagnostics` | An ordered record of what was decided. |
 | `Sequence` | The counter every generated id is a pure function of. |
@@ -145,10 +145,15 @@ described under [the continuation](#the-continuation) stops a run on which they 
 Treat it as opaque. It serializes to JSON; the only rule is that the state you pass in is the state
 you last got out for that scope instance.
 
-Call `Prune()` before persisting. It removes consumed tokens no longer referenced by active work and
-diagnostics beyond `DiagnosticsCap` (200). Canceled tokens are never pruned: a stopped-work handle
-must remain available to recognize a late callback (see
-[Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
+Call `Prune()` before persisting. It removes consumed tokens no longer referenced by active work, canceled
+tokens with neither an unresolved stopped-work handle nor an active-work reference, and the oldest diagnostics
+beyond `DiagnosticsCap` (200). A canceled token with a stopped-work handle stays until a matching late completion
+or fault is absorbed and clears that handle; the token can then be removed at the next prune boundary. See
+[Callbacks for work already stopped](#callbacks-for-work-already-stopped) for the matching rule.
+
+Repeated loops can retire these canceled-token records as their late callbacks arrive. A callback that the host
+never delivers leaves its handle-bearing token in state without a fixed count or time limit, so pruning does not
+promise an unconditional bound on state size.
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
 against the same starting state and you get byte-identical state, not merely equivalent state.

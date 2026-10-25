@@ -264,11 +264,12 @@ it, for tests and samples.
 compensation log, and a sequence counter that every generated id derives from. Treat it as opaque. It
 serializes to JSON; persist it however you persist anything.
 
-Call `Prune()` before writing it. It removes consumed tokens no longer referenced by active work and
-diagnostics beyond the 200-entry cap. Canceled tokens are never pruned; their stopped-work handles
-must remain available to recognize a late callback. See
-[the host-port pruning rules](../concepts/host-port.md#the-prior-state). Pruning does not bump
-`Sequence` or change the schema, so record IDs stay a pure function of mutation order.
+Call `Prune()` before writing it. It removes consumed tokens no longer referenced by active work, canceled
+tokens whose stopped-work handle has been cleared and which active work no longer references, and diagnostics
+beyond the 200-entry cap. A stopped-work handle remains until its late callback is delivered; if a host never
+delivers that callback, the token stays without a fixed count or time limit. See
+[the host-port pruning rules](../concepts/host-port.md#the-prior-state). Pruning does not bump `Sequence` or
+change the schema, so record ids stay a pure function of mutation order.
 
 The only rule is that the state you pass in must be the state you last got out, for that scope
 instance.

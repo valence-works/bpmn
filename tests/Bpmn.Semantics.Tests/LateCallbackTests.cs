@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Bpmn.Model;
 using Bpmn.Model.State;
 using Shouldly;
@@ -30,11 +31,25 @@ public sealed class LateCallbackTests
 
     private static BpmnEvaluation Start(BpmnGraph graph) => Interpreter.Start(new BpmnStartRequest(graph, null, Scope()));
 
-    private static BpmnEvaluation Complete(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
-        Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, [], iterationId));
+    private static BpmnEvaluation Persist(BpmnEvaluation evaluation)
+    {
+        var pruned = evaluation.State.Prune();
+        var persisted = JsonSerializer.Deserialize<BpmnExecutionState>(JsonSerializer.Serialize(pruned))
+            ?? throw new InvalidOperationException("Pruning did not produce a serializable execution state.");
+        return evaluation with { State = persisted };
+    }
 
-    private static BpmnEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null) =>
-        Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, "boom") { FaultedIterationId = iterationId });
+    private static BpmnLiveWork StartedWork(BpmnEvaluation evaluation, string bindingRef, string handle)
+    {
+        var start = evaluation.Commands.OfType<BpmnHostCommand.StartWork>().Single(command => command.BindingRef == bindingRef);
+        return new BpmnLiveWork(start.BindingRef, start.IterationScope?.IterationId, handle) { WorkTokenId = start.TokenId };
+    }
+
+    private static BpmnEvaluation Complete(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null, string? workTokenId = null) =>
+        Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, [], iterationId) { WorkTokenId = workTokenId });
+
+    private static BpmnEvaluation Fault(BpmnGraph graph, BpmnEvaluation prior, string bindingRef, string handle, BpmnLiveWork[] liveWork, string? iterationId = null, string? workTokenId = null) =>
+        Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(graph, prior.State, Scope(liveWork), bindingRef, handle, "boom") { FaultedIterationId = iterationId, WorkTokenId = workTokenId });
 
     /// <summary>
     /// Asserts that <paramref name="late"/> asked the host for nothing and moved no token, and that it spent the
@@ -171,6 +186,163 @@ public sealed class LateCallbackTests
         var secondDone = Complete(graph, retried, "long", SecondPass.Handle, [SecondTimer, OtherUnit]);
         secondDone.State.Tokens.ShouldContain(token => token.AtElementId == "Long" && token.Status == BpmnTokenStatus.Canceled);
         return (graph, secondDone);
+    }
+
+    private static (BpmnGraph Graph, BpmnEvaluation Retried, BpmnLiveWork FirstPass, BpmnLiveWork CurrentPass, BpmnLiveWork CurrentTimer, BpmnLiveWork Other) RetriedNTimes(int retryCount)
+    {
+        var graph = BuildGraph(ProcessFixtures.RetriedOnTimeout());
+        var current = Persist(Start(graph));
+        var firstPass = StartedWork(current, "long", "h-long-1");
+        var pass = firstPass;
+        var timer = StartedWork(current, "timeout", "h-timeout-1");
+        var other = StartedWork(current, "other", "h-other");
+
+        for (var retry = 1; retry <= retryCount; retry++)
+        {
+            var timedOut = Complete(graph, current, "timeout", timer.Handle, [pass, other], workTokenId: timer.WorkTokenId);
+
+            timedOut.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldHaveSingleItem().Handle.ShouldBe(pass.Handle);
+            current = Persist(timedOut);
+            pass = StartedWork(timedOut, "long", $"h-long-{retry + 1}");
+            timer = StartedWork(timedOut, "timeout", $"h-timeout-{retry + 1}");
+        }
+
+        return (graph, current, firstPass, pass, timer, other);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Pruning_retry_boundaries_retains_each_late_callback_until_absorbed_then_removes_its_token(bool asFault)
+    {
+        const int retryCount = 5;
+        var (graph, retried, firstPass, currentPass, currentTimer, other) = RetriedNTimes(retryCount);
+        var firstCanceledToken = retried.State.Tokens.Single(token => token.StoppedHandle == firstPass.Handle);
+
+        retried.State.Tokens.Count(token => token.StoppedHandle is not null).ShouldBe(retryCount);
+        retried.State.Tokens.ShouldContain(token => token.StoppedHandle == firstPass.Handle);
+
+        var late = asFault
+            ? Fault(graph, retried, "long", firstPass.Handle, [currentPass, currentTimer, other], workTokenId: firstPass.WorkTokenId)
+            : Complete(graph, retried, "long", firstPass.Handle, [currentPass, currentTimer, other], workTokenId: firstPass.WorkTokenId);
+        ShouldHaveBeenAbsorbed(late, retried, firstPass.Handle);
+
+        var afterAbsorption = Persist(late);
+        afterAbsorption.State.Tokens.ShouldNotContain(token => token.TokenId == firstCanceledToken.TokenId);
+        afterAbsorption.State.Tokens.Count(token => token.StoppedHandle is not null).ShouldBe(retryCount - 1);
+        var currentPassTokenId = afterAbsorption.State.ActiveWork.Single(work => work.NodeId == currentPass.BindingRef).TokenId;
+        afterAbsorption.State.Tokens.ShouldContain(token => token.TokenId == currentPassTokenId && token.Status == BpmnTokenStatus.AwaitingChild);
+
+        var currentDone = Complete(graph, afterAbsorption, "long", currentPass.Handle, [currentTimer, other], workTokenId: currentPass.WorkTokenId);
+        currentDone.Continuation.ShouldBe(Defer);
+        currentDone.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>().ShouldHaveSingleItem().Handle.ShouldBe(currentTimer.Handle);
+        currentDone.State.ActiveWork.Select(work => work.NodeId).ShouldBe(["other"]);
+        var progressed = Persist(currentDone);
+
+        if (asFault)
+        {
+            Should.Throw<BpmnExecutionException>(() => Fault(graph, progressed, "long", firstPass.Handle, [other], workTokenId: firstPass.WorkTokenId));
+        }
+        else
+        {
+            Should.Throw<BpmnExecutionException>(() => Complete(graph, progressed, "long", firstPass.Handle, [other], workTokenId: firstPass.WorkTokenId));
+        }
+    }
+
+    [Fact]
+    public void Pruning_each_retry_and_delivering_each_late_callback_keeps_persisted_token_count_stable()
+    {
+        const int retryCount = 120;
+        var graph = BuildGraph(ProcessFixtures.RetriedOnTimeout());
+        var current = Persist(Start(graph));
+        var retainedTokenCount = current.State.Tokens.Count;
+        var pass = StartedWork(current, "long", "h-loop-long-1");
+        var timer = StartedWork(current, "timeout", "h-loop-timeout-1");
+        var other = StartedWork(current, "other", "h-other");
+
+        for (var retry = 1; retry <= retryCount; retry++)
+        {
+            var timedOut = Complete(graph, current, "timeout", timer.Handle, [pass, other], workTokenId: timer.WorkTokenId);
+            var nextPass = StartedWork(timedOut, "long", $"h-loop-long-{retry + 1}");
+            var nextTimer = StartedWork(timedOut, "timeout", $"h-loop-timeout-{retry + 1}");
+            var stoppedToken = timedOut.State.Tokens.Single(token => token.StoppedHandle == pass.Handle);
+            var afterTimeout = Persist(timedOut);
+
+            afterTimeout.State.Tokens.Single(token => token.TokenId == stoppedToken.TokenId).StoppedHandle.ShouldBe(pass.Handle);
+            afterTimeout.State.Tokens.Count.ShouldBe(retainedTokenCount + 1);
+
+            var late = retry % 2 == 0
+                ? Fault(graph, afterTimeout, "long", pass.Handle, [nextPass, nextTimer, other], workTokenId: pass.WorkTokenId)
+                : Complete(graph, afterTimeout, "long", pass.Handle, [nextPass, nextTimer, other], workTokenId: pass.WorkTokenId);
+            late.Continuation.ShouldBe(Defer);
+            late.State.Tokens.Single(token => token.TokenId == stoppedToken.TokenId).StoppedHandle.ShouldBeNull();
+
+            current = Persist(late);
+            current.State.Tokens.Count.ShouldBe(retainedTokenCount);
+            current.State.Tokens.ShouldNotContain(token => token.TokenId == stoppedToken.TokenId);
+            (current.State.Diagnostics.Count <= BpmnExecutionState.DiagnosticsCap).ShouldBeTrue();
+            pass = nextPass;
+            timer = nextTimer;
+        }
+
+        current.State.Diagnostics.Count.ShouldBe(BpmnExecutionState.DiagnosticsCap);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Pruning_an_event_gateway_loser_retains_it_until_absorbed_without_stopping_the_winner(bool asFault)
+    {
+        var definition = new BpmnProcessBuilder("event-gateway-pruned-loser")
+            .StartEvent("start")
+            .EventBasedGateway("race")
+            .IntermediateCatchEvent("winner-catch", new BpmnEventDefinition(BpmnEventDefinitionTypes.Message), bindingRef: "winner-catch-work")
+            .IntermediateCatchEvent("loser-catch", new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal), bindingRef: "loser-catch-work")
+            .Task("winner-work", bindingRef: "winner-work")
+            .EndEvent("end")
+            .Connect("start", "race")
+            .Connect("race", "winner-catch")
+            .Connect("race", "loser-catch")
+            .Connect("winner-catch", "winner-work")
+            .Connect("loser-catch", "end")
+            .Connect("winner-work", "end")
+            .Build();
+        var graph = BuildGraph(definition);
+        var started = Start(graph);
+        var winnerCatch = StartedWork(started, "winner-catch-work", "h-winner-catch");
+        var loserCatch = StartedWork(started, "loser-catch-work", "h-loser-catch");
+        var stoppedTokenId = loserCatch.WorkTokenId!;
+
+        var winnerCaught = Complete(graph, started, winnerCatch.BindingRef, winnerCatch.Handle, [loserCatch], workTokenId: winnerCatch.WorkTokenId);
+        winnerCaught.Commands.OfType<BpmnHostCommand.CancelWorkSubtree>()
+            .ShouldHaveSingleItem().ShouldBe(new BpmnHostCommand.CancelWorkSubtree(
+                loserCatch.Handle, "loser-catch", BpmnInterpreter.EventGatewayRaceCancellationReason));
+        winnerCaught.State.Races.ShouldHaveSingleItem().Resolved.ShouldBeTrue();
+        winnerCaught.State.Tokens.ShouldContain(token => token.TokenId == stoppedTokenId
+            && token.Status == BpmnTokenStatus.Canceled
+            && token.StoppedHandle == loserCatch.Handle);
+        var winnerWork = StartedWork(winnerCaught, "winner-work", "h-winner-work");
+
+        var persisted = Persist(winnerCaught);
+        persisted.State.Tokens.ShouldContain(token => token.TokenId == stoppedTokenId
+            && token.Status == BpmnTokenStatus.Canceled
+            && token.StoppedHandle == loserCatch.Handle,
+            "pruning must retain the canceled race member while its stopped handle can still report");
+        persisted.State.ActiveWork.ShouldContain(work => work.TokenId == winnerWork.WorkTokenId);
+
+        var late = asFault
+            ? Fault(graph, persisted, loserCatch.BindingRef, loserCatch.Handle, [winnerWork], workTokenId: loserCatch.WorkTokenId)
+            : Complete(graph, persisted, loserCatch.BindingRef, loserCatch.Handle, [winnerWork], workTokenId: loserCatch.WorkTokenId);
+        ShouldHaveBeenAbsorbed(late, persisted, loserCatch.Handle);
+        if (asFault)
+            late.ErrorDisposition.ShouldBe(BpmnErrorDisposition.Absorbed.Instance);
+
+        var afterAbsorption = Persist(late);
+        afterAbsorption.State.Tokens.ShouldNotContain(token => token.TokenId == stoppedTokenId);
+        afterAbsorption.State.ActiveWork.ShouldContain(work => work.TokenId == winnerWork.WorkTokenId);
+
+        var winnerDone = Complete(graph, afterAbsorption, winnerWork.BindingRef, winnerWork.Handle, [], workTokenId: winnerWork.WorkTokenId);
+        winnerDone.Continuation.ShouldBe(new BpmnContinuation.Complete(BpmnInterpreter.DoneOutcomeName));
     }
 
     [Fact]

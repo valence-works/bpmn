@@ -43,6 +43,19 @@ The four-way split exists mainly for the first row. A linter, a converter, a doc
 or a migration tool never takes the interpreter into its dependency closure, and that is the largest
 audience.
 
+## State-retention upgrade note on unreleased main
+
+After the published v0.4.0 baseline, `BpmnExecutionState.Prune()` also removes canceled tokens that no
+active work references and that carry no unresolved stopped-work handle. This changes retained execution
+history without changing the payload schema. Custom hosts must capture cancellation transitions from each evaluation's unpruned `State` before pruning;
+the reference host records them in `BpmnTranscriptEntry.TokenMoves`. UIs should use that captured history
+rather than rely on canceled tokens remaining in persisted `State.Tokens`. Carry this behavior change
+into the next release notes; it is not part of v0.4.0.
+
+A non-null stopped-work handle still retains its token until its late callback is absorbed. Hosts that
+never deliver that callback can still accumulate retained records; no count or time cap is introduced.
+See [the pruning contract](../concepts/host-port.md#the-prior-state).
+
 ## The zero-dependency rule
 
 No shipped package references any external NuGet package. Not a JSON library, not a logging
