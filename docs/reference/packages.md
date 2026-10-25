@@ -43,6 +43,19 @@ The four-way split exists mainly for the first row. A linter, a converter, a doc
 or a migration tool never takes the interpreter into its dependency closure, and that is the largest
 audience.
 
+## State-retention upgrade note on unreleased main
+
+After the published v0.4.0 baseline, `BpmnExecutionState.Prune()` also removes canceled tokens that no
+active work references and that carry no unresolved stopped-work handle. This changes retained execution
+history without changing the payload schema. Custom hosts must capture cancellation transitions from each evaluation's unpruned `State` before pruning;
+the reference host records them in `BpmnTranscriptEntry.TokenMoves`. UIs should use that captured history
+rather than rely on canceled tokens remaining in persisted `State.Tokens`. Carry this behavior change
+into the next release notes; it is not part of v0.4.0.
+
+A non-null stopped-work handle still retains its token until its late callback is absorbed. Hosts that
+never deliver that callback can still accumulate retained records; no count or time cap is introduced.
+See [the pruning contract](../concepts/host-port.md#the-prior-state).
+
 ## The zero-dependency rule
 
 No shipped package references any external NuGet package. Not a JSON library, not a logging
@@ -117,6 +130,21 @@ Three things a consumer generating types should know, all of them described in t
   `bpmnExecutionState`, and `bpmnWorkBinding`. Each is also listed under `x-roots` for code generators.
   Format 1.2.0 adds the binding root as a union of seven cases selected by `kind`; existing definition
   and execution-state shapes are unchanged. See [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
+  Format 1.3.0 adds optional properties only: `conditionExpression` on a sequence
+  flow (the `bpmnConditionExpression` shape) and `expressionLanguage` on the definitions and on each
+  process. A 1.2.0 payload reads as before, with them absent. Format 1.4.0 appends one diagnostic
+  kind, `ConditionEvaluated` (24), which execution state records for every condition expression the
+  host evaluated; no existing value is renumbered. See
+  [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md). Format
+  1.5.0 appends two more, `ErrorThrown` (25) and `ErrorCaught` (26), recorded when
+  an error end event throws and when an error catcher takes an error. See
+  [ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md). Format 1.6.0 adds one optional
+  property, `script` on an element (the `bpmnScript` shape), which carries a script task's `scriptFormat`
+  and `<script>` body. A 1.5.0 payload reads as before, with it absent. Format 1.7.0 adds the
+  `signalPublish` work-binding case, the broadcast a signal throw or signal end event binds. Format 1.8.0
+  adds the `timerDateWait` case, the wait a timer at a `<timeDate>` binds. Format 1.9.0, the current
+  version, adds the `timerCycleWait` case, the wait a timer on a `<timeCycle>` binds. See
+  [ADR 0007](../adr/0007-work-bindings-have-a-json-contract.md).
 
 Regenerate the schema after any model change:
 
@@ -142,10 +170,13 @@ See [Reading and writing BPMN XML](../guides/reading-and-writing-bpmn.md).
 
 - **Entry points**: `BpmnInterpreter` (`CreateDefault`, `Start`, `OnWorkCompleted`,
   `OnWorkFaulted`, `OnWorkSignalled`).
+- **Escalation signals**: `BpmnInterpreter.EscalationSignalCode`, `EscalationPayload` and
+  `TryReadEscalationCode`; see [Errors and escalation](../concepts/errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 - **Requests**: `BpmnStartRequest`, `BpmnWorkCompletedRequest`, `BpmnWorkFaultedRequest`,
   `BpmnWorkSignalledRequest`, `BpmnStartSignal`.
 - **Graph**: `BpmnGraph`, `BpmnBoundWork`.
-- **Results**: `BpmnEvaluation`, `BpmnFaultEvaluation`, `BpmnContinuation`, `BpmnErrorDisposition`.
+- **Results**: `BpmnEvaluation` (including its nullable `ErrorDisposition`), `BpmnContinuation`,
+  `BpmnErrorDisposition`.
 - **Commands**: `BpmnHostCommand.StartWork`, `.CancelWorkSubtree`, `.SignalEnclosingScope`.
 - **Host contract**: `BpmnHostSnapshot`, `BpmnLiveWork`, `BpmnIterationScope`,
   `IBpmnVariableReader`, `BpmnNoVariables`.

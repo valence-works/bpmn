@@ -25,17 +25,17 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | `task` | Supported | Abstract task; binds work and completes when the work completes. |
 | `userTask`, `serviceTask`, `manualTask`, `businessRuleTask` | Supported | The element is supported. What it *does* is the host's, bound through an `UnboundTask` work binding. |
-| `scriptTask` | Supported | The element is supported. The **script is not executed** — the host owns the script engine. |
+| `scriptTask` | Supported | The element is supported. Its `scriptFormat` and `<script>` body are modeled as `BpmnElement.Script` and round-trip, but the **script is not executed** — the host owns the script engine. |
 | `businessRuleTask` | Supported | The **decision is not evaluated**; there is no DMN here. |
 | `sendTask` | Supported | Publishes a named message and continues. |
 | `receiveTask` | Supported | Waits for a named message. |
 | `callActivity` | Supported | Behaves as a member of the task family; the host resolves and runs the called process. A `calledElement`-less call activity reads with an `Info` finding. |
-| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. |
+| `callActivity` failure mapping | Supported | The outcomes `Faulted`, `DispatchFailed` and `Cancelled` are translated into BPMN error handling instead of ordinary flow, so an enclosing error catcher can take them. A `Faulted` outcome carries the called process's error in `BpmnWorkCompletedRequest.ErrorCode`, so a coded catcher can match it; `DispatchFailed` and `Cancelled` carry no error and reach only catch-alls. The returned `BpmnEvaluation.ErrorDisposition` reports whether routing caught, propagated or absorbed the failure. |
 | `subProcess`, embedded | Supported | The nested body travels as a `NestedProcess` work binding. |
-| `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. |
+| `subProcess`, event (`triggeredByEvent`) | Supported | Error and escalation triggers are dormant catchers. Message, signal and timer triggers additionally get a `ListenerBindingRef`: work armed at scope start so the trigger can be observed while the scope runs. A timer trigger is a `<timeDuration>`, a `<timeDate>` or a `<timeCycle>` (a `timerCycleWait`). A non-interrupting duration or cycle trigger re-arms after each fire, without end: a cycle's repetition count is carried to the host but not yet counted by the interpreter, and the reader reports a counted (`R<n>`) non-interrupting cycle as Degraded. A date trigger fires once. |
 | `transaction` | Supported | Modeled as `subProcess` with `isTransaction: true`. May not also carry loop characteristics. |
 | Event subprocess with more than one start event | Dropped | The body must declare exactly one. |
-| Second error-triggered event subprocess in one scope | Dropped | At most one. The same rule applies to a second code-less catch-all escalation event subprocess, and to two event subprocesses claiming the same escalation code. |
+| Second code-less catch-all error event subprocess in one scope, or two claiming the same error code | Dropped | A scope may carry several error event subprocesses with distinct codes and at most one catch-all. The same rule applies to escalation event subprocesses. |
 | Non-interrupting error event subprocess | Dropped | BPMN does not allow it. |
 | `adHocSubProcess` | Dropped | Not part of the model the reader builds. |
 
@@ -57,11 +57,11 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | None (plain) | Supported | |
 | Message, signal | Supported | Matched on the resolved message or signal **name**. An unresolvable `messageRef` / `signalRef` degrades to a plain start. |
-| Timer | Supported | Must be a **recurring schedule**: exactly one nonblank ISO-8601 `interval` or `cron` expression. Graph build rejects a missing or ambiguous choice; `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts. A timer start that is not recurring degrades on import. |
-| Error (event subprocess body only) | Supported | An error-triggered event subprocess. |
+| Timer | Supported | A **recurring schedule** (`<timeCycle>`: an ISO-8601 repeating interval `R[n]/[start/]duration`, a bare duration, or a `cron` expression) or a **single start at a date** (`<timeDate>`: an ISO-8601 `date`). The cycle is kept as written in `cycle`, beside its `interval` or `cron`, its `repetitions` and its `start`. Exactly one nonblank `interval`, `cron` or `date`; graph build rejects a missing or ambiguous choice, and `BpmnTimerStartSchedule.Resolve` exposes the same rule to hosts (`Kind` is `Interval`, `Cron` or `Date`, with `Repetitions` and `Start` from the cycle; a host stops the trigger after `Repetitions` starts). A timer start with no usable cycle or date (a `<timeDuration>` start, or a cycle such as `R/<duration>/<end>`) degrades on import. |
+| Error (event subprocess body only) | Supported | An error-triggered event subprocess. Its `errorRef` resolves to the code it catches: only that code, preferred over a catch-all in the same scope. One with no ref is the catch-all. |
 | Escalation (event subprocess body only) | Supported | |
 | More than one event definition | Degraded | Reads with one trigger; the finding says which. |
-| Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. |
+| Conditional, link, and every other definition | Degraded | Reported as an unsupported definition and read as a plain start event. BPMN allows a link only on an intermediate throw or catch event. |
 
 ### End events
 
@@ -70,23 +70,27 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | None (plain) | Supported | Consumes a token; the process completes when none remain. |
 | Terminate | Supported | Ends the process, discarding remaining tokens and tearing down the work still running. Late child completions are ignored. |
 | Message | Supported | Publishes by name and ends. An unresolvable name degrades to a plain end event. |
+| Signal | Supported | Broadcasts by name and ends: it binds `SignalPublish` work, and delivering the signal to its catchers is the host's. An unresolvable `signalRef` degrades to a plain end event. |
 | Escalation | Supported | **Requires** a code; a ref-less escalation end is dropped. |
 | Cancel | Supported | Only inside a transaction. Outside one it degrades to a plain end event. |
 | Compensation | Supported | Triggers compensation replay; `activityRef` narrows the target, and an `activityRef` naming an element with no compensation boundary is dropped. |
-| **Error** | Degraded | There is no error end event. It reads as a plain end event with a finding. Raise an error by faulting the bound work instead. |
-| Signal, conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. |
+| Error | Supported | Throws the code its `errorRef` resolves to, or an error with no code when it has no ref. An error event subprocess of its own scope that declares the code, else the scope's catch-all, catches it and interrupts the scope; otherwise the scope faults with `bpmn.error.thrown` and `Fault.ErrorCode` set to the code, for the enclosing scope to catch. |
+| Conditional, link | Degraded | Reported as unsupported definitions; reads as a plain (or terminate) end event. BPMN allows a link only on an intermediate throw or catch event. |
 
 ### Intermediate events
 
 | Construct | Status | Notes |
 | --- | --- | --- |
-| Catch: timer | Supported | Requires a one-shot `<timeDuration>`. A timer catch without one is dropped. |
+| Catch: timer | Supported | A one-shot `<timeDuration>` (a `timerWait`), a `<timeDate>` (a `timerDateWait`, firing once at that instant) or a `<timeCycle>` (a `timerCycleWait`, firing once, at the cycle's first occurrence). A catch with none of them usable is dropped. |
 | Catch: message, signal | Supported | Dropped when the name cannot be resolved. |
+| Catch: link | Supported | Where a link throw of the same `name` lands; it binds no work and routes its outgoing flows at once, as an unbound task would. Graph build refuses an incoming sequence flow (a link catch is reached only by a throw) and two catches with one name in a scope, naming the elements. Dropped when it has no name. |
 | Catch: anything else, or more than one definition | Dropped | |
 | Throw: message | Supported | Publishes by name; dropped when the name cannot be resolved, because a throw must say what it publishes. |
 | Throw: escalation | Supported | Requires a code; a ref-less escalation throw is dropped. |
+| Throw: signal | Supported | Broadcasts by name and continues: it binds `SignalPublish` work, and delivering the signal to its catchers is the host's. Dropped when the name cannot be resolved, because a throw must say what it broadcasts. |
 | Throw: compensation | Supported | A ref-less throw compensates everything registered; an `activityRef` is kept only when it names an element carrying a compensation boundary. |
-| Throw: signal, and everything else | Dropped | Only message, escalation and compensate throws are supported. |
+| Throw: link | Supported | Jumps its token to the link catch of the same `name` in its own scope (a subprocess body is its own scope), within the same evaluation. The graph joins the two with a synthesized link flow, `link:<throw id>`, which `BpmnGraph.IsLinkFlow` names and `BpmnGraph.SequenceFlows` leaves out; a jump back to an earlier catch is a loop like any other, and a cycle made only of links is refused as one that can never wait. Graph build refuses an outgoing sequence flow and a name no catch in the scope has, naming the elements. Dropped when it has no name. A link binds no work. |
+| Throw: anything else | Dropped | Only message, signal, escalation, compensate and link throws are supported. |
 
 ## Boundary events
 
@@ -94,9 +98,9 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | --- | --- | --- |
 | Interrupting (`cancelActivity: true`) | Supported | The BPMN default. Terminates the host activity and routes the boundary path. |
 | Non-interrupting (`cancelActivity: false`) | Supported | The boundary path runs alongside the still-running activity. |
-| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. A boundary with no code catches any error. |
+| Error | Supported | **Always interrupting** — BPMN fixes this, and a non-interrupting error boundary is dropped. Its `errorRef` resolves to the code it catches: a coded boundary catches **only** that code, and wins over the host's catch-all. One with no code is the catch-all. A second code-less one on the same host, or a duplicate code, is dropped. |
 | Escalation | Supported | May be non-interrupting. A code-less boundary is the catch-all; a second code-less one on the same host, or a duplicate code, is dropped. |
-| Timer | Supported | Requires a one-shot `<timeDuration>`; without one it is dropped. |
+| Timer | Supported | A `<timeDuration>`, a `<timeDate>` or a `<timeCycle>` (a `timerCycleWait`); a boundary with none of them usable is dropped. Interrupting or not, a timer boundary fires once, a cycle boundary at its first occurrence: re-arming a non-interrupting cycle boundary for later occurrences is not supported yet, and the reader reports such a boundary as Degraded. |
 | Message, signal | Supported | Dropped when the name cannot be resolved. |
 | Cancel | Supported | Only on a transaction host, and at most one per transaction. |
 | Compensation | Supported | Must associate with a flow-less compensation handler activity, or it is dropped. |
@@ -109,9 +113,12 @@ if your host has not declared what it needs. See [Host capabilities](../concepts
 | Construct | Status | Notes |
 | --- | --- | --- |
 | `sequenceFlow` | Supported | Dropped when it is missing `sourceRef` / `targetRef`, or when either endpoint was dropped. |
-| Default flow | Supported | Taken only when no conditional flow matched. Declared on both sides: `defaultFlowId` on the element, `isDefault` on the flow. |
-| Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. |
-| Conditional flow, **expression-based** | Degraded | A `<conditionExpression>` is not evaluated; the flow reads as unconditional and the finding quotes the expression. The element itself is retained and written back (body, `language`, `xsi:type`, vendor attributes). This is a permanent design position, not a gap — see [Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions). |
+| Default flow | Supported | Taken only when no other flow was, and never evaluated. Marked by `defaultFlowId` on the element, `isDefault` on the flow, or both; a read document marks it on the element. |
+| Unconditional flow | Supported | Always taken from an activity or an inclusive gateway. On an exclusive gateway it counts as true in declaration order, so it is taken unless a flow declared before it holds first. Before 0.4.0 an exclusive gateway passed over it. |
+| Conditional flow, **outcome-based** | Supported | A flow with a `ConditionOutcome` is taken when the source element's completing work reported that outcome name. A token arriving at an element that binds no work reports none. |
+| Conditional flow, **expression-based** | Supported, requires `ConditionEvaluation` | A `<conditionExpression>` is modeled as `BpmnSequenceFlow.ConditionExpression` (body, `language`, and the rest retained: `xsi:type`, `id`, vendor attributes) and written back. The host evaluates it through `IBpmnConditionEvaluator`; the library never does. An exclusive gateway evaluates in declaration order and stops at the first true; an inclusive gateway and an activity evaluate every one. A failed answer faults the scope, except at an escalation throw an interrupting event subprocess of its own scope caught, whose onward routing is moot. A host that does not declare the [capability](../concepts/capabilities.md) is refused at graph build, naming the flows. A flow with a `conditionOutcome` as well is outcome-matched, and its expression is retained only and needs no capability. See [The host port](../concepts/host-port.md#conditions) and [ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md). |
+| Expression on a flow out of a start event, parallel gateway or event-based gateway | Not supported | These take every outgoing flow and evaluate nothing, so graph build refuses an expression-only flow out of one, naming the element and flow, whatever capabilities the host declares. |
+| No flow taken | Faults | An exclusive or inclusive gateway faults the scope with `bpmn.gateway.no-flow-selected`, and any other element with outgoing flows with `bpmn.flow.none-taken`, including an unbound task when a token arrives (before 0.4.0 that consumed the token silently). An escalation throw caught by an interrupting event subprocess of its own scope does not fault: the activation stops its successor anyway, so the token ends. An element with no outgoing flow is an implicit end. |
 | Cyclic flow (loop-backs) | Supported | A token traversing a backward flow mints a fresh iteration key; join accounting groups arrivals by element *and* iteration, so a revisited join never conflates one pass with the next. A cycle through a join, a compensate throw or a multi-instance activity can go around without waiting on some runs, with an empty collection for example; one evaluation stops after 10,000 dispatches and faults with `bpmn.propagation.limit`. |
 | Cyclic flow on which nothing can wait | Not supported | A cycle made only of elements that pass a token straight on (unbound tasks and splits, parallel splits, escalation throws nothing interrupting catches) would circulate forever within one evaluation, so the graph build throws and names the cycle. See [A cycle must be able to wait](../concepts/host-port.md#a-cycle-must-be-able-to-wait). |
 | `association` | Supported | Read to associate a compensation boundary event with its handler. |
@@ -167,8 +174,8 @@ graph-build time.
 
 | Construct | Status | Notes |
 | --- | --- | --- |
-| `<definitions>` metadata | Supported | Id, target namespace, exporter, exporter version. |
-| Root `<message>`, `<signal>`, `<error>`, `<escalation>` | Supported | Matching is on the **name** for messages and signals, and on the **code** for errors and escalations. |
+| `<definitions>` metadata | Supported | Id, target namespace, exporter, exporter version, and `expressionLanguage`, which is also copied onto every process as its default expression language. No XPath default is assumed when the document declares none. |
+| Root `<message>`, `<signal>`, `<error>`, `<escalation>` | Supported | Matching is on the **name** for messages and signals, and on the **code** for errors and escalations. An `<error>` without an `errorCode` is identified by its `id`. |
 | `<documentation>` | Supported | Retained, with `textFormat`. |
 | `extensionElements` (any vendor) | Supported | `camunda:*`, `zeebe:*`, `flowable:*` and anything else are retained verbatim as data and written back at their recorded position. |
 | Foreign attributes | Supported | Retained with their qualified names. |
@@ -182,7 +189,9 @@ graph-build time.
 
 - **DMN.** Business rule tasks are modeled; decisions are not evaluated.
 - **CMMN.**
-- **Expression and script languages.** FEEL, JUEL, JavaScript, Groovy — none, permanently.
+- **Expression and script languages.** FEEL, JUEL, JavaScript, Groovy — none, permanently. A host
+  evaluates condition expressions through `IBpmnConditionEvaluator` in its own language, and runs a
+  script task's `BpmnElement.Script` in the work bound to it.
 - **Rendering.** Layout is preserved and synthesized, not drawn.
 - **Vendor server protocols.** This is not a client for anyone's engine.
 

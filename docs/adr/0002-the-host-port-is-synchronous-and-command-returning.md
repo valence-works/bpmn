@@ -58,12 +58,15 @@ values, and a regression test can be written from it without a running host.
 
 ## The one callback
 
+> Historical heading: [ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) adds a second callback of the same shape.
+
 `IBpmnVariableReader` lets the interpreter pull a named variable mid-evaluation. It cannot be hoisted
 into the snapshot, because which variable is needed depends on which element the propagation loop
 reaches, which is not known before the loop runs. It is synchronous, read-only, and side-effect free.
 
 If sequence-flow condition expressions are supported later, they get a second reader of the same
 shape rather than an async escape hatch. A host that needs to await something pre-resolves it.
+[ADR 0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) takes that path.
 
 ## Consequences
 
@@ -87,3 +90,29 @@ command shape constrains only when decisions are made, not when work happens.
 
 **An event/observer model.** Rejected. Observers make ordering and failure handling implicit, and
 give no natural place for the non-fault-continuation invariant to live.
+
+## 2026-10-17 amendment: scheduling provenance
+
+`StartWork.ProducedByHandle` exposes the interpreter's existing `producedBy` value for ordinary
+element work. Routing after completion or a caught work fault supplies that work's handle, including
+when propagation crosses synchronous elements or fans out. Scope-driven propagation, including
+initial propagation, uses the scope instance identity. The value is opaque reporting data, not an
+ownership or callback-matching key, and does not imply that its producer succeeded.
+
+Scope-owned starts leave the property null: multi-instance instances, compensation handlers,
+boundary and event-subprocess listeners, and event-subprocess bodies. Their host schedules on
+behalf of the current scope, even when their tokens record a triggering work handle. Hosts may use
+their scope identity when the property is null.
+
+The property is init-only and is not added to the positional record parameters. Existing
+constructors and seven-value deconstruction therefore retain their signatures; old callers get
+null by default. This adds no capability or command kind, and does not change persisted execution
+state or the process-model schema. Serialized `StartWork` commands do gain an additive
+`ProducedByHandle` field. Older command JSON that omits it still deserializes with a null value;
+hosts that validate or store commands with a closed schema must accommodate the new field.
+As a record property, it participates in command value equality. Commands with different producer
+values compare differently; hosts comparing old and newly evaluated commands, or using commands as
+keys, must account for that difference. The release containing this property must document both
+the additive JSON field and the equality change.
+Copying the token's `ProducingWorkHandle` for every start was rejected because it would wrongly
+attribute scope-owned starts, especially event-subprocess bodies, to the triggering work.

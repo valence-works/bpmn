@@ -17,6 +17,15 @@ public class BpmnExecutionException : Exception
     public BpmnExecutionException(string message, Exception innerException) : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// The ids of the elements and sequence flows the exception is about, so a host can point at them without parsing
+    /// <see cref="Exception.Message"/>. Empty when it is about none of them, such as a definition with no start event.
+    /// An id can name an element the definition does not contain, when that absence is the defect. A capability refusal
+    /// lists its <see cref="BpmnCapabilityException.DrivingElementIds"/>, in their ordinal order; other refusals list
+    /// their ids in the order the message names them.
+    /// </summary>
+    public IReadOnlyList<string> ElementIds { get; init; } = [];
 }
 
 /// <summary>
@@ -35,6 +44,7 @@ public sealed class BpmnCapabilityException : BpmnExecutionException
     public BpmnCapabilityException(string message, BpmnHostCapabilities missing, IReadOnlyList<string> drivingElementIds)
         : base(message)
     {
+        ElementIds = drivingElementIds;
         Missing = missing;
         DrivingElementIds = drivingElementIds;
     }
@@ -42,6 +52,9 @@ public sealed class BpmnCapabilityException : BpmnExecutionException
     /// <summary>The capabilities the definition needs and the host did not declare.</summary>
     public BpmnHostCapabilities Missing { get; }
 
-    /// <summary>The element ids that need the missing capabilities, in ordinal order.</summary>
+    /// <summary>
+    /// The element ids that need the missing capabilities, in ordinal order. A missing
+    /// <see cref="BpmnHostCapabilities.ConditionEvaluation"/> contributes the ids of the sequence flows that need it.
+    /// </summary>
     public IReadOnlyList<string> DrivingElementIds { get; }
 }

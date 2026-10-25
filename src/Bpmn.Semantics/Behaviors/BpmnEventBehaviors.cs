@@ -59,16 +59,9 @@ public sealed class CatchEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
-    {
-        var flows = BpmnFlowSelector.SelectTaskFlows(context);
-        if (flows.Count == 0 && context.OutboundFlows.Count > 0)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-                "bpmn.flow.none-taken",
-                $"BPMN intermediate catch event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
-
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
-    }
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN intermediate catch event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
 }
 
 /// <summary>
@@ -129,7 +122,8 @@ public sealed class CancelEndEventBehavior : IBpmnElementBehavior
 /// command followed by <see cref="BpmnBehaviorCommandKind.EmitTokens"/> over its selected outbound flows — the
 /// throw signals its enclosing scope and continues immediately (fire-and-continue; escalation is non-blocking).
 /// The interpreter reads the escalation code from the element and owns the signalling (or the root no-op); the
-/// behavior stays semantics-unaware.
+/// behavior stays semantics-unaware. When no outbound flow is selected, or a condition fails, the routing
+/// command is a fault instead; the escalation is still raised first.
 /// </summary>
 public sealed class EscalationThrowEventBehavior : IBpmnElementBehavior
 {
@@ -139,7 +133,8 @@ public sealed class EscalationThrowEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(
             BpmnBehaviorCommand.RaiseEscalation(),
-            BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(BpmnFlowSelector.SelectTaskFlows(context))));
+            BpmnFlowSelector.RouteAsTask(context,
+                $"BPMN escalation throw event '{context.Element.ElementId}' raised its escalation, but no outbound sequence flow's condition held and no default flow is declared."));
 
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
         throw new BpmnExecutionException($"BPMN escalation throw event '{context.Element.ElementId}' cannot bind work.");
@@ -164,6 +159,24 @@ public sealed class EscalationEndEventBehavior : IBpmnElementBehavior
 }
 
 /// <summary>
+/// Error end event: on token arrival, emit the single <see cref="BpmnBehaviorCommandKind.ThrowError"/> command
+/// and nothing else. The interpreter consumes the token, reads the error code from the element, and either
+/// activates an error event subprocess of the scope that catches it or ends the scope with a fault that carries
+/// the code. The behavior stays semantics-unaware.
+/// </summary>
+public sealed class ErrorEndEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.EndEventError;
+    public string DisplayName => "Error End Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ThrowError());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN error end event '{context.Element.ElementId}' cannot bind work.");
+}
+
+/// <summary>
 /// Message intermediate throw event: a bound-work send. On token arrival it starts the element's bound publish
 /// work; that work completes immediately (fire-and-continue), which is an ordinary work completion that routes
 /// the throw token's outbound flows by the shared task selection rules. The behavior stays semantics-unaware.
@@ -177,16 +190,9 @@ public sealed class MessageThrowEventBehavior : IBpmnElementBehavior
     public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
-    {
-        var flows = BpmnFlowSelector.SelectTaskFlows(context);
-        if (flows.Count == 0 && context.OutboundFlows.Count > 0)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-                "bpmn.flow.none-taken",
-                $"BPMN message throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
-
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
-    }
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN message throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
 }
 
 /// <summary>
@@ -204,6 +210,75 @@ public sealed class MessageEndEventBehavior : IBpmnElementBehavior
 
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
         BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ConsumeToken());
+}
+
+/// <summary>
+/// Signal intermediate throw event: a bound-work broadcast. On token arrival it starts the element's bound publish
+/// work; that work completes immediately (fire-and-continue), which routes the throw token's outbound flows by the
+/// shared task selection rules. Delivering the signal to its catchers is the host's. Graph validation guarantees
+/// the binding exists.
+/// </summary>
+public sealed class SignalThrowEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateThrowEventSignal;
+    public string DisplayName => "Signal Throw Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN signal throw event '{context.Element.ElementId}' completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound sequence flow matched and no default flow is declared."));
+}
+
+/// <summary>
+/// Signal end event: a bound-work broadcast with none-end semantics. On token arrival it starts the element's bound
+/// publish work; when that work completes the token is consumed. Graph validation guarantees the binding exists.
+/// </summary>
+public sealed class SignalEndEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.EndEventSignal;
+    public string DisplayName => "Signal End Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.ConsumeToken());
+}
+
+/// <summary>
+/// Link intermediate throw event: jumps its token to the link catch of the same name in its scope. The graph joins
+/// the two with a synthesized link flow (see <see cref="BpmnGraph.IsLinkFlow"/>), which is the throw's only outbound
+/// flow, so the jump is an ordinary emission along it and counts as a flow everywhere the graph reasons about flows.
+/// </summary>
+public sealed class LinkThrowEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateThrowEventLink;
+    public string DisplayName => "Link Throw Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(context.OutboundFlows.Select(flow => flow.FlowId).ToArray()));
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN link throw event '{context.Element.ElementId}' cannot bind work.");
+}
+
+/// <summary>
+/// Link intermediate catch event: where a link throw of the same name lands. It binds no work, so on token arrival it
+/// routes its outbound flows by the shared task selection rules, as a task with no work would.
+/// </summary>
+public sealed class LinkCatchEventBehavior : IBpmnElementBehavior
+{
+    public string ElementFamily => BpmnElementFamilies.IntermediateCatchEventLink;
+    public string DisplayName => "Link Catch Event";
+
+    public BpmnBehaviorDecision OnTokenArrived(IBpmnBehaviorContext context) =>
+        BpmnBehaviorDecision.Of(BpmnFlowSelector.RouteAsTask(context,
+            $"BPMN link catch event '{context.Element.ElementId}' was reached, but no outbound sequence flow's condition held and no default flow is declared."));
+
+    public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context) =>
+        throw new BpmnExecutionException($"BPMN link catch event '{context.Element.ElementId}' cannot bind work.");
 }
 
 /// <summary>Terminate end event: consume every live token and complete the process immediately.</summary>

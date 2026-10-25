@@ -292,7 +292,10 @@ public sealed class BpmnProcessBuilder
             isTransaction: gateway.IsTransaction,
             triggeredByEvent: gateway.TriggeredByEvent,
             listenerBindingRef: gateway.ListenerBindingRef,
-            extensions: gateway.Extensions);
+            extensions: gateway.Extensions)
+            {
+                Script = gateway.Script
+            };
         }
 
         return this;

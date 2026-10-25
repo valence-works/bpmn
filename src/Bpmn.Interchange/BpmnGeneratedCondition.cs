@@ -8,7 +8,7 @@ namespace Bpmn.Interchange;
 /// <c>conditionOutcome</c>. The generated form is exactly <c>outcome == 'X'</c> with no attributes and
 /// no child elements — the only shape <see cref="BpmnXmlWriter"/> emits on its own.
 /// </summary>
-internal static class BpmnConditionExpression
+internal static class BpmnGeneratedCondition
 {
     public const string ElementLocalName = "conditionExpression";
 
@@ -34,33 +34,34 @@ internal static class BpmnConditionExpression
             return false;
         if (element.Attributes().Any(attribute => !attribute.IsNamespaceDeclaration))
             return false;
-        return string.Equals(element.Value, GeneratedBody(conditionOutcome), StringComparison.Ordinal);
+        return IsGeneratedBody(element.Value, conditionOutcome);
     }
 
     /// <summary>
-    /// A retained subtree that has the writer's generated shape — <c>outcome == '…'</c>, no attributes,
-    /// no children — regardless of which outcome it names.
-    /// <para>
-    /// Two edges follow. An author expression that only looks like the generated predicate (same
-    /// shape, a body that is not <c>outcome == '&lt;current outcome&gt;'</c>) is kept on read —
-    /// <see cref="IsLibraryGenerated"/> requires an exact match — and then dropped on write while
-    /// the flow still has a <c>conditionOutcome</c>. A mismatched expression of that shape survives
-    /// clearing the outcome: the writer only strips when an outcome is still present.
-    /// </para>
+    /// The retained counterpart of <see cref="IsLibraryGenerated(XElement, string?)"/>, for a
+    /// <c>conditionExpression</c> a payload serialized before format 1.3.0 carries as a foreign child.
+    /// The writer drops only this exact predicate; a child of the same shape that names another outcome
+    /// is the author's and is written back.
     /// </summary>
-    public static bool IsLibraryGeneratedShape(BpmnExtensionElement element)
-    {
-        if (!IsModelElement(element.Name) || element.Children.Count > 0 || element.Attributes.Count > 0)
-            return false;
-        return IsGeneratedBody(element.Value);
-    }
+    public static bool IsLibraryGenerated(BpmnExtensionElement element, string? conditionOutcome) =>
+        IsModelElement(element.Name)
+        && element.Children.Count == 0
+        && element.Attributes.Count == 0
+        && IsGeneratedBody(element.Value, conditionOutcome);
 
-    public static bool IsGeneratedBody(string? value)
-    {
-        const string prefix = "outcome == '";
-        return value is not null
-            && value.StartsWith(prefix, StringComparison.Ordinal)
-            && value.Length > prefix.Length
-            && value[^1] == '\'';
-    }
+    /// <summary>
+    /// The modeled counterpart of <see cref="IsLibraryGenerated(XElement, string?)"/>: an expression with
+    /// no language, no retained content, and exactly the body the writer generates for
+    /// <paramref name="conditionOutcome"/>. The writer emits its own predicate in its place, once. An
+    /// expression of the same shape that names another outcome is the author's (ADR 0011) and is written
+    /// back.
+    /// </summary>
+    public static bool IsLibraryGenerated(BpmnConditionExpression expression, string? conditionOutcome) =>
+        expression.Language is null
+        && expression.Extensions.IsEmpty
+        && IsGeneratedBody(expression.Body, conditionOutcome);
+
+    private static bool IsGeneratedBody(string? value, string? conditionOutcome) =>
+        !string.IsNullOrWhiteSpace(conditionOutcome)
+        && string.Equals(value, GeneratedBody(conditionOutcome), StringComparison.Ordinal);
 }

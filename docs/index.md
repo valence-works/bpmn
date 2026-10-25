@@ -31,8 +31,8 @@ persistence. A host supplies all of that, and applies the commands the interpret
 - Not a production workflow engine. No durable persistence, scheduling, retries, broker, queue, or
   distributed coordination.
 - Not an executor of anything.
-- Not an expression or script evaluator. No FEEL, no JUEL, no JavaScript; sequence-flow conditions
-  are resolved by the host.
+- Not an expression or script evaluator. No FEEL, no JUEL, no JavaScript; a sequence flow's
+  condition expression is evaluated by the host through `IBpmnConditionEvaluator`.
 - Not DMN, and not CMMN.
 - Not a modeler or a renderer.
 - Not a client for any BPMN vendor's server.

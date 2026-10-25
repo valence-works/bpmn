@@ -33,7 +33,7 @@ public enum BpmnImportIssueSeverity
     /// <summary>The element read cleanly; the finding is a note, such as a task that binds no implementation.</summary>
     Info,
 
-    /// <summary>The element read in a reduced form, such as an expression condition that became an unconditional flow.</summary>
+    /// <summary>The element read in a reduced form, such as an end event whose unsupported event definition was dropped.</summary>
     Degraded,
 
     /// <summary>The element could not be represented and was dropped, along with the flows that referenced it.</summary>
