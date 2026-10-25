@@ -308,9 +308,11 @@ foreach (var binding in result.Bindings)
     var description = binding switch
     {
         BpmnWorkBinding.TimerWait timer        => $"wait {timer.IsoDuration}",
+        BpmnWorkBinding.TimerDateWait date     => $"wait until {date.IsoDate}",
         BpmnWorkBinding.MessageWait message    => $"await message '{message.MessageName}'",
         BpmnWorkBinding.SignalWait signal      => $"await signal '{signal.SignalName}'",
         BpmnWorkBinding.MessagePublish publish => $"publish message '{publish.MessageName}'",
+        BpmnWorkBinding.SignalPublish cast     => $"broadcast signal '{cast.SignalName}'",
         BpmnWorkBinding.CallProcess call       => $"call '{call.CalledElement}'" +
                                                   (call.WaitForCompletion ? " and wait" : ""),
         BpmnWorkBinding.NestedProcess nested   => $"run nested process '{nested.Definition.ProcessId}'",
@@ -355,7 +357,8 @@ without it, subprocesses are written empty. Retained foreign content lives on th
 The single-process overload wraps the process in minimal definitions and uses the same writer. It
 synthesizes message and signal declarations from known names (including event bindings), and escalation
 declarations from known event-definition codes. A recorded `errorRef` gets a matching error
-declaration, but its original name and error code cannot be recovered from that reference alone.
+declaration carrying the code and name the reader resolved onto the event definition, and an error
+event definition that carries only a code gets a declaration for that code.
 Use the definitions overload when you need explicit root declaration metadata, document metadata,
 collaboration, or retained diagrams. The single-process overload generates layout instead of retaining
 document-level diagrams.
@@ -365,12 +368,57 @@ sequence flow and message flow gets a `BPMNEdge` with at least the two waypoints
 synthesized from the endpoint boxes when the source carried none. A flow that runs backwards is
 routed as an elbow below the row, so a cyclic graph does not render as a pile of overlapping lines.
 
-A sequence flow's `<conditionExpression>` is part of that retained content. The library does not
-evaluate it, but a read then write keeps the author's body, `language`, `xsi:type`, and vendor
-attributes. A generated `outcome == '…'` expression is written only when the model has a
-`conditionOutcome` and no original expression — typically a process built in code. That generated
-predicate is consumed on the next read, so changing or clearing the outcome does not leave a stale
-expression.
+A sequence flow's `<conditionExpression>` is modeled as `BpmnSequenceFlow.ConditionExpression`:
+the `Body` (the text and CDATA content as authored; whitespace-only text around a CDATA section or
+between child elements is not kept), its own `Language`, and its remaining content (`xsi:type`, `id`,
+vendor attributes, documentation) retained on the expression. The document's `expressionLanguage` is
+`BpmnDefinitions.ExpressionLanguage`, copied onto every process and nested body as
+`BpmnProcessDefinition.ExpressionLanguage`. A read then write reproduces both. The library never
+evaluates an expression itself: a host does, through `IBpmnConditionEvaluator`, and a read reports no
+finding for an expression-only flow, because whether a host can evaluate it is the
+`ConditionEvaluation` capability that graph build checks (see
+[ADR 0011](../adr/0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md)). Before
+0.4.0 such a flow read as unconditional with a `Degraded` finding.
+
+A few rules keep "read, write, read again" giving the same model:
+
+- An expression that has a `language` but no `xsi:type` is written as `bpmn:tFormalExpression`,
+  because BPMN allows a language only on a formal expression. Since the writer adds that type to every
+  expression with a language, a read does not retain it there; any other `xsi:type` is retained.
+- An expression that inherits a language is written with that language when its process's default
+  differs from the document's, typically a process built in code and written into a document declaring
+  another default. BPMN has no per-process expression language, so the next read gives the process the
+  document's default and models the language as the expression's own. The meaning is unchanged.
+- BPMN allows at most one `<conditionExpression>` per flow. If a document has more, counting a
+  generated `outcome == '…'` predicate among them, the first author's expression is modeled and the
+  rest are dropped with a `Dropped` finding naming the flow and the number it declares.
+
+> **Upgrading from payload format 1.2.0.** An author's `<conditionExpression>` used to be retained as a
+> foreign child of the flow, in `flow.Extensions.ForeignChildren`. It is now read into
+> `flow.ConditionExpression` and is no longer in `ForeignChildren`, so code that looked for it there
+> finds nothing. Read `ConditionExpression` instead. A 1.2.0 payload that still carries it as a foreign
+> child is written once and reads back as a modeled expression.
+
+A generated `outcome == '…'` expression is written only when the model has a `conditionOutcome` and
+no author's expression, typically for a process built in code. That generated predicate is consumed
+on the next read rather than modeled, so changing or clearing the outcome does not leave a stale
+expression. Only the exact predicate for the flow's own outcome counts as generated. An expression of
+the same shape that names another outcome, such as `outcome == 'Rejected'` on a flow whose
+`conditionOutcome` is `Approved`, is the author's: it is modeled, written back as the flow's one
+`<conditionExpression>` with no generated predicate beside it, and never evaluated, while
+`vw:conditionOutcome` still decides the route.
+
+A script task's `scriptFormat` and `<script>` are modeled the same way, as `BpmnElement.Script`: the
+`Body` is read like an expression's, the `Format` is the task's `scriptFormat`, and any attributes or
+child elements on `<script>` are retained on the script. `Script` is `null` on a task that declares
+neither. A task with a format and no `<script>` reads with an empty body and writes no `<script>`. BPMN
+allows one `<script>`; a second one is reported as `Dropped` and not written back. The
+library never runs a script: the host that runs the task's bound work reads it from the element.
+
+> **Upgrading from payload format 1.5.0.** A script task's `<script>` used to be retained in
+> `element.Extensions.ForeignChildren`, and its `scriptFormat` was dropped. Both are now read into
+> `element.Script`. A 1.5.0 payload that still carries the script as a foreign child is written once
+> and reads back as a modeled script.
 
 What the writer does not do is reproduce the source byte for byte.
 
@@ -407,8 +455,8 @@ var rewritten = writer.Write(definitions, bindings);
 
 The envelope belongs to the host. Its two components use the library's
 [published schema](../reference/packages.md#the-serialization-is-owned-and-versioned); validate each
-binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `messageWait`, `signalWait`,
-`messagePublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
+binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `timerDateWait`, `timerCycleWait`, `messageWait`, `signalWait`,
+`messagePublish`, `signalPublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
 Keep `kind` first when a client rebuilds a binding object: the default serializer writes it there,
 and [System.Text.Json requires discriminator metadata first by default](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism).
 `slot` is numeric like other enums in the format: `0` for Primary and `1` for ScopeListener. Nested

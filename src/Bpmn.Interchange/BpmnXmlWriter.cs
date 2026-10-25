@@ -77,6 +77,7 @@ public sealed class BpmnXmlWriter
         if (!string.IsNullOrWhiteSpace(exporter)) root.SetAttributeValue("exporter", exporter);
         var exporterVersion = options?.ExporterVersion ?? definitions.ExporterVersion;
         if (!string.IsNullOrWhiteSpace(exporterVersion)) root.SetAttributeValue("exporterVersion", exporterVersion);
+        if (context.ExpressionLanguage is { } expressionLanguage) root.SetAttributeValue("expressionLanguage", expressionLanguage);
 
         AppendCollaboration(root, definitions, context);
 
@@ -233,10 +234,12 @@ public sealed class BpmnXmlWriter
             foreach (var flowId in outgoing[element.ElementId])
                 InsertByRank(xmlElement, new XElement(BpmnXmlNames.Model + "outgoing", flowId));
             AppendLoopCharacteristics(xmlElement, element, context.Vendor);
+            if (element.Script is not null && StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+                AppendScript(xmlElement, element.Script, context);
 
             // A subprocess already had the nested process's retained content applied while its body was written.
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                ApplyExtensions(xmlElement, element.Extensions, context.Vendor);
+                ApplyExtensions(xmlElement, WithoutRetainedScript(element), context.Vendor);
 
             container.Add(xmlElement);
         }
@@ -249,17 +252,32 @@ public sealed class BpmnXmlWriter
                 new XAttribute("targetRef", flow.TargetRef));
             if (flow.Name is not null) flowElement.SetAttributeValue("name", flow.Name);
             var extensions = WithoutLibraryConditionExpression(flow.Extensions, flow.ConditionOutcome);
+            // Only the exact predicate for this flow's own outcome is the library's. An expression of the same
+            // shape that names another outcome is the author's, and is written back (ADR 0011).
+            var authoredExpression = flow.ConditionExpression is { } candidate
+                && BpmnGeneratedCondition.IsLibraryGenerated(candidate, flow.ConditionOutcome)
+                    ? null
+                    : flow.ConditionExpression;
+            if (authoredExpression is { } conditionExpression)
+            {
+                // BPMN allows one conditionExpression. The modeled one wins over a copy a pre-1.3.0 payload
+                // still carries as a retained foreign child, which would otherwise be written beside it. A read
+                // never retains one: it models the first and reports any further one as dropped.
+                extensions = WithoutRetainedConditionExpression(extensions);
+                flowElement.Add(ConditionExpressionElement(conditionExpression, process.ExpressionLanguage, context));
+            }
+
             if (flow.ConditionOutcome is not null)
             {
                 // BPMN has no outcome-matched condition, so the match rides a vendor attribute. A
                 // synthesized conditionExpression is only for models that never had one — typically a
                 // process built in code — so other modelers still see a readable predicate. An author's
-                // original expression is retained as a foreign child and restored below. The library's
-                // own generated predicate is stripped first, so a changed or cleared outcome is not
-                // written next to a stale outcome == '…' body.
+                // expression is written above, or restored below when an older payload retained it as a
+                // foreign child; either way it is the flow's one conditionExpression. The library's own
+                // predicate for this outcome is stripped first and written here once.
                 flowElement.SetAttributeValue(context.Vendor.ConditionOutcome, flow.ConditionOutcome);
-                if (!HasAuthorConditionExpression(extensions))
-                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnConditionExpression.GeneratedBody(flow.ConditionOutcome)));
+                if (authoredExpression is null && !HasAuthorConditionExpression(extensions))
+                    flowElement.Add(new XElement(BpmnXmlNames.Model + "conditionExpression", BpmnGeneratedCondition.GeneratedBody(flow.ConditionOutcome)));
             }
 
             ApplyExtensions(flowElement, extensions, context.Vendor);
@@ -320,8 +338,12 @@ public sealed class BpmnXmlWriter
             endEvent.Add(new XElement(BpmnXmlNames.Model + "cancelEventDefinition"));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Escalation) is { } escalation)
             endEvent.Add(BuildEscalationEventDefinition(escalation, context));
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Error) is { } error)
+            endEvent.Add(BuildErrorEventDefinition(element, error, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(endEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(endEvent, element, signal, context, isCatch: false);
         return endEvent;
     }
 
@@ -334,6 +356,10 @@ public sealed class BpmnXmlWriter
             throwEvent.Add(BuildEscalationEventDefinition(escalation, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(throwEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(throwEvent, element, signal, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Link) is { } link)
+            AppendEventDefinition(throwEvent, element, link, context, isCatch: false);
         return throwEvent;
     }
 
@@ -344,6 +370,21 @@ public sealed class BpmnXmlWriter
         if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code))
             escalation.SetAttributeValue("escalationRef", context.EscalationDeclarationId(code.Trim()));
         return escalation;
+    }
+
+    /// <summary>
+    /// An <c>&lt;errorEventDefinition&gt;</c>. The <c>errorRef</c> a read recorded on the element wins, so an
+    /// author's declaration ids survive; a model built in code that carries only a code points at the root
+    /// declaration for that code. Ref-less when there is neither: a catch-all catcher or an uncoded throw.
+    /// </summary>
+    private static XElement BuildErrorEventDefinition(BpmnElement element, BpmnEventDefinition definition, WriteContext context)
+    {
+        var error = new XElement(BpmnXmlNames.Model + "errorEventDefinition");
+        if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
+            error.SetAttributeValue("errorRef", errorRef.Trim());
+        else if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var code) && !string.IsNullOrWhiteSpace(code))
+            error.SetAttributeValue("errorRef", context.ErrorDeclarationId(code.Trim()));
+        return error;
     }
 
     private static XElement BuildCompensateEventDefinition(BpmnEventDefinition definition)
@@ -372,7 +413,7 @@ public sealed class BpmnXmlWriter
             }
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
             {
-                xmlElement.Add(new XElement(BpmnXmlNames.Model + "errorEventDefinition"));
+                xmlElement.Add(BuildErrorEventDefinition(element, definition, context));
                 if (!element.CancelActivity) xmlElement.SetAttributeValue("isInterrupting", "false");
             }
             else if (isEventSubprocessBodyStart)
@@ -404,12 +445,7 @@ public sealed class BpmnXmlWriter
         if (element.EventDefinitions.FirstOrDefault() is { } definition)
         {
             if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
-            {
-                var error = new XElement(BpmnXmlNames.Model + "errorEventDefinition");
-                if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
-                    error.SetAttributeValue("errorRef", errorRef.Trim());
-                boundary.Add(error);
-            }
+                boundary.Add(BuildErrorEventDefinition(element, definition, context));
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Escalation))
                 boundary.Add(BuildEscalationEventDefinition(definition, context));
             else if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Compensation))
@@ -451,13 +487,34 @@ public sealed class BpmnXmlWriter
                 host.Add(child);
                 break;
             }
+            case BpmnEventDefinitionTypes.Link:
+            {
+                var link = new XElement(BpmnXmlNames.Model + "linkEventDefinition");
+                if (Property(definition, BpmnEventDefinitionProperties.Name) is { } linkName)
+                    link.SetAttributeValue("name", linkName);
+                host.Add(link);
+                break;
+            }
             case BpmnEventDefinitionTypes.Timer:
             {
                 var timer = new XElement(BpmnXmlNames.Model + "timerEventDefinition");
                 var interval = Property(definition, BpmnEventDefinitionProperties.Interval) ?? context.TimerDurationFor(element);
                 var cron = Property(definition, BpmnEventDefinitionProperties.Cron);
+                var date = Property(definition, BpmnEventDefinitionProperties.Date) ?? (isCatch ? context.TimerDateFor(element) : null);
+                var cycle = Property(definition, BpmnEventDefinitionProperties.Cycle) ?? (isCatch ? context.TimerCycleFor(element) : null);
 
-                if (isCatch)
+                if (cycle is not null)
+                {
+                    // A cycle at any position, written back exactly as it was read.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", cycle));
+                }
+                else if (date is not null)
+                {
+                    // A timer at an instant, one-shot at every position: a start, a catch, a boundary or an
+                    // event-subprocess start.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeDate", date));
+                }
+                else if (isCatch)
                 {
                     // A catching timer is a one-shot relative delay.
                     if (interval is not null) timer.Add(new XElement(BpmnXmlNames.Model + "timeDuration", interval));
@@ -722,15 +779,12 @@ public sealed class BpmnXmlWriter
     // ---------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Drops a retained <c>conditionExpression</c> that has the library's generated shape, so a write
-    /// after the outcome changed does not emit a contradictory body.
+    /// Drops a retained <c>conditionExpression</c> that is exactly the library's predicate for
+    /// <paramref name="conditionOutcome"/>, so it is written once rather than twice.
     /// <para>
-    /// An author expression that only looks like the generated predicate — <c>outcome == '…'</c> with
-    /// no attributes or children, but a body that is not <c>outcome == '&lt;current outcome&gt;'</c> —
-    /// is kept on read and dropped here while the flow still has a <c>conditionOutcome</c>. A
-    /// mismatched expression of that shape survives clearing the outcome, because this method does
-    /// nothing when <paramref name="conditionOutcome"/> is null; an expression-only flow may
-    /// legitimately carry the same text.
+    /// A retained child of the same shape that names another outcome is the author's and is kept: the
+    /// reader that serialized it had already consumed the predicate for the outcome it read, so what it
+    /// retained was never the library's own.
     /// </para>
     /// </summary>
     private static BpmnExtensions WithoutLibraryConditionExpression(BpmnExtensions? extensions, string? conditionOutcome)
@@ -743,7 +797,7 @@ public sealed class BpmnXmlWriter
             return extensions;
 
         var kept = extensions.ForeignChildren
-            .Where(child => !BpmnConditionExpression.IsLibraryGeneratedShape(child.Element))
+            .Where(child => !BpmnGeneratedCondition.IsLibraryGenerated(child.Element, conditionOutcome))
             .ToList();
         return kept.Count == extensions.ForeignChildren.Count
             ? extensions
@@ -751,13 +805,102 @@ public sealed class BpmnXmlWriter
     }
 
     /// <summary>
-    /// Whether the flow already carries the author's <c>conditionExpression</c>, so the writer must not
-    /// invent a second one. The element lives in BPMN's own namespace and is retained rather than
-    /// interpreted, because this library never evaluates it.
+    /// Writes a modeled <c>conditionExpression</c>: body, <c>language</c>, and the retained rest.
+    /// <para>
+    /// Two attributes are supplied when the model does not carry them. A <c>language</c> is written for an
+    /// expression that inherits one, when its process's default differs from the document's, so the
+    /// expression keeps its meaning after the process is written into a document declaring another default.
+    /// And BPMN only allows <c>language</c> on a formal expression, so an expression that has a language but
+    /// no retained <c>xsi:type</c> is written as <c>bpmn:tFormalExpression</c>. The reader does not retain
+    /// that type on an expression with a language, so the next read models what this one was given. An
+    /// expression with neither, typically one built in code, is written as a plain expression, exactly as
+    /// modeled.
+    /// </para>
+    /// </summary>
+    private static XElement ConditionExpressionElement(BpmnConditionExpression expression, string? processExpressionLanguage, WriteContext context)
+    {
+        var element = new XElement(BpmnXmlNames.Model + BpmnGeneratedCondition.ElementLocalName);
+
+        var inherited = string.IsNullOrWhiteSpace(processExpressionLanguage) ? null : processExpressionLanguage.Trim();
+        var language = expression.Language
+            ?? (inherited is not null && !StringComparer.Ordinal.Equals(inherited, context.ExpressionLanguage) ? inherited : null);
+        if (language is not null)
+            element.SetAttributeValue("language", language);
+
+        foreach (var attribute in expression.Extensions.ForeignAttributes)
+            BpmnExtensionCapture.WriteAttribute(element, attribute);
+
+        if (language is not null && element.Attribute(BpmnXmlNames.SchemaInstance + "type") is null)
+            BpmnExtensionCapture.WriteTypeAttribute(element, "bpmn:tFormalExpression");
+
+        ApplyExtensions(element, expression.Extensions with { ForeignAttributes = [] }, context.Vendor);
+        element.Add(new XText(expression.Body));
+        return element;
+    }
+
+    /// <summary>
+    /// Writes a script task's <c>scriptFormat</c>, and its <c>&lt;script&gt;</c> when the script has a body or
+    /// retained content. A format-only script, which is what a read of a task without a <c>&lt;script&gt;</c>
+    /// produces, writes no element, so the next read models the same script.
+    /// </summary>
+    private static void AppendScript(XElement scriptTask, BpmnScript script, WriteContext context)
+    {
+        if (script.Format is not null)
+            scriptTask.SetAttributeValue("scriptFormat", script.Format);
+        if (script.Body.Length == 0 && script.Extensions.IsEmpty)
+            return;
+
+        var element = new XElement(BpmnXmlNames.Model + "script");
+        foreach (var attribute in script.Extensions.ForeignAttributes)
+            BpmnExtensionCapture.WriteAttribute(element, attribute);
+
+        ApplyExtensions(element, script.Extensions with { ForeignAttributes = [] }, context.Vendor);
+        element.Add(new XText(script.Body));
+        InsertByRank(scriptTask, element);
+    }
+
+    /// <summary>
+    /// Drops a <c>&lt;script&gt;</c> a pre-1.6.0 payload retained as a foreign child, for a script task whose
+    /// script is now modeled, so only one is written.
+    /// </summary>
+    private static BpmnExtensions WithoutRetainedScript(BpmnElement element)
+    {
+        if (element.Script is null || !StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+            return element.Extensions;
+
+        return element.Extensions with
+        {
+            ForeignChildren = element.Extensions.ForeignChildren
+                .Where(child => BpmnExtensionCapture.ToXName(child.Element.Name) != BpmnXmlNames.Model + "script")
+                .ToList()
+        };
+    }
+
+    /// <summary>
+    /// Drops a <c>conditionExpression</c> a pre-1.3.0 payload retained as a foreign child, for a flow whose
+    /// expression is now modeled.
+    /// </summary>
+    private static BpmnExtensions WithoutRetainedConditionExpression(BpmnExtensions extensions)
+    {
+        if (!HasAuthorConditionExpression(extensions))
+            return extensions;
+
+        return extensions with
+        {
+            ForeignChildren = extensions.ForeignChildren
+                .Where(child => !BpmnGeneratedCondition.IsModelElement(child.Element.Name))
+                .ToList()
+        };
+    }
+
+    /// <summary>
+    /// Whether the flow carries an author's <c>conditionExpression</c> as a retained foreign child, so the
+    /// writer must not invent a second one. Only a payload serialized before format 1.3.0 has one there; a
+    /// read now models it as <see cref="BpmnSequenceFlow.ConditionExpression"/>.
     /// </summary>
     private static bool HasAuthorConditionExpression(BpmnExtensions? extensions) =>
         extensions is not null
-        && extensions.ForeignChildren.Any(child => BpmnConditionExpression.IsModelElement(child.Element.Name));
+        && extensions.ForeignChildren.Any(child => BpmnGeneratedCondition.IsModelElement(child.Element.Name));
 
     /// <summary>Adds a child at the position its name takes in the canonical order, rather than at the end.</summary>
     private static void InsertByRank(XElement parent, XElement child)
@@ -847,11 +990,14 @@ public sealed class BpmnXmlWriter
         private readonly Dictionary<string, string> _messageIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _signalIdByName = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _escalationIdByCode = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _errorIdByCode = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _takenErrorIds = new(StringComparer.Ordinal);
         private readonly List<SynthesizedDeclaration> _synthesized = [];
 
         public WriteContext(BpmnDefinitions definitions, IReadOnlyList<BpmnWorkBinding>? bindings, BpmnVendorNames vendor)
         {
             Vendor = vendor;
+            ExpressionLanguage = DocumentExpressionLanguage(definitions);
 
             foreach (var binding in bindings ?? [])
             {
@@ -869,6 +1015,21 @@ public sealed class BpmnXmlWriter
                 var code = escalation.EscalationCode ?? escalation.Name ?? escalation.Id;
                 _escalationIdByCode.TryAdd(code.Trim(), escalation.Id);
             }
+
+            // An <error> without an errorCode is matched on its id, so the id is its code here too.
+            foreach (var error in definitions.Errors)
+                _errorIdByCode.TryAdd((error.ErrorCode ?? error.Id).Trim(), error.Id);
+
+            // A generated error id has to step around every id the document already gives a declaration, and
+            // around each recorded errorRef, which keeps its own id whenever the loop below reaches it.
+            _takenErrorIds.UnionWith(definitions.Messages.Select(message => message.Id));
+            _takenErrorIds.UnionWith(definitions.Signals.Select(signal => signal.Id));
+            _takenErrorIds.UnionWith(definitions.Escalations.Select(escalation => escalation.Id));
+            _takenErrorIds.UnionWith(definitions.Errors.Select(error => error.Id));
+            foreach (var process in AllProcesses(definitions))
+                foreach (var element in process.Elements)
+                    if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var recordedRef) && !string.IsNullOrWhiteSpace(recordedRef))
+                        _takenErrorIds.Add(recordedRef.Trim());
 
             var declaredErrorIds = definitions.Errors.Select(error => error.Id).ToHashSet(StringComparer.Ordinal);
             foreach (var process in AllProcesses(definitions))
@@ -890,9 +1051,8 @@ public sealed class BpmnXmlWriter
                     if (element.Properties.TryGetValue(BpmnXmlReader.MessageNamePropertyKey, out var taskMessage) && !string.IsNullOrWhiteSpace(taskMessage))
                         EnsureMessage(taskMessage.Trim());
 
-                    if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef)
-                        && !string.IsNullOrWhiteSpace(errorRef) && declaredErrorIds.Add(errorRef.Trim()))
-                        _synthesized.Add(new SynthesizedDeclaration("error", errorRef.Trim(), null, null, null));
+                    if (element.EventDefinitions.FirstOrDefault(definition => StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error)) is { } errorDefinition)
+                        DeclareError(element, errorDefinition, declaredErrorIds);
                 }
 
             foreach (var flow in definitions.Collaboration?.MessageFlows ?? [])
@@ -902,6 +1062,27 @@ public sealed class BpmnXmlWriter
 
         /// <summary>The vendor namespace this write emits the library's own non-standard names in.</summary>
         public BpmnVendorNames Vendor { get; }
+
+        /// <summary>The <c>expressionLanguage</c> this write declares on <c>&lt;definitions&gt;</c>, if any.</summary>
+        public string? ExpressionLanguage { get; }
+
+        /// <summary>
+        /// The document's own value, else the one default every process agrees on. The second case is a
+        /// process written on its own, or processes built in code into a fresh document. When processes
+        /// disagree, none is declared; each process's expressions then carry their language themselves.
+        /// </summary>
+        private static string? DocumentExpressionLanguage(BpmnDefinitions definitions)
+        {
+            if (!string.IsNullOrWhiteSpace(definitions.ExpressionLanguage))
+                return definitions.ExpressionLanguage.Trim();
+
+            var declared = definitions.Processes
+                .Select(process => process.ExpressionLanguage?.Trim())
+                .Where(language => !string.IsNullOrEmpty(language))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return declared.Length == 1 ? declared[0] : null;
+        }
 
         public IReadOnlyList<SynthesizedDeclaration> SynthesizedDeclarations => _synthesized;
 
@@ -917,12 +1098,21 @@ public sealed class BpmnXmlWriter
         public string? TimerDurationFor(BpmnElement element) =>
             WorkFor(element) is BpmnWorkBinding.TimerWait timer && !string.IsNullOrWhiteSpace(timer.IsoDuration) ? timer.IsoDuration.Trim() : null;
 
+        /// <summary>The cycle an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerCycleFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerCycleWait timer && !string.IsNullOrWhiteSpace(timer.Cycle) ? timer.Cycle.Trim() : null;
+
+        /// <summary>The instant an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerDateFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerDateWait timer && !string.IsNullOrWhiteSpace(timer.IsoDate) ? timer.IsoDate.Trim() : null;
+
         /// <summary>The message or signal name an element's binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? EventNameFor(BpmnElement element, bool isMessage) => WorkFor(element) switch
         {
             BpmnWorkBinding.MessageWait wait when isMessage => Trimmed(wait.MessageName),
             BpmnWorkBinding.MessagePublish publish when isMessage => Trimmed(publish.MessageName),
             BpmnWorkBinding.SignalWait signal when !isMessage => Trimmed(signal.SignalName),
+            BpmnWorkBinding.SignalPublish broadcast when !isMessage => Trimmed(broadcast.SignalName),
             _ => null
         };
 
@@ -934,6 +1124,7 @@ public sealed class BpmnXmlWriter
         public string MessageDeclarationId(string name) => EnsureMessage(name.Trim());
         public string SignalDeclarationId(string name) => EnsureSignal(name.Trim());
         public string EscalationDeclarationId(string code) => EnsureEscalation(code.Trim(), null);
+        public string ErrorDeclarationId(string code) => EnsureError(code.Trim(), null);
 
         /// <summary>Every process in the document, top-level first and each subprocess body after its parent.</summary>
         public IEnumerable<BpmnProcessDefinition> AllProcesses(BpmnDefinitions definitions)
@@ -970,6 +1161,49 @@ public sealed class BpmnXmlWriter
             id = $"signal-{SanitizeId(name)}";
             _signalIdByName[name] = id;
             _synthesized.Add(new SynthesizedDeclaration("signal", id, name, null, null));
+            return id;
+        }
+
+        /// <summary>
+        /// Makes sure the <c>&lt;error&gt;</c> an error event definition will point at exists. A recorded
+        /// <c>errorRef</c> naming no declaration gets one with that id, carrying the definition's code when it
+        /// differs from the id (an id is its own code). A definition with only a code gets the declaration for
+        /// that code.
+        /// </summary>
+        private void DeclareError(BpmnElement element, BpmnEventDefinition definition, HashSet<string> declaredErrorIds)
+        {
+            var code = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var codeValue) && !string.IsNullOrWhiteSpace(codeValue) ? codeValue.Trim() : null;
+            var name = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var nameValue) && !string.IsNullOrWhiteSpace(nameValue) ? nameValue.Trim() : null;
+            if (element.Properties.TryGetValue(BpmnXmlReader.ErrorRefPropertyKey, out var errorRef) && !string.IsNullOrWhiteSpace(errorRef))
+            {
+                var id = errorRef.Trim();
+                if (declaredErrorIds.Add(id))
+                {
+                    var declaredCode = code is not null && !StringComparer.Ordinal.Equals(code, id) ? code : null;
+                    _synthesized.Add(new SynthesizedDeclaration("error", id, name, "errorCode", declaredCode));
+                    _errorIdByCode.TryAdd(code ?? id, id);
+                }
+                return;
+            }
+
+            if (code is not null)
+                EnsureError(code, name);
+        }
+
+        /// <summary>
+        /// The declaration for <paramref name="code"/>, synthesized when none exists. Sanitizing is lossy, so two
+        /// codes such as <c>A.B</c> and <c>A/B</c> share a stem; a numeric suffix keeps the second id distinct,
+        /// and the order the model is walked in decides which gets it, so the same model writes the same ids.
+        /// </summary>
+        private string EnsureError(string code, string? name)
+        {
+            if (_errorIdByCode.TryGetValue(code, out var id)) return id;
+            var stem = $"error-{SanitizeId(code)}";
+            id = stem;
+            for (var suffix = 2; !_takenErrorIds.Add(id); suffix++)
+                id = $"{stem}-{suffix}";
+            _errorIdByCode[code] = id;
+            _synthesized.Add(new SynthesizedDeclaration("error", id, string.IsNullOrWhiteSpace(name) ? null : name.Trim(), "errorCode", code));
             return id;
         }
 

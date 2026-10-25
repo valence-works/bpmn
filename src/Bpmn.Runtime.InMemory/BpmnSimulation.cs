@@ -32,6 +32,13 @@ public sealed class BpmnSimulationOptions
     /// <summary>What the simulating host claims it can do.</summary>
     public BpmnHostCapabilities Capabilities { get; set; } = BpmnHostCapabilities.Full;
 
+    /// <summary>
+    /// Answers the condition expressions of the simulated process; see <see cref="InMemoryBpmnHostOptions.Conditions"/>.
+    /// The strategy chooses outcome names only; what an expression evaluates to comes from this evaluator, so
+    /// a simulation explores outcome branches, not expression answers.
+    /// </summary>
+    public IBpmnConditionEvaluator? Conditions { get; set; }
+
     /// <summary>Durations for timer work, keyed by binding ref.</summary>
     public IReadOnlyDictionary<string, TimeSpan>? TimerDurations { get; set; }
 
@@ -214,6 +221,7 @@ public static class BpmnSimulation
         var host = new InMemoryBpmnHost(new InMemoryBpmnHostOptions
         {
             Capabilities = options.Capabilities,
+            Conditions = options.Conditions,
             TimerDurations = options.TimerDurations,
             TimerDuration = options.TimerDuration,
             NestedProcesses = options.NestedProcesses

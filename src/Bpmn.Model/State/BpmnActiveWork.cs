@@ -39,9 +39,9 @@ public sealed record BpmnActiveWork
     public string SchedulingCause { get; init; }
 
     /// <summary>
-    /// The iteration id the child was scheduled with; <c>null</c>
-    /// for ordinary single-run children. A teardown resolves this child's live activity-execution id from the
-    /// <c>(NodeId, IterationId)</c> live-child map so N concurrent same-node instances resolve distinctly.
+    /// The multi-instance iteration the work was scheduled under; <c>null</c> for ordinary work.
+    /// The scope-local <see cref="TokenId"/> identifies each invocation, including concurrent ordinary work
+    /// sharing the same binding and null iteration.
     /// </summary>
     [JsonPropertyName("iterationId")]
     public string? IterationId { get; init; }

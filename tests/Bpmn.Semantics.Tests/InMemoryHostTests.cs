@@ -103,6 +103,25 @@ public sealed class InMemoryHostTests
     }
 
     [Fact]
+    public void A_timer_built_in_code_with_only_a_cycle_waits_the_cycles_period()
+    {
+        var cycleOnly = new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Cycle] = "R/PT2H" });
+        var definition = new BpmnProcessBuilder("cycle-boundary")
+            .StartEvent("Start")
+            .Task("Long", bindingRef: "long")
+            .EndEvent("EndNormal")
+            .BoundaryEvent("Timeout", "Long", cycleOnly, interrupting: true, bindingRef: "timeout")
+            .EndEvent("EndTimedOut")
+            .ConnectSequence("Start", "Long", "EndNormal")
+            .Connect("Timeout", "EndTimedOut")
+            .Build();
+
+        Start(definition);
+
+        _host.Clock.Pending.Single().DueAt.ShouldBe(TimeSpan.FromHours(2));
+    }
+
+    [Fact]
     public void An_interrupting_boundary_that_never_fires_is_retired_when_its_host_completes()
     {
         var instance = Start(ProcessFixtures.TimerBoundary("P7D"));
@@ -305,6 +324,31 @@ public sealed class InMemoryHostTests
         instance.IsCompleted.ShouldBeFalse();
         instance.State.Diagnostics.ShouldContain(diagnostic => diagnostic.Kind == BpmnDiagnosticKind.EscalationUnhandled);
         instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeFalse("nothing matched, so nothing was torn down");
+    }
+
+    [Fact]
+    public void A_hand_built_escalation_with_a_blank_code_fires_no_catch_all()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary(code: null);
+        var instance = HostWithNested(("sub", body)).Start(parent);
+
+        instance.SignalWork("sub", BpmnInterpreter.EscalationSignalCode, TestJson.Parse("""{"code":"   "}"""));
+
+        instance.IsCompleted.ShouldBeFalse(instance.Transcript.ToString());
+        VisitedElements(instance).ShouldNotContain("EndEscalated", "a payload with no readable code matches no catcher, not even a catch-all");
+        instance.Children.ShouldHaveSingleItem().IsCancelled.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void A_hand_built_escalation_with_a_padded_code_matches_its_exact_catcher()
+    {
+        var (parent, body) = ProcessFixtures.SubProcessWithEscalationBoundary("overdue");
+        var instance = HostWithNested(("sub", body)).Start(parent);
+
+        instance.SignalWork("sub", BpmnInterpreter.EscalationSignalCode, TestJson.Parse("""{"code":" overdue "}"""));
+
+        instance.IsCompleted.ShouldBeTrue(instance.Transcript.ToString());
+        VisitedElements(instance).ShouldContain("EndEscalated");
     }
 
     // --- Building the graph once -------------------------------------------------------------------------

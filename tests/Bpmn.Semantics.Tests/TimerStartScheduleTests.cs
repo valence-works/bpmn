@@ -89,7 +89,7 @@ public sealed class TimerStartScheduleTests
     }
 
     [Fact]
-    public void Timer_event_subprocess_keeps_its_one_shot_interval_and_rejects_cron()
+    public void Timer_event_subprocess_keeps_its_one_shot_interval_and_rejects_cron_without_a_cycle()
     {
         var body = EventSubprocessBody(Properties((BpmnEventDefinitionProperties.Interval, "PT1M")));
         var parent = EventSubprocessParent();
@@ -107,7 +107,7 @@ public sealed class TimerStartScheduleTests
         var cronError = Should.Throw<BpmnExecutionException>(() =>
             BpmnGraph.Build(parent, EventSubprocessBoundWork(cronBody), BpmnHostCapabilities.Full));
 
-        cronError.Message.ShouldContain("cron/timeCycle timers are not supported for event subprocesses");
+        cronError.Message.ShouldContain("declares a cron schedule without a cycle");
     }
 
     private static BpmnGraph BuildGraph(BpmnElement start)

@@ -4,9 +4,12 @@ namespace Bpmn.Semantics.Behaviors;
 
 /// <summary>
 /// Exclusive (XOR) gateway. Join side: each token passes through independently (handled by the interpreter's
-/// join accounting, which never holds tokens at an exclusive gateway). Split side: when a decision
-/// is bound as work it is started, and the first outcome-matching conditional flow is taken on completion;
-/// without bound work the gateway needs a single outbound flow or a default flow.
+/// join accounting, which never holds tokens at an exclusive gateway). Split side: when a decision is bound as
+/// work it is started, and on completion the non-default flows are tested in declaration order against its
+/// outcome names and the host's condition answers; the first that holds is taken and nothing after it is
+/// evaluated. A flow without any condition holds. Without bound work the same rule runs on arrival, when no
+/// outcome is reported, except that a single outbound flow is taken untested unless its only condition is an
+/// expression. Otherwise the default flow, and with none the scope faults.
 /// </summary>
 public sealed class ExclusiveGatewayBehavior : IBpmnElementBehavior
 {
@@ -18,27 +21,33 @@ public sealed class ExclusiveGatewayBehavior : IBpmnElementBehavior
         if (context.Element.BindingRef is not null)
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-        if (context.OutboundFlows.Count == 1)
+        if (BpmnFlowSelector.TakesOnlyFlowOnArrival(context.OutboundFlows))
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(context.OutboundFlows)));
 
-        var defaultFlow = BpmnFlowSelector.ResolveDefaultFlow(context);
-        if (defaultFlow is not null)
-            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens([defaultFlow.FlowId]));
+        var selection = BpmnFlowSelector.SelectExclusiveFlow(context);
+        if (selection.HasFailed)
+            return BpmnBehaviorDecision.Of(BpmnFlowSelector.ConditionFailed(context, selection));
 
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
-            "bpmn.gateway.no-flow-selected",
-            $"BPMN exclusive gateway '{context.Element.ElementId}' has multiple outbound flows but no bound decision work and no default flow."));
+        if (selection.Flows.Count == 0)
+            return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
+                "bpmn.gateway.no-flow-selected",
+                $"BPMN exclusive gateway '{context.Element.ElementId}' has no outbound flow whose condition holds, no bound decision work, and no default flow."));
+
+        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(selection.Flows)));
     }
 
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
     {
-        var flows = BpmnFlowSelector.SelectExclusiveFlow(context);
-        if (flows.Count == 0)
+        var selection = BpmnFlowSelector.SelectExclusiveFlow(context);
+        if (selection.HasFailed)
+            return BpmnBehaviorDecision.Of(BpmnFlowSelector.ConditionFailed(context, selection));
+
+        if (selection.Flows.Count == 0)
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
                 "bpmn.gateway.no-flow-selected",
-                $"BPMN exclusive gateway '{context.Element.ElementId}' decision completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no conditional flow matched and no default flow is declared."));
+                $"BPMN exclusive gateway '{context.Element.ElementId}' decision completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no outbound flow's condition held and no default flow is declared."));
 
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
+        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(selection.Flows)));
     }
 }
 
@@ -61,8 +70,10 @@ public sealed class ParallelGatewayBehavior : IBpmnElementBehavior
 /// <summary>
 /// Inclusive (OR) gateway. Join side: the interpreter's activation-aware join accounting waits while any
 /// live token or running work upstream can still reach an un-arrived inbound flow. Split side: when a
-/// decision is bound as work, every outcome-matching conditional flow plus every unconditional flow is
-/// taken; without bound work, all unconditional flows.
+/// decision is bound as work it is started, and on completion every flow whose condition holds is taken: an
+/// outcome the decision reported, an expression the host answers true, or no condition at all. Every expression
+/// is evaluated, in declaration order. Without bound work the same rule runs on arrival, when no outcome is
+/// reported. Otherwise the default flow, and with none the scope faults.
 /// </summary>
 public sealed class InclusiveGatewayBehavior : IBpmnElementBehavior
 {
@@ -74,30 +85,30 @@ public sealed class InclusiveGatewayBehavior : IBpmnElementBehavior
         if (context.Element.BindingRef is not null)
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.StartWork());
 
-        var flows = context.OutboundFlows.Where(flow => !flow.IsDefault && flow.ConditionOutcome is null).ToArray();
-        if (flows.Length == 0)
-        {
-            var defaultFlow = BpmnFlowSelector.ResolveDefaultFlow(context);
-            if (defaultFlow is not null)
-                return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens([defaultFlow.FlowId]));
+        var selection = BpmnFlowSelector.SelectInclusiveFlows(context);
+        if (selection.HasFailed)
+            return BpmnBehaviorDecision.Of(BpmnFlowSelector.ConditionFailed(context, selection));
 
+        if (selection.Flows.Count == 0)
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
                 "bpmn.gateway.no-flow-selected",
-                $"BPMN inclusive gateway '{context.Element.ElementId}' has no unconditional outbound flow, no bound decision work, and no default flow."));
-        }
+                $"BPMN inclusive gateway '{context.Element.ElementId}' has no outbound flow whose condition holds, no bound decision work, and no default flow."));
 
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
+        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(selection.Flows)));
     }
 
     public BpmnBehaviorDecision OnWorkCompleted(IBpmnBehaviorContext context)
     {
-        var flows = BpmnFlowSelector.SelectInclusiveFlows(context);
-        if (flows.Count == 0)
+        var selection = BpmnFlowSelector.SelectInclusiveFlows(context);
+        if (selection.HasFailed)
+            return BpmnBehaviorDecision.Of(BpmnFlowSelector.ConditionFailed(context, selection));
+
+        if (selection.Flows.Count == 0)
             return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.Fault(
                 "bpmn.gateway.no-flow-selected",
                 $"BPMN inclusive gateway '{context.Element.ElementId}' decision completed with outcomes [{string.Join(", ", context.OutcomeNames)}] but no flow matched and no default flow is declared."));
 
-        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(flows)));
+        return BpmnBehaviorDecision.Of(BpmnBehaviorCommand.EmitTokens(BpmnFlowSelector.FlowIds(selection.Flows)));
     }
 }
 

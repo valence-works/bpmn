@@ -30,11 +30,14 @@ public sealed class CyclesThatNeverWaitTests
     /// <summary>A definition, and the event subprocess bodies graph build needs to read alongside it.</summary>
     private sealed record Shape(BpmnProcessDefinition Definition, IReadOnlyDictionary<string, BpmnProcessDefinition>? Nested = null);
 
+    /// <summary>What the graph is built with: everything, condition evaluation included, so a shape is judged on its cycles alone.</summary>
+    private const BpmnHostCapabilities Capabilities = BpmnHostCapabilities.Full | BpmnHostCapabilities.ConditionEvaluation;
+
     private static BpmnGraph Build(Shape shape) =>
         BpmnGraph.Build(
             shape.Definition,
             BpmnBoundWork.Derive(shape.Definition, bindingRef => shape.Nested?.GetValueOrDefault(bindingRef)),
-            BpmnHostCapabilities.Full);
+            Capabilities);
 
     /// <summary>Runs the start evaluation directly, so the state comes back unpruned.</summary>
     private static BpmnEvaluation Start(BpmnProcessDefinition definition, IBpmnVariableReader? variables = null, bool hasEnclosingScope = false) =>
@@ -62,6 +65,9 @@ public sealed class CyclesThatNeverWaitTests
 
         refusal.ShouldNotBeOfType<BpmnCapabilityException>("this is a structural refusal, not a missing capability");
         refusal.Message.ShouldContain($"has a cycle that can never wait: {expectedCycle}.");
+        var cycle = expectedCycle.Split(" -> ");
+        refusal.ElementIds.Take(cycle.Length - 1).Select(id => $"'{id}'").Append($"'{refusal.ElementIds[0]}'").ShouldBe(cycle,
+            customMessage: "the ids open with the cycle's elements, in the order the message names them");
     }
 
     [Fact]
@@ -70,10 +76,12 @@ public sealed class CyclesThatNeverWaitTests
         var (gatewayLoop, _) = Refused["gateways and an unbound task"]();
         var (selfLoop, _) = Refused["an unbound task looping on itself"]();
 
-        Should.Throw<BpmnExecutionException>(() => Build(gatewayLoop)).Message
-            .ShouldContain("'Check' binds no decision, so its conditional flow 'flow-Check-End' is never taken.");
-        Should.Throw<BpmnExecutionException>(() => Build(selfLoop)).Message
-            .ShouldNotContain("never taken", customMessage: "a cycle with no conditional flow has nothing to explain");
+        var gatewayRefusal = Should.Throw<BpmnExecutionException>(() => Build(gatewayLoop));
+        gatewayRefusal.Message.ShouldContain("'Check' binds no decision, so its conditional flow 'flow-Check-End' is never taken.");
+        gatewayRefusal.ElementIds.ShouldBe(["Merge", "Note", "Check", "flow-Check-End"], "the flows it never takes follow the cycle's elements");
+        var selfRefusal = Should.Throw<BpmnExecutionException>(() => Build(selfLoop));
+        selfRefusal.Message.ShouldNotContain("never taken", customMessage: "a cycle with no conditional flow has nothing to explain");
+        selfRefusal.ElementIds.ShouldBe(["Spin"]);
     }
 
     /// <summary>Each shape, and the cycle its refusal must name: in flow order, opening where the loop-back flow lands.</summary>
@@ -106,7 +114,24 @@ public sealed class CyclesThatNeverWaitTests
             // Starts the handler's body every pass, which looks like waiting and is not: the throw's own token goes on.
             ["an escalation throw a non-interrupting event subprocess catches"] = () => (
                 EscalationLoop(interrupting: false),
-                "'Merge' -> 'Raise' -> 'Check' -> 'Merge'")
+                "'Merge' -> 'Raise' -> 'Check' -> 'Merge'"),
+            // A task splits: the unconditional flow back is taken whatever the expression beside it answers.
+            ["an unbound task with an unconditional flow back beside an expression exit"] = () => (
+                new Shape(WithExpressions(
+                    new BpmnProcessBuilder("spin-with-exit")
+                        .StartEvent("Start")
+                        .Element(new BpmnElement("Spin", BpmnElementTypes.Task))
+                        .EndEvent("End")
+                        .Connect("Start", "Spin")
+                        .Connect("Spin", "Spin")
+                        .Connect("Spin", "End", flowId: "exit")
+                        .Build(),
+                    ("exit", "done"))),
+                "'Spin' -> 'Spin'"),
+            // An unconditional flow counts as true, so an exclusive gateway takes it before any flow declared after it.
+            ["an exclusive gateway with an unconditional flow back declared before its exit"] = () => (
+                new Shape(ExpressionCheckLoop(loopBackFirst: true)),
+                "'Merge' -> 'Note' -> 'Check' -> 'Merge'")
         };
 
     // --- Accepted at graph build ---------------------------------------------------------------------------
@@ -144,7 +169,22 @@ public sealed class CyclesThatNeverWaitTests
             // The activation stops every other token in the scope, the throw's own successor included.
             ["an escalation throw an interrupting event subprocess catches"] = () => EscalationLoop(interrupting: true),
             // The flow back is conditional, and a token arriving at an unbound gateway reports no outcome.
-            ["a loop-back flow the routing never takes"] = () => new Shape(LoopBackNeverTaken())
+            ["a loop-back flow the routing never takes"] = () => new Shape(LoopBackNeverTaken()),
+            // The way out is an expression the host answers, so the default back is possibly not taken.
+            ["an exclusive gateway whose way off the cycle is an expression"] = () => new Shape(ExpressionExitLoop()),
+            // The expression is asked first, so the unconditional flow back is taken only when it answers false.
+            ["an exclusive gateway with an expression exit declared before its unconditional flow back"] = () =>
+                new Shape(ExpressionCheckLoop(loopBackFirst: false)),
+            ["an unbound task whose only flow back is an expression"] = () => new Shape(WithExpressions(
+                new BpmnProcessBuilder("spin-on-expression")
+                    .StartEvent("Start")
+                    .Element(new BpmnElement("Spin", BpmnElementTypes.Task))
+                    .EndEvent("End")
+                    .Connect("Start", "Spin")
+                    .Connect("Spin", "Spin", flowId: "again")
+                    .Connect("Spin", "End", isDefault: true)
+                    .Build(),
+                ("again", "more to do")))
         };
 
     // --- Accepted cycles behave as accepted ----------------------------------------------------------------
@@ -173,6 +213,18 @@ public sealed class CyclesThatNeverWaitTests
         instance.Children.ShouldHaveSingleItem().CompleteWork("handle");
 
         instance.IsCompleted.ShouldBeTrue(instance.Transcript.ToString());
+    }
+
+    [Fact]
+    public void A_cycle_whose_exit_is_an_expression_goes_around_until_the_host_answers_true()
+    {
+        var asked = 0;
+        var conditions = new InMemoryConditions().When("exit", _ => BpmnConditionResult.Of(++asked == 3));
+
+        var instance = new InMemoryBpmnHost(new InMemoryBpmnHostOptions { Conditions = conditions }).Start(ExpressionExitLoop());
+
+        instance.IsCompleted.ShouldBeTrue(instance.Transcript.ToString());
+        conditions.Requests.Count.ShouldBe(3);
     }
 
     [Fact]
@@ -361,6 +413,42 @@ public sealed class CyclesThatNeverWaitTests
             .Connect("Check", "Merge", condition: "Again")
             .Connect("Check", "End", isDefault: true)
             .Build();
+
+    /// <summary>Start -> Merge -> Note -> Check, where the unbound Check leaves on an expression and otherwise takes its default back to Merge.</summary>
+    private static BpmnProcessDefinition ExpressionExitLoop() =>
+        WithExpressions(
+            new BpmnProcessBuilder("expression-exit")
+                .StartEvent("Start")
+                .ExclusiveGateway("Merge")
+                .Element(new BpmnElement("Note", BpmnElementTypes.Task))
+                .ExclusiveGateway("Check")
+                .EndEvent("End")
+                .ConnectSequence("Start", "Merge", "Note", "Check")
+                .Connect("Check", "End", flowId: "exit")
+                .Connect("Check", "Merge", isDefault: true)
+                .Build(),
+            ("exit", "done"));
+
+    /// <summary>
+    /// Start -> Merge -> Note -> Check, where the unbound Check has no default: an unconditional flow back to Merge
+    /// and an expression exit, in the order <paramref name="loopBackFirst"/> says.
+    /// </summary>
+    private static BpmnProcessDefinition ExpressionCheckLoop(bool loopBackFirst)
+    {
+        var builder = new BpmnProcessBuilder("expression-check")
+            .StartEvent("Start")
+            .ExclusiveGateway("Merge")
+            .Element(new BpmnElement("Note", BpmnElementTypes.Task))
+            .ExclusiveGateway("Check")
+            .EndEvent("End")
+            .ConnectSequence("Start", "Merge", "Note", "Check");
+
+        builder = loopBackFirst
+            ? builder.Connect("Check", "Merge").Connect("Check", "End", flowId: "exit")
+            : builder.Connect("Check", "End", flowId: "exit").Connect("Check", "Merge");
+
+        return WithExpressions(builder.Build(), ("exit", "done"));
+    }
 
     /// <summary>Do the work again until it reports <c>Done</c>.</summary>
     private static BpmnProcessDefinition RetryUntilDone() =>
