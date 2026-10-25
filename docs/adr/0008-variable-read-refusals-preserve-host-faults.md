@@ -23,13 +23,16 @@ without creating iterations. A malformed refusal lacking a usable code falls bac
 collection-unreadable code; missing message metadata gets a deterministic diagnostic. It never
 becomes an empty loop or an external-storage fault. The interpreter remains synchronous and pure.
 Empty or whitespace-only host messages remain unchanged on the fault verdict. The diagnostic uses
-fallback text because diagnostic records require a nonblank message.
+fallback text because diagnostic records require a nonblank message. A host read refusal is not a
+BPMN error, so the fault verdict leaves `ErrorCode` unset.
 
 Keep the existing three-argument constructor and deconstructor. New metadata is declared as
 explicitly named, nullable init properties and omitted from JSON when null, so existing value JSON
 is unchanged. Existing enum numbers remain unchanged. `BpmnValue` is host-read data and is not
 reachable from the current definition/state payload schema roots, so that schema and its format
-version do not change. This is an additive host-port API for the 0.4.0 package line.
+version do not change. This is an additive host-port API. The published v0.4.0 does not contain
+this change; the next release containing it must note the new presence enum member and require
+exhaustive readers to handle `Refused`.
 
 The reference variable reader provides `SetRefused` so a host can exercise this outcome without a
 custom adapter. Hosts own the diagnostic text and should supply only information suitable for the

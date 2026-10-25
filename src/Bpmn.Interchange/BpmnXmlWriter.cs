@@ -234,10 +234,12 @@ public sealed class BpmnXmlWriter
             foreach (var flowId in outgoing[element.ElementId])
                 InsertByRank(xmlElement, new XElement(BpmnXmlNames.Model + "outgoing", flowId));
             AppendLoopCharacteristics(xmlElement, element, context.Vendor);
+            if (element.Script is not null && StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+                AppendScript(xmlElement, element.Script, context);
 
             // A subprocess already had the nested process's retained content applied while its body was written.
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                ApplyExtensions(xmlElement, element.Extensions, context.Vendor);
+                ApplyExtensions(xmlElement, WithoutRetainedScript(element), context.Vendor);
 
             container.Add(xmlElement);
         }
@@ -340,6 +342,8 @@ public sealed class BpmnXmlWriter
             endEvent.Add(BuildErrorEventDefinition(element, error, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(endEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(endEvent, element, signal, context, isCatch: false);
         return endEvent;
     }
 
@@ -352,6 +356,10 @@ public sealed class BpmnXmlWriter
             throwEvent.Add(BuildEscalationEventDefinition(escalation, context));
         else if (FindDefinition(element, BpmnEventDefinitionTypes.Message) is { } message)
             AppendEventDefinition(throwEvent, element, message, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Signal) is { } signal)
+            AppendEventDefinition(throwEvent, element, signal, context, isCatch: false);
+        else if (FindDefinition(element, BpmnEventDefinitionTypes.Link) is { } link)
+            AppendEventDefinition(throwEvent, element, link, context, isCatch: false);
         return throwEvent;
     }
 
@@ -479,13 +487,34 @@ public sealed class BpmnXmlWriter
                 host.Add(child);
                 break;
             }
+            case BpmnEventDefinitionTypes.Link:
+            {
+                var link = new XElement(BpmnXmlNames.Model + "linkEventDefinition");
+                if (Property(definition, BpmnEventDefinitionProperties.Name) is { } linkName)
+                    link.SetAttributeValue("name", linkName);
+                host.Add(link);
+                break;
+            }
             case BpmnEventDefinitionTypes.Timer:
             {
                 var timer = new XElement(BpmnXmlNames.Model + "timerEventDefinition");
                 var interval = Property(definition, BpmnEventDefinitionProperties.Interval) ?? context.TimerDurationFor(element);
                 var cron = Property(definition, BpmnEventDefinitionProperties.Cron);
+                var date = Property(definition, BpmnEventDefinitionProperties.Date) ?? (isCatch ? context.TimerDateFor(element) : null);
+                var cycle = Property(definition, BpmnEventDefinitionProperties.Cycle) ?? (isCatch ? context.TimerCycleFor(element) : null);
 
-                if (isCatch)
+                if (cycle is not null)
+                {
+                    // A cycle at any position, written back exactly as it was read.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeCycle", cycle));
+                }
+                else if (date is not null)
+                {
+                    // A timer at an instant, one-shot at every position: a start, a catch, a boundary or an
+                    // event-subprocess start.
+                    timer.Add(new XElement(BpmnXmlNames.Model + "timeDate", date));
+                }
+                else if (isCatch)
                 {
                     // A catching timer is a one-shot relative delay.
                     if (interval is not null) timer.Add(new XElement(BpmnXmlNames.Model + "timeDuration", interval));
@@ -810,6 +839,44 @@ public sealed class BpmnXmlWriter
     }
 
     /// <summary>
+    /// Writes a script task's <c>scriptFormat</c>, and its <c>&lt;script&gt;</c> when the script has a body or
+    /// retained content. A format-only script, which is what a read of a task without a <c>&lt;script&gt;</c>
+    /// produces, writes no element, so the next read models the same script.
+    /// </summary>
+    private static void AppendScript(XElement scriptTask, BpmnScript script, WriteContext context)
+    {
+        if (script.Format is not null)
+            scriptTask.SetAttributeValue("scriptFormat", script.Format);
+        if (script.Body.Length == 0 && script.Extensions.IsEmpty)
+            return;
+
+        var element = new XElement(BpmnXmlNames.Model + "script");
+        foreach (var attribute in script.Extensions.ForeignAttributes)
+            BpmnExtensionCapture.WriteAttribute(element, attribute);
+
+        ApplyExtensions(element, script.Extensions with { ForeignAttributes = [] }, context.Vendor);
+        element.Add(new XText(script.Body));
+        InsertByRank(scriptTask, element);
+    }
+
+    /// <summary>
+    /// Drops a <c>&lt;script&gt;</c> a pre-1.6.0 payload retained as a foreign child, for a script task whose
+    /// script is now modeled, so only one is written.
+    /// </summary>
+    private static BpmnExtensions WithoutRetainedScript(BpmnElement element)
+    {
+        if (element.Script is null || !StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.ScriptTask))
+            return element.Extensions;
+
+        return element.Extensions with
+        {
+            ForeignChildren = element.Extensions.ForeignChildren
+                .Where(child => BpmnExtensionCapture.ToXName(child.Element.Name) != BpmnXmlNames.Model + "script")
+                .ToList()
+        };
+    }
+
+    /// <summary>
     /// Drops a <c>conditionExpression</c> a pre-1.3.0 payload retained as a foreign child, for a flow whose
     /// expression is now modeled.
     /// </summary>
@@ -1031,12 +1098,21 @@ public sealed class BpmnXmlWriter
         public string? TimerDurationFor(BpmnElement element) =>
             WorkFor(element) is BpmnWorkBinding.TimerWait timer && !string.IsNullOrWhiteSpace(timer.IsoDuration) ? timer.IsoDuration.Trim() : null;
 
+        /// <summary>The cycle an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerCycleFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerCycleWait timer && !string.IsNullOrWhiteSpace(timer.Cycle) ? timer.Cycle.Trim() : null;
+
+        /// <summary>The instant an element's timer binding carries, for a model that put it there rather than on the event definition.</summary>
+        public string? TimerDateFor(BpmnElement element) =>
+            WorkFor(element) is BpmnWorkBinding.TimerDateWait timer && !string.IsNullOrWhiteSpace(timer.IsoDate) ? timer.IsoDate.Trim() : null;
+
         /// <summary>The message or signal name an element's binding carries, for a model that put it there rather than on the event definition.</summary>
         public string? EventNameFor(BpmnElement element, bool isMessage) => WorkFor(element) switch
         {
             BpmnWorkBinding.MessageWait wait when isMessage => Trimmed(wait.MessageName),
             BpmnWorkBinding.MessagePublish publish when isMessage => Trimmed(publish.MessageName),
             BpmnWorkBinding.SignalWait signal when !isMessage => Trimmed(signal.SignalName),
+            BpmnWorkBinding.SignalPublish broadcast when !isMessage => Trimmed(broadcast.SignalName),
             _ => null
         };
 

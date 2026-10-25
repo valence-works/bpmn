@@ -311,11 +311,12 @@ public sealed class BpmnXmlReader
         var declaredVariables = ReadDeclaredVariables(container, context.Vendor);
         var declaredVariableNames = declaredVariables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
-        // Per-scope event-subprocess trackers: escalation codes must be distinct with at most one code-less
-        // catch-all, and a scope carries at most one error-triggered event subprocess.
+        // Per-scope event-subprocess trackers: for escalation and error alike, codes must be distinct with at
+        // most one code-less catch-all.
         var eventSubprocessEscalationCodes = new HashSet<string>(StringComparer.Ordinal);
         var hasEventSubprocessEscalationCatchAll = false;
-        var hasEventSubprocessError = false;
+        var eventSubprocessErrorCodes = new HashSet<string>(StringComparer.Ordinal);
+        var hasEventSubprocessErrorCatchAll = false;
 
         foreach (var child in container.Elements().Where(child => child.Name.Namespace == BpmnXmlNames.Model))
         {
@@ -324,7 +325,7 @@ public sealed class BpmnXmlReader
             context.CountElement(localName);
 
             if (id is not null && IsRetainableFlowNode(localName)
-                && context.Capture(child, IsFlowNodeChildConsumed) is { IsEmpty: false } captured)
+                && context.Capture(child, IsFlowNodeChildConsumedIn(child)) is { IsEmpty: false } captured)
                 retainedByElementId[id] = captured;
 
             switch (localName)
@@ -352,9 +353,9 @@ public sealed class BpmnXmlReader
                         break;
                     }
                     // A message, signal, or timer event-subprocess body start declares its trigger plus
-                    // isInterrupting, and uses a one-shot <timeDuration> rather than the recurring <timeCycle>
-                    // a process-level timer start uses. A body start whose trigger is unusable degrades to a
-                    // plain start, which then drops the whole event subprocess.
+                    // isInterrupting. Its timer is read like a catch's: a <timeDuration>, then a <timeDate>, then a
+                    // <timeCycle>. A body start whose trigger is unusable degrades to a plain start, which then
+                    // drops the whole event subprocess.
                     if (isEventSubprocessBody)
                     {
                         var bodyStartDefinition = ResolveEventSubprocessBodyStartDefinition(id, child, messageSignalNames, context);
@@ -431,6 +432,25 @@ public sealed class BpmnXmlReader
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
                         break;
                     }
+                    // A signal end event broadcasts and then ends, like a message end event; a signal it cannot
+                    // name degrades to a plain end event the same way. Only a sole signal definition is read as
+                    // one: beside another definition it falls through, so the other is reported, not lost.
+                    if (SoleEventDefinition(child, "signalEventDefinition") is { } signalEndDefinition)
+                    {
+                        var name = ResolveMessageSignalName(signalEndDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
+                        if (name is null)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Degraded, $"Signal end event '{id}' declares a signal event definition with no resolvable name (missing or unresolvable signalRef); it read as a plain end event.", id);
+                            elements.Add(new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(child)));
+                            break;
+                        }
+
+                        var bindingRef = context.Bind(new BpmnWorkBinding.SignalPublish(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, name));
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.EndEvent, name: NameOf(child),
+                            bindingRef: bindingRef,
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
+                        break;
+                    }
                     // A cancel end event is only meaningful inside a transaction; outside one it degrades.
                     if (child.Element(BpmnXmlNames.Model + "cancelEventDefinition") is not null)
                     {
@@ -459,6 +479,13 @@ public sealed class BpmnXmlReader
                 case "intermediateThrowEvent":
                 {
                     if (id is null) break;
+                    // A link beside any other definition goes to the compensate pass, which drops it with a finding,
+                    // before the escalation and message branches below could read it as one of theirs.
+                    if (child.Element(BpmnXmlNames.Model + "linkEventDefinition") is not null && SoleEventDefinition(child, "linkEventDefinition") is null)
+                    {
+                        pendingCompensateThrows.Add(child);
+                        break;
+                    }
                     // An escalation throw must say what it escalates; a ref-less one is dropped and its flows
                     // cascade-drop as unresolved references.
                     if (child.Element(BpmnXmlNames.Model + "escalationEventDefinition") is { } escalationThrowDefinition)
@@ -480,6 +507,37 @@ public sealed class BpmnXmlReader
                         elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
                             bindingRef: bindingRef, defaultFlowId: DefaultOf(child),
                             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Message, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
+                        break;
+                    }
+                    // A link throw jumps to the link catch of its name and binds no work. A throw must say where it
+                    // jumps, so an unnamed one is dropped. Beside another definition it goes to the compensate pass.
+                    if (SoleEventDefinition(child, "linkEventDefinition") is { } linkThrowDefinition)
+                    {
+                        if (LinkNameOf(linkThrowDefinition) is not { } linkName)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Link throw event '{id}' declares a link event definition with no name; a throw must say which catch it jumps to, so it was dropped.", id);
+                            break;
+                        }
+
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Link, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = linkName })]));
+                        break;
+                    }
+                    // As on an end event, only a sole signal definition is read as a broadcast; beside another
+                    // definition the throw goes to the compensate pass, which drops it with a finding.
+                    if (SoleEventDefinition(child, "signalEventDefinition") is { } signalThrowDefinition)
+                    {
+                        var name = ResolveMessageSignalName(signalThrowDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames);
+                        if (name is null)
+                        {
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Signal throw event '{id}' declares a signal event definition with no resolvable name (missing or unresolvable signalRef); a throw must say what it broadcasts, so it was dropped.", id);
+                            break;
+                        }
+
+                        var bindingRef = context.Bind(new BpmnWorkBinding.SignalPublish(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, name));
+                        elements.Add(new BpmnElement(id, BpmnElementTypes.IntermediateThrowEvent, name: NameOf(child),
+                            bindingRef: bindingRef, defaultFlowId: DefaultOf(child),
+                            eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = name })]));
                         break;
                     }
                     // Anything else is resolved in the compensate pass: a compensate throw with a resolvable
@@ -518,7 +576,7 @@ public sealed class BpmnXmlReader
                     // a scope listener, which is a second binding on the same element.
                     if (isEventSubprocess)
                     {
-                        if (TryResolveEventSubprocess(id, nested, processId, eventSubprocessEscalationCodes, ref hasEventSubprocessEscalationCatchAll, ref hasEventSubprocessError, context) is not { } eventSubprocess)
+                        if (TryResolveEventSubprocess(id, nested, processId, eventSubprocessEscalationCodes, ref hasEventSubprocessEscalationCatchAll, eventSubprocessErrorCodes, ref hasEventSubprocessErrorCatchAll, context) is not { } eventSubprocess)
                         {
                             context.DropBindingsFrom(bindingMark);
                             break; // Dropped, with a finding; its flows cascade-drop.
@@ -626,7 +684,12 @@ public sealed class BpmnXmlReader
                         var unboundRef = context.Bind(new BpmnWorkBinding.UnboundTask(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, taskType));
                         elements.Add(new BpmnElement(id, taskType, name: NameOf(child), bindingRef: unboundRef, defaultFlowId: DefaultOf(child),
                             loopCharacteristics: ResolveLoopCharacteristics(child, id, isActivity: true, declaredVariableNames, context),
-                            isForCompensation: IsForCompensationOf(child)));
+                            isForCompensation: IsForCompensationOf(child))
+                        {
+                            Script = taskType == BpmnElementTypes.ScriptTask ? context.CaptureScript(child, ScriptOf(child)) : null
+                        });
+                        if (taskType == BpmnElementTypes.ScriptTask && child.Elements(BpmnXmlNames.Model + "script").Count() is > 1 and var scriptCount)
+                            context.Report(BpmnImportIssueSeverity.Dropped, $"Script task '{id}' declares {scriptCount} script elements; BPMN allows at most one, so the first was read and the rest were dropped.", id);
                         if (taskType != BpmnElementTypes.Task)
                             context.Report(BpmnImportIssueSeverity.Info, $"{Capitalize(localName)} '{id}' declares no implementation; the host must supply the work bound to it.", id);
                         break;
@@ -665,9 +728,11 @@ public sealed class BpmnXmlReader
         var transactionHostsWithCancelBoundary = new HashSet<string>(StringComparer.Ordinal);
         var escalationCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var escalationCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
+        var errorCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var errorCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
         foreach (var boundaryXml in pendingBoundaries)
         {
-            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, errorDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, context);
+            var boundary = ResolveBoundaryEvent(boundaryXml, processId, elementsById, messageSignalNames, escalationDeclarations, errorDeclarations, associations, flowParticipantIds, transactionHostsWithCancelBoundary, escalationCodesByHost, escalationCatchAllHosts, errorCodesByHost, errorCatchAllHosts, context);
             if (boundary is null)
                 continue; // Dropped, with a finding; its sequence flows cascade-drop as unresolved refs.
             elements.Add(boundary);
@@ -1034,8 +1099,8 @@ public sealed class BpmnXmlReader
     /// <summary>
     /// Validates an event subprocess before its element is emitted. The body must declare exactly one start
     /// event with exactly one supported trigger; per scope, escalation codes must be distinct with at most one
-    /// code-less catch-all, and at most one error-triggered event subprocess may exist. A message, signal, or
-    /// timer trigger additionally arms a scope listener.
+    /// code-less catch-all, and so must error codes. A message, signal, or timer trigger additionally arms a scope
+    /// listener.
     /// </summary>
     private static EventSubprocessImport? TryResolveEventSubprocess(
         string id,
@@ -1043,7 +1108,8 @@ public sealed class BpmnXmlReader
         string processId,
         HashSet<string> escalationCodes,
         ref bool hasEscalationCatchAll,
-        ref bool hasError,
+        HashSet<string> errorCodes,
+        ref bool hasErrorCatchAll,
         ReadContext context)
     {
         var starts = body.Elements
@@ -1087,19 +1153,31 @@ public sealed class BpmnXmlReader
 
         if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Error))
         {
-            // BPMN makes catching an error always interrupting, and a scope carries at most one error-triggered
-            // event subprocess; either violation would produce a shape no interpreter could run.
+            // BPMN makes catching an error always interrupting. A scope may carry several error event
+            // subprocesses with distinct codes and at most one code-less catch-all, as with escalation; a
+            // violation would produce a shape no interpreter could run.
             if (!interrupting)
             {
                 context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a non-interrupting error event subprocess; error events are always interrupting per BPMN, so it was dropped.", id);
                 return null;
             }
-            if (hasError)
+
+            var errorCode = definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Code, out var errorCodeValue) && !string.IsNullOrWhiteSpace(errorCodeValue) ? errorCodeValue.Trim() : null;
+            if (errorCode is null)
             {
-                context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a second error-triggered event subprocess in its scope, which may carry at most one; it was dropped.", id);
+                if (hasErrorCatchAll)
+                {
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' is a second code-less catch-all error event subprocess in its scope, which may carry at most one; it was dropped.", id);
+                    return null;
+                }
+                hasErrorCatchAll = true;
+            }
+            else if (!errorCodes.Add(errorCode))
+            {
+                context.Report(BpmnImportIssueSeverity.Dropped, $"Event subprocess '{id}' declares error code '{errorCode}', which another error event subprocess in its scope already claims; it was dropped.", id);
                 return null;
             }
-            hasError = true;
+
             return new EventSubprocessImport(ListenerBindingRef: null);
         }
 
@@ -1121,7 +1199,7 @@ public sealed class BpmnXmlReader
 
         if (StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer))
         {
-            context.Bind(new BpmnWorkBinding.TimerWait(processId, id, listenerRef, BpmnBindingSlot.ScopeListener, definition.Properties[BpmnEventDefinitionProperties.Interval]));
+            context.Bind(TimerWaitFor(processId, id, listenerRef, BpmnBindingSlot.ScopeListener, definition.Properties));
             return new EventSubprocessImport(listenerRef);
         }
 
@@ -1130,9 +1208,9 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>
-    /// Resolves a message, signal, or timer event-subprocess body start. A timer body start is a one-shot
-    /// <c>&lt;timeDuration&gt;</c>; a <c>&lt;timeCycle&gt;</c> or <c>&lt;timeDate&gt;</c> body start, or an
-    /// unresolvable name, degrades to a plain start, which drops the event subprocess.
+    /// Resolves a message, signal, or timer event-subprocess body start. A timer body start is a
+    /// <c>&lt;timeDuration&gt;</c>, a <c>&lt;timeDate&gt;</c> or a <c>&lt;timeCycle&gt;</c>; a timer with none of them
+    /// usable, or an unresolvable name, degrades to a plain start, which drops the event subprocess.
     /// </summary>
     private static BpmnEventDefinition? ResolveEventSubprocessBodyStartDefinition(string id, XElement child, IReadOnlyDictionary<string, string> messageSignalNames, ReadContext context)
     {
@@ -1142,13 +1220,16 @@ public sealed class BpmnXmlReader
             return ResolveEventSubprocessMessageSignal(id, signalDefinition, BpmnEventDefinitionTypes.Signal, messageSignalNames, context);
         if (child.Element(BpmnXmlNames.Model + "timerEventDefinition") is { } timerDefinition)
         {
-            var duration = ResolveCatchTimerDuration(timerDefinition);
-            if (duration is null)
+            var properties = ResolveCatchTimerProperties(timerDefinition);
+            if (properties is null)
             {
-                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer that is not a one-shot <timeDuration>; it read as a plain start and the event subprocess was dropped.", id);
+                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a timer with no usable <timeDuration>, <timeDate> or <timeCycle>; it read as a plain start and the event subprocess was dropped.", id);
                 return null;
             }
-            return new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = duration });
+            // The interpreter re-arms a non-interrupting listener after every fire and cannot yet count them.
+            if (properties.TryGetValue(BpmnEventDefinitionProperties.Repetitions, out var repetitions) && !((bool?)child.Attribute("isInterrupting") ?? true))
+                context.Report(BpmnImportIssueSeverity.Degraded, $"Event subprocess '{id}' body start declares a non-interrupting timer cycle of {repetitions} repetitions; it re-arms after every fire without end, because the repetition count is not honoured yet.", id);
+            return new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties);
         }
 
         return null;
@@ -1216,7 +1297,7 @@ public sealed class BpmnXmlReader
                 var properties = ResolveStartTimerProperties(definition);
                 if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Degraded, $"Start event '{id}' declares a timer event definition that is not a recurring schedule; only a <timeCycle> interval or cron start is supported, so it read as a plain start event.", id);
+                    context.Report(BpmnImportIssueSeverity.Degraded, $"Start event '{id}' declares a timer event definition with no usable <timeCycle> or <timeDate>; only a cycle (an ISO-8601 repeating interval R[n]/[start/]duration, a duration, or a cron expression) or a date is supported, so it read as a plain start event.", id);
                     return null;
                 }
 
@@ -1229,7 +1310,7 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>The event definition and binding ref of a resolved intermediate catch event.</summary>
-    private readonly record struct CatchEventImport(BpmnEventDefinition Definition, string BindingRef);
+    private readonly record struct CatchEventImport(BpmnEventDefinition Definition, string? BindingRef);
 
     /// <summary>
     /// Resolves an intermediate catch event into its event definition plus the wait it binds, or reports a
@@ -1241,7 +1322,7 @@ public sealed class BpmnXmlReader
         var definitions = element.Elements().Where(IsEventDefinition).ToArray();
         if (definitions.Length != 1)
         {
-            context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares {definitions.Length} event definitions; exactly one timer, message, or signal definition is required, so it was dropped.", id);
+            context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares {definitions.Length} event definitions; exactly one timer, message, signal, or link definition is required, so it was dropped.", id);
             return null;
         }
 
@@ -1249,6 +1330,17 @@ public sealed class BpmnXmlReader
         var bindingRef = context.BindingRefFor(id);
         switch (definition.Name.LocalName)
         {
+            case "linkEventDefinition":
+            {
+                // A link catch is where a link throw of its name lands; it binds no work.
+                if (LinkNameOf(definition) is not { } linkName)
+                {
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Link catch event '{id}' declares a link event definition with no name; no throw could jump to it, so it was dropped.", id);
+                    return null;
+                }
+
+                return new CatchEventImport(new BpmnEventDefinition(BpmnEventDefinitionTypes.Link, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Name] = linkName }), BindingRef: null);
+            }
             case "messageEventDefinition":
             case "signalEventDefinition":
             {
@@ -1267,15 +1359,15 @@ public sealed class BpmnXmlReader
             }
             case "timerEventDefinition":
             {
-                var duration = ResolveCatchTimerDuration(definition);
-                if (duration is null)
+                var properties = ResolveCatchTimerProperties(definition);
+                if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares a timer event definition without a <timeDuration>; only a one-shot duration catch timer is supported, so it was dropped.", id);
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares a timer event definition with no usable <timeDuration>, <timeDate> or <timeCycle>, so it was dropped.", id);
                     return null;
                 }
 
-                context.Bind(new BpmnWorkBinding.TimerWait(processId, id, bindingRef, BpmnBindingSlot.Primary, duration));
-                return new CatchEventImport(new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = duration }), bindingRef);
+                context.Bind(TimerWaitFor(processId, id, bindingRef, BpmnBindingSlot.Primary, properties));
+                return new CatchEventImport(new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties), bindingRef);
             }
             default:
                 context.Report(BpmnImportIssueSeverity.Dropped, $"Intermediate catch event '{id}' declares an unsupported '{definition.Name.LocalName}'; only timer, message, and signal catch events are supported, so it was dropped.", id);
@@ -1301,6 +1393,8 @@ public sealed class BpmnXmlReader
         HashSet<string> transactionHostsWithCancelBoundary,
         Dictionary<string, HashSet<string>> escalationCodesByHost,
         HashSet<string> escalationCatchAllHosts,
+        Dictionary<string, HashSet<string>> errorCodesByHost,
+        HashSet<string> errorCatchAllHosts,
         ReadContext context)
     {
         var id = IdOf(element)!;
@@ -1421,6 +1515,27 @@ public sealed class BpmnXmlReader
                     return null;
                 }
 
+                // A coded error boundary catches only its code, so a host may carry several: distinct codes plus at
+                // most one ref-less catch-all, as with escalation. A code collision or a second catch-all drops.
+                var errorCode = ResolveErrorRefCode(definition, errorDeclarations) is { } resolvedCode && !string.IsNullOrWhiteSpace(resolvedCode) ? resolvedCode.Trim() : null;
+                if (errorCode is null)
+                {
+                    if (!errorCatchAllHosts.Add(attachedToRef))
+                    {
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Error boundary event '{id}' is a second code-less catch-all on host '{attachedToRef}', which may carry at most one; it was dropped.", id);
+                        return null;
+                    }
+                }
+                else
+                {
+                    var errorCodes = errorCodesByHost.TryGetValue(attachedToRef, out var existingErrorCodes) ? existingErrorCodes : errorCodesByHost[attachedToRef] = new HashSet<string>(StringComparer.Ordinal);
+                    if (!errorCodes.Add(errorCode))
+                    {
+                        context.Report(BpmnImportIssueSeverity.Dropped, $"Error boundary event '{id}' declares error code '{errorCode}', which another error boundary on host '{attachedToRef}' already claims; it was dropped.", id);
+                        return null;
+                    }
+                }
+
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element),
                     eventDefinitions: [ErrorDefinition(definition, errorDeclarations)],
                     properties: ErrorRefProperties(definition),
@@ -1447,16 +1562,20 @@ public sealed class BpmnXmlReader
             }
             case "timerEventDefinition":
             {
-                var duration = ResolveCatchTimerDuration(definition);
-                if (duration is null)
+                var properties = ResolveCatchTimerProperties(definition);
+                if (properties is null)
                 {
-                    context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' declares a timer event definition without a <timeDuration>; only a one-shot duration boundary timer is supported, so it was dropped.", id);
+                    context.Report(BpmnImportIssueSeverity.Dropped, $"Boundary event '{id}' declares a timer event definition with no usable <timeDuration>, <timeDate> or <timeCycle>, so it was dropped.", id);
                     return null;
                 }
 
-                var timerBindingRef = context.Bind(new BpmnWorkBinding.TimerWait(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, duration));
+                // A timer boundary fires once; re-arming a non-interrupting one for the cycle's later occurrences is not supported yet.
+                if (properties.ContainsKey(BpmnEventDefinitionProperties.Cycle) && !cancelActivity)
+                    context.Report(BpmnImportIssueSeverity.Degraded, $"Non-interrupting boundary event '{id}' declares a timer cycle; it fires once, at the cycle's first occurrence, because re-arming for later occurrences is not supported yet.", id);
+
+                var timerBindingRef = context.Bind(TimerWaitFor(processId, id, context.BindingRefFor(id), BpmnBindingSlot.Primary, properties));
                 return new BpmnElement(id, BpmnElementTypes.BoundaryEvent, name: NameOf(element), bindingRef: timerBindingRef,
-                    eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = duration })],
+                    eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Timer, properties)],
                     attachedToRef: attachedToRef, cancelActivity: cancelActivity);
             }
             default:
@@ -1679,47 +1798,59 @@ public sealed class BpmnXmlReader
     }
 
     /// <summary>
-    /// Maps a start timer's <c>&lt;timeCycle&gt;</c> to a recurring interval or cron schedule: text beginning
-    /// with <c>P</c> or <c>R</c> is an ISO-8601 duration, with any repetition prefix stripped; anything else is
-    /// a cron expression. A non-recurring start returns <c>null</c>.
+    /// Maps a start timer to its schedule: its <c>&lt;timeCycle&gt;</c> (see <see cref="ResolveTimerCycle"/>), which a
+    /// start reads first because a start is recurring by nature, and otherwise its <c>&lt;timeDate&gt;</c>, a single
+    /// start at that instant. A start with neither usable returns <c>null</c>.
     /// </summary>
-    private static IReadOnlyDictionary<string, string>? ResolveStartTimerProperties(XElement definition)
+    private static IReadOnlyDictionary<string, string>? ResolveStartTimerProperties(XElement definition) =>
+        ResolveTimerCycle(definition) ?? ResolveTimerDate(definition);
+
+    /// <summary>
+    /// Maps a catch, boundary or event-subprocess start timer to its event-definition properties: a
+    /// <c>&lt;timeDuration&gt;</c> to its ISO-8601 duration under <see cref="BpmnEventDefinitionProperties.Interval"/>,
+    /// otherwise a <c>&lt;timeDate&gt;</c> to its instant under <see cref="BpmnEventDefinitionProperties.Date"/>, otherwise
+    /// a <c>&lt;timeCycle&gt;</c> (see <see cref="ResolveTimerCycle"/>). BPMN allows only one of them; the order keeps a
+    /// document that declares several reading as it did before cycles were read here. <c>null</c> when none is usable.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ResolveCatchTimerProperties(XElement definition)
     {
-        if (definition.Element(BpmnXmlNames.Model + "timeCycle") is not { } timeCycle)
-            return null;
-
-        var text = timeCycle.Value.Trim();
-        if (text.Length == 0)
-            return null;
-
-        if (text[0] is 'P' or 'R')
-        {
-            var interval = StripRepetitionPrefix(text);
-            return interval.Length == 0
-                ? null
-                : new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = interval };
-        }
-
-        return new Dictionary<string, string> { [BpmnEventDefinitionProperties.Cron] = text };
+        if (TimerText(definition, "timeDuration") is { } duration)
+            return new Dictionary<string, string> { [BpmnEventDefinitionProperties.Interval] = duration };
+        return ResolveTimerDate(definition) ?? ResolveTimerCycle(definition);
     }
 
-    /// <summary>Maps a catch timer's <c>&lt;timeDuration&gt;</c> to its ISO-8601 duration; <c>null</c> for a cycle or date timer.</summary>
-    private static string? ResolveCatchTimerDuration(XElement definition)
-    {
-        if (definition.Element(BpmnXmlNames.Model + "timeDuration") is not { } timeDuration)
-            return null;
+    /// <summary>
+    /// A timer's <c>&lt;timeCycle&gt;</c> as its <see cref="BpmnTimerCycle"/> properties: the text as written under
+    /// <see cref="BpmnEventDefinitionProperties.Cycle"/>, beside its duration or cron, repetition count and start.
+    /// <c>null</c> when absent, blank, or not a shape <see cref="BpmnTimerCycle.TryParse"/> reads.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string>? ResolveTimerCycle(XElement definition) =>
+        BpmnTimerCycle.TryParse(TimerText(definition, "timeCycle"), out var cycle) ? cycle.ToProperties() : null;
 
-        var text = timeDuration.Value.Trim();
-        return text.Length == 0 ? null : text;
+    /// <summary>A timer's <c>&lt;timeDate&gt;</c> as <see cref="BpmnEventDefinitionProperties.Date"/>, kept as written; <c>null</c> when absent or blank.</summary>
+    private static IReadOnlyDictionary<string, string>? ResolveTimerDate(XElement definition) =>
+        TimerText(definition, "timeDate") is { } date
+            ? new Dictionary<string, string> { [BpmnEventDefinitionProperties.Date] = date }
+            : null;
+
+    private static string? TimerText(XElement definition, string localName)
+    {
+        var text = definition.Element(BpmnXmlNames.Model + localName)?.Value.Trim();
+        return string.IsNullOrEmpty(text) ? null : text;
     }
 
-    /// <summary>Strips an ISO-8601 repetition prefix (<c>R.../</c>) from a recurring cycle, leaving the bare duration.</summary>
-    private static string StripRepetitionPrefix(string text)
+    /// <summary>
+    /// The wait a catch, boundary or event-subprocess timer binds: a <see cref="BpmnWorkBinding.TimerCycleWait"/> for a
+    /// cycle, a <see cref="BpmnWorkBinding.TimerDateWait"/> for a date, otherwise a <see cref="BpmnWorkBinding.TimerWait"/>
+    /// for its duration.
+    /// </summary>
+    private static BpmnWorkBinding TimerWaitFor(string processId, string elementId, string bindingRef, BpmnBindingSlot slot, IReadOnlyDictionary<string, string> properties)
     {
-        if (text[0] != 'R')
-            return text;
-        var slash = text.IndexOf('/');
-        return slash >= 0 ? text[(slash + 1)..].Trim() : text;
+        if (properties.TryGetValue(BpmnEventDefinitionProperties.Cycle, out var text) && BpmnTimerCycle.TryParse(text, out var cycle))
+            return new BpmnWorkBinding.TimerCycleWait(processId, elementId, bindingRef, slot, cycle.Text, cycle.IsoDuration, cycle.Cron, cycle.Repetitions, cycle.Start);
+        return properties.TryGetValue(BpmnEventDefinitionProperties.Date, out var date)
+            ? new BpmnWorkBinding.TimerDateWait(processId, elementId, bindingRef, slot, date)
+            : new BpmnWorkBinding.TimerWait(processId, elementId, bindingRef, slot, properties[BpmnEventDefinitionProperties.Interval]);
     }
 
     /// <summary>The message name an element carries: a message event definition's resolved name, or a send/receive task's recorded name.</summary>
@@ -1738,7 +1869,10 @@ public sealed class BpmnXmlReader
         new(element.ElementId, element.ElementType, element.Name, element.BindingRef, laneId ?? element.LaneId,
             element.DefaultFlowId, element.EventDefinitions, element.Properties, element.AttachedToRef, element.CancelActivity,
             element.LoopCharacteristics, isForCompensation ?? element.IsForCompensation, element.CompensationHandlerElementId,
-            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef, extensions ?? element.Extensions);
+            element.IsTransaction, element.TriggeredByEvent, element.ListenerBindingRef, extensions ?? element.Extensions)
+        {
+            Script = element.Script
+        };
 
     /// <summary>The activities BPMN lets a boundary event attach to, and therefore also the activities that can act as a compensation handler.</summary>
     private static bool IsBoundaryHost(string elementType) =>
@@ -1746,10 +1880,20 @@ public sealed class BpmnXmlReader
         || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.SubProcess)
         || StringComparer.Ordinal.Equals(elementType, BpmnElementTypes.CallActivity);
 
+    /// <summary>The element's event definition of the given local name when it is the element's only one.</summary>
+    private static XElement? SoleEventDefinition(XElement element, string localName) =>
+        element.Elements().Where(IsEventDefinition).ToArray() is [var definition] && definition.Name == BpmnXmlNames.Model + localName
+            ? definition
+            : null;
+
     private static bool IsEventDefinition(XElement element) =>
         element.Name.Namespace == BpmnXmlNames.Model && element.Name.LocalName.EndsWith("EventDefinition", StringComparison.Ordinal);
 
     private static string? IdOf(XElement element) => (string?)element.Attribute("id");
+
+    /// <summary>The trimmed <c>name</c> of a <c>&lt;linkEventDefinition&gt;</c>, or <c>null</c> when it is absent or blank.</summary>
+    private static string? LinkNameOf(XElement linkDefinition) =>
+        ((string?)linkDefinition.Attribute("name"))?.Trim() is { Length: > 0 } name ? name : null;
     private static string? NameOf(XElement element) => (string?)element.Attribute("name");
     private static string? DefaultOf(XElement element) => (string?)element.Attribute("default");
 
@@ -1772,6 +1916,19 @@ public sealed class BpmnXmlReader
         || BpmnXmlNames.TaskLocalNamesToElementTypes.ContainsKey(localName)
         || BpmnXmlNames.GatewayLocalNamesToElementTypes.ContainsKey(localName);
 
+
+    /// <summary>
+    /// The children of one flow node the reader interprets: <see cref="IsFlowNodeChildConsumed"/>, plus every
+    /// <c>&lt;script&gt;</c> of a script task. The first is read onto <see cref="BpmnElement.Script"/>; any further
+    /// one, which BPMN does not allow, is reported as dropped rather than retained, because the writer writes the
+    /// modeled script in place of a retained one.
+    /// </summary>
+    private static Func<XElement, bool> IsFlowNodeChildConsumedIn(XElement flowNode) =>
+        ScriptOf(flowNode) is not null ? child => child.Name == BpmnXmlNames.Model + "script" || IsFlowNodeChildConsumed(child) : IsFlowNodeChildConsumed;
+
+    /// <summary>The first <c>&lt;script&gt;</c> of a <c>scriptTask</c>, or <c>null</c> for any other element or a task without one.</summary>
+    private static XElement? ScriptOf(XElement flowNode) =>
+        flowNode.Name == BpmnXmlNames.Model + "scriptTask" ? flowNode.Element(BpmnXmlNames.Model + "script") : null;
 
     private static bool IsFlowNodeChildConsumed(XElement child) =>
         child.Name.Namespace == BpmnXmlNames.Model
@@ -1873,6 +2030,10 @@ public sealed class BpmnXmlReader
         /// <summary>Reads an author's <c>conditionExpression</c>, against this read's fidelity and vendor namespace.</summary>
         public BpmnConditionExpression CaptureConditionExpression(XElement source) =>
             BpmnExtensionCapture.CaptureConditionExpression(source, Fidelity, Vendor, Retention);
+
+        /// <summary>Reads a <c>scriptTask</c>'s script, against this read's fidelity and vendor namespace.</summary>
+        public BpmnScript? CaptureScript(XElement scriptTask, XElement? script) =>
+            BpmnExtensionCapture.CaptureScript(scriptTask, script, Fidelity, Vendor, Retention);
 
         public string Bind(BpmnWorkBinding binding)
         {

@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://valence.works/schemas/bpmn/payload/1.4.0.json",
+  "$id": "https://valence.works/schemas/bpmn/payload/1.9.0.json",
   "title": "BPMN payload format",
-  "description": "Version 1.4.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
-  "x-payloadFormatVersion": "1.4.0",
+  "description": "Version 1.9.0 of the payload format owned by Bpmn.Model. Generated from the model; do not edit by hand. See ADRs 0005 and 0007.",
+  "x-payloadFormatVersion": "1.9.0",
   "x-roots": {
     "BpmnDefinitions": "#/$defs/bpmnDefinitions",
     "BpmnExecutionState": "#/$defs/bpmnExecutionState",
@@ -380,7 +380,9 @@
         21,
         22,
         23,
-        24
+        24,
+        25,
+        26
       ],
       "x-enumNames": [
         "TokenEmitted",
@@ -407,7 +409,9 @@
         "ScopeListenerArmed",
         "ScopeListenerFired",
         "ScopeListenerRetired",
-        "ConditionEvaluated"
+        "ConditionEvaluated",
+        "ErrorThrown",
+        "ErrorCaught"
       ]
     },
     "bpmnDiagram": {
@@ -574,6 +578,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "script": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bpmnScript"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "extensions": {
@@ -1252,6 +1266,29 @@
       ],
       "additionalProperties": false
     },
+    "bpmnScript": {
+      "type": "object",
+      "title": "BpmnScript",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "$ref": "#/$defs/bpmnExtensions"
+        }
+      },
+      "required": [
+        "body",
+        "extensions"
+      ],
+      "additionalProperties": false
+    },
     "bpmnSequenceFlow": {
       "type": "object",
       "title": "BpmnSequenceFlow",
@@ -1493,6 +1530,12 @@
           "$ref": "#/$defs/timerWait"
         },
         {
+          "$ref": "#/$defs/timerDateWait"
+        },
+        {
+          "$ref": "#/$defs/timerCycleWait"
+        },
+        {
           "$ref": "#/$defs/messageWait"
         },
         {
@@ -1500,6 +1543,9 @@
         },
         {
           "$ref": "#/$defs/messagePublish"
+        },
+        {
+          "$ref": "#/$defs/signalPublish"
         },
         {
           "$ref": "#/$defs/callProcess"
@@ -1654,6 +1700,40 @@
       ],
       "additionalProperties": false
     },
+    "signalPublish": {
+      "type": "object",
+      "title": "SignalPublish",
+      "properties": {
+        "kind": {
+          "const": "signalPublish",
+          "type": "string"
+        },
+        "signalName": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "signalName",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
     "signalWait": {
       "type": "object",
       "title": "SignalWait",
@@ -1681,6 +1761,98 @@
       "required": [
         "kind",
         "signalName",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "timerCycleWait": {
+      "type": "object",
+      "title": "TimerCycleWait",
+      "properties": {
+        "kind": {
+          "const": "timerCycleWait",
+          "type": "string"
+        },
+        "cycle": {
+          "type": "string"
+        },
+        "isoDuration": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cron": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repetitions": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "cycle",
+        "processId",
+        "elementId",
+        "bindingRef",
+        "slot"
+      ],
+      "additionalProperties": false
+    },
+    "timerDateWait": {
+      "type": "object",
+      "title": "TimerDateWait",
+      "properties": {
+        "kind": {
+          "const": "timerDateWait",
+          "type": "string"
+        },
+        "isoDate": {
+          "type": "string"
+        },
+        "processId": {
+          "type": "string"
+        },
+        "elementId": {
+          "type": "string"
+        },
+        "bindingRef": {
+          "type": "string"
+        },
+        "slot": {
+          "$ref": "#/$defs/bpmnBindingSlot"
+        }
+      },
+      "required": [
+        "kind",
+        "isoDate",
         "processId",
         "elementId",
         "bindingRef",

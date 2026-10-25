@@ -77,6 +77,9 @@ public sealed record BpmnBehaviorCommand
 
     /// <summary>Raise an escalation.</summary>
     public static BpmnBehaviorCommand RaiseEscalation() => new(BpmnBehaviorCommandKind.RaiseEscalation);
+
+    /// <summary>Consume the current token and throw the error the element declares.</summary>
+    public static BpmnBehaviorCommand ThrowError() => new(BpmnBehaviorCommandKind.ThrowError);
 }
 
 /// <summary>What a <see cref="BpmnBehaviorCommand"/> asks the interpreter to do.</summary>
@@ -118,5 +121,15 @@ public enum BpmnBehaviorCommandKind
     /// behavior stays decision-only — the escalation code is read from the element, and matching, firing, and
     /// bubbling are interpreter-owned.
     /// </summary>
-    RaiseEscalation
+    RaiseEscalation,
+
+    /// <summary>
+    /// Throw an error: an error end event asks the interpreter to consume its token and throw the error the
+    /// element declares. An error event subprocess of the scope that declares the error's code, else a catch-all
+    /// one, catches it and activates, interrupting the scope; otherwise the scope ends at once with a
+    /// <see cref="BpmnContinuation.Fault"/> coded <see cref="BpmnInterpreter.ErrorThrownFaultCode"/> that carries
+    /// the error's code. The sole command of its decision. The behavior stays decision-only — the error code is
+    /// read from the element, and matching and activation are interpreter-owned.
+    /// </summary>
+    ThrowError
 }

@@ -168,6 +168,15 @@ public sealed class BpmnElement
     public string? ListenerBindingRef { get; }
 
     /// <summary>
+    /// The script of a <c>scriptTask</c>: its <c>scriptFormat</c> and <c>&lt;script&gt;</c> body, or <c>null</c>
+    /// when the task declares neither. Set only on a <see cref="BpmnElementTypes.ScriptTask"/>; the writer
+    /// ignores it on any other element type. The script is data: the host that runs the bound work decides
+    /// what to do with it, and the interpreter never reads it.
+    /// </summary>
+    [JsonPropertyName("script")]
+    public BpmnScript? Script { get; init; }
+
+    /// <summary>
     /// Foreign XML retained from this element: its <c>&lt;documentation&gt;</c>, its
     /// <c>&lt;extensionElements&gt;</c> children, and any attributes or child elements from namespaces the
     /// reader does not own.

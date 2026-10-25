@@ -20,7 +20,7 @@ public BpmnErrorDisposition? ErrorDisposition { get; init; }
 ```
 
 `BpmnFaultEvaluation` is removed. `ErrorDisposition` is populated whenever a host-reported failure
-is routed or absorbed. Routing includes call-activity `Faulted`, `DispatchFailed`, and `Cancelled`
+is routed or absorbed, and, since ADR 0012, whenever an error end event throws. Routing includes call-activity `Faulted`, `DispatchFailed`, and `Cancelled`
 outcomes handled by `RouteCallActivityFailureOutcome`; absorption covers late failures of stopped
 work or scopes. It remains `null` when no failure was routed or absorbed, including transaction
 cancellation and an event subprocess activated on another path.
@@ -106,9 +106,8 @@ Adoption gets easier. "Can your host resolve a failure record by id?" is a quest
 answer cleanly. "What does your host do when BPMN catches an error?" is answerable by every host,
 including the answer "nothing".
 
-The disposition carries `ErrorCode` even though code-matched catching is not yet fully implemented —
-today a matching error catcher is selected without narrowing on the code. Reserving the field now
-means the shape does not change when that gap closes.
+The disposition carries `ErrorCode` so the shape did not change when code-matched catching arrived.
+ADR 0012 closes that gap: a catcher now matches by code, exact before the catch-all.
 
 ### Alternatives considered
 

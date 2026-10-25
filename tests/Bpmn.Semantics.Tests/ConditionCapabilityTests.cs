@@ -59,6 +59,7 @@ public sealed class ConditionCapabilityTests
 
         refusal.Missing.ShouldBe(BpmnHostCapabilities.ConditionEvaluation);
         refusal.DrivingElementIds.ShouldBe(["byExpression", "second"]);
+        refusal.ElementIds.ShouldBe(refusal.DrivingElementIds);
         refusal.Message.ShouldContain("ConditionEvaluation (needed by 'byExpression', 'second')");
 
         Should.NotThrow(() => BpmnGraph.Build(Gate(), BpmnBoundWork.Derive(Gate()), Evaluating));
@@ -80,6 +81,8 @@ public sealed class ConditionCapabilityTests
             var refusal = Should.Throw<BpmnExecutionException>(() => BpmnGraph.Build(definition, BpmnBoundWork.Derive(definition), capabilities));
             refusal.ShouldNotBeOfType<BpmnCapabilityException>();
             refusal.Message.ShouldContain(expected);
+            refusal.ElementIds.Count.ShouldBe(2, "the refusal is about the element and its flow");
+            refusal.ElementIds.ShouldAllBe(id => refusal.Message.Contains($"'{id}'"));
         }
     }
 

@@ -113,6 +113,8 @@ public sealed class RefusedVariableReadTests
 
     private static void AssertNoIterationStarted(BpmnEvaluation evaluation)
     {
+        evaluation.Continuation.ShouldBeOfType<BpmnContinuation.Fault>().ErrorCode.ShouldBeNull(
+            "a host variable-read refusal is not a BPMN error");
         evaluation.Commands.OfType<BpmnHostCommand.StartWork>().ShouldBeEmpty(
             "a refused collection read must fault before issuing an iteration command");
         evaluation.State.Loops.ShouldBeEmpty("a refused collection read must not create a loop");

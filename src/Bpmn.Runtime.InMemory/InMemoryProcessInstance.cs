@@ -144,17 +144,28 @@ public sealed class InMemoryProcessInstance
     }
 
     /// <summary>
-    /// Reports that a unit of work failed terminally. Note what this does not carry: an error code. Which BPMN
-    /// error a catcher matches is a property of the model, not of the report.
+    /// Reports that a unit of work failed terminally, naming no BPMN error. Only a catch-all error catcher, one
+    /// that declares no code, catches it; use <see cref="FaultWork(string, string?, string?)"/> to name the error.
     /// </summary>
     public void FaultWork(string handleOrBindingRef, string? message = null) =>
         FaultWork(ResolveWork(handleOrBindingRef), message);
 
-    /// <summary>Reports that a specific unit of work failed terminally.</summary>
-    public void FaultWork(InMemoryWorkItem work, string? message = null)
+    /// <summary>Reports that a specific unit of work failed terminally, naming no BPMN error.</summary>
+    public void FaultWork(InMemoryWorkItem work, string? message = null) => FaultWork(work, message, errorCode: null);
+
+    /// <summary>
+    /// Reports that a unit of work failed terminally with the BPMN error <paramref name="errorCode"/>, which is
+    /// what the interpreter matches error catchers on: a catcher declaring that code wins over a catch-all, and a
+    /// catcher declaring a different code never catches it. <c>null</c> names no error.
+    /// </summary>
+    public void FaultWork(string handleOrBindingRef, string? message, string? errorCode) =>
+        FaultWork(ResolveWork(handleOrBindingRef), message, errorCode);
+
+    /// <summary>Reports that a specific unit of work failed terminally with the BPMN error <paramref name="errorCode"/>, or with none when it is <c>null</c>.</summary>
+    public void FaultWork(InMemoryWorkItem work, string? message, string? errorCode)
     {
         ArgumentNullException.ThrowIfNull(work);
-        Post(() => RunWorkFaulted(work, message));
+        Post(() => RunWorkFaulted(work, message, errorCode));
     }
 
     /// <summary>
@@ -227,7 +238,7 @@ public sealed class InMemoryProcessInstance
             RunWorkCompleted(work, [], timerFired: true);
     }
 
-    internal void RunWorkCompleted(InMemoryWorkItem work, IReadOnlyCollection<string> outcomeNames, bool timerFired)
+    internal void RunWorkCompleted(InMemoryWorkItem work, IReadOnlyCollection<string> outcomeNames, bool timerFired, string? errorCode = null, string? cause = null)
     {
         // A late completion for work that was torn down, or for a scope that already finished, is absorbed
         // rather than faulted. Both are ordinary races in BPMN: an interrupting boundary event tears its host
@@ -237,32 +248,42 @@ public sealed class InMemoryProcessInstance
 
         BpmnTranscriptTrigger trigger = timerFired
             ? new BpmnTranscriptTrigger.TimerFired(work)
-            : new BpmnTranscriptTrigger.WorkCompleted(work, outcomeNames);
+            : new BpmnTranscriptTrigger.WorkCompleted(work, outcomeNames) { ErrorCode = errorCode, Cause = cause };
 
         Evaluate(trigger, snapshot => _host.Interpreter.OnWorkCompleted(new BpmnWorkCompletedRequest(
-            Graph, _state, snapshot, work.BindingRef, work.Handle, outcomeNames, work.IterationId)));
+            Graph, _state, snapshot, work.BindingRef, work.Handle, outcomeNames, work.IterationId)
+        {
+            WorkTokenId = work.WorkTokenId,
+            ErrorCode = errorCode
+        }));
     }
 
-    internal void RunWorkFaulted(InMemoryWorkItem work, string? message)
+    internal void RunWorkFaulted(InMemoryWorkItem work, string? message, string? errorCode = null)
     {
         if (IsFinished || !Retire(work.Handle))
             return;
 
-        Evaluate(new BpmnTranscriptTrigger.WorkFaulted(work, message), snapshot =>
+        Evaluate(new BpmnTranscriptTrigger.WorkFaulted(work, message) { ErrorCode = errorCode }, snapshot =>
             _host.Interpreter.OnWorkFaulted(new BpmnWorkFaultedRequest(
-                Graph, _state, snapshot, work.BindingRef, work.Handle, message) { FaultedIterationId = work.IterationId }));
+                Graph, _state, snapshot, work.BindingRef, work.Handle, message)
+            {
+                FaultedIterationId = work.IterationId,
+                WorkTokenId = work.WorkTokenId,
+                ErrorCode = errorCode
+            }));
     }
 
     internal void RunWorkSignalled(InMemoryWorkItem work, string code, JsonElement? payload)
     {
         // Unlike a completion, a signal leaves the work running — the signalling scope carries on after
-        // escalating — so the live-work record stays exactly where it is.
-        if (IsFinished)
+        // escalating — so the live-work record stays exactly where it is. Drop a queued signal after its
+        // handle retires; it must never act on a replacement invocation.
+        if (IsFinished || FindWork(work.Handle) is null)
             return;
 
         Evaluate(new BpmnTranscriptTrigger.WorkSignalled(work, code), snapshot =>
             _host.Interpreter.OnWorkSignalled(new BpmnWorkSignalledRequest(
-                Graph, _state, snapshot, work.BindingRef, work.Handle, code, payload, work.IterationId)));
+                Graph, _state, snapshot, work.BindingRef, work.Handle, code, payload, work.IterationId) { WorkTokenId = work.WorkTokenId }));
     }
 
     // --- Applying an evaluation ----------------------------------------------------------------------
@@ -345,7 +366,7 @@ public sealed class InMemoryProcessInstance
             IsCatchListener(start),
             dueAt,
             ScopeInstanceId,
-            Clock.Now);
+            Clock.Now) { WorkTokenId = start.TokenId };
 
         _live.Add(work);
         _host.RegisterWork(handle, this);
@@ -441,8 +462,15 @@ public sealed class InMemoryProcessInstance
                 _host.Enqueue(() => parent.RunWorkCompleted(parentWork, [complete.Outcome], timerFired: false));
                 break;
 
+            // The interpreter cannot see the scope above it, so the BPMN error a nested scope faulted with crosses
+            // here (ADR 0012). A call activity reports a called process's failure as a completion with the
+            // Faulted outcome, carrying the error; an embedded subprocess reports it as a fault.
+            case BpmnContinuation.Fault fault when parent.Graph.FindElementByBindingRef(parentWork.BindingRef) is { } host && BpmnElementFamilies.IsCallActivity(host):
+                _host.Enqueue(() => parent.RunWorkCompleted(parentWork, [BpmnInterpreter.CallActivityFaultedOutcomeName], timerFired: false, fault.ErrorCode, $"{fault.Code}: {fault.Message}"));
+                break;
+
             case BpmnContinuation.Fault fault:
-                _host.Enqueue(() => parent.RunWorkFaulted(parentWork, $"{fault.Code}: {fault.Message}"));
+                _host.Enqueue(() => parent.RunWorkFaulted(parentWork, $"{fault.Code}: {fault.Message}", fault.ErrorCode));
                 break;
         }
     }
@@ -452,7 +480,7 @@ public sealed class InMemoryProcessInstance
     private BpmnHostSnapshot Snapshot() => new(
         ScopeInstanceId,
         HasEnclosingScope: _parent is not null,
-        LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle)).ToArray(),
+        LiveWork: _live.Select(work => new BpmnLiveWork(work.BindingRef, work.IterationId, work.Handle) { WorkTokenId = work.WorkTokenId }).ToArray(),
         InvocationCorrelation: _invocationCorrelation,
         Variables: Variables,
         Capabilities: _host.Capabilities)

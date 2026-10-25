@@ -83,10 +83,12 @@ public sealed record Fault(string Code, string Message) : BpmnContinuation
 }
 ```
 
-`Fault.Code` stays the library's reason the scope stopped. `Fault.ErrorCode` is the BPMN error that
+For BPMN errors, `Fault.Code` stays the library's reason the scope stopped. `Fault.ErrorCode` is the BPMN error that
 caused it, when there is one. Faults that are not BPMN errors carry no `ErrorCode`. That covers
 `bpmn.propagation.limit`, `bpmn.gateway.no-flow-selected`, and a transaction cancelled with no
-cancel boundary.
+cancel boundary. [Host variable-read refusals](0008-variable-read-refusals-preserve-host-faults.md)
+are a separate host-port outcome: their `Fault.Code` preserves the host's exact fault code and their
+`Fault.ErrorCode` remains null.
 
 `Caught(CatchingElementId, ErrorCode)` keeps its meaning: the code the catcher declares, or `null`
 when the catcher is a catch-all.
@@ -117,8 +119,8 @@ already true of work faults and of escalation. When a child scope ends with a `F
 for an embedded subprocess, or as `BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for
 a call activity. The parent then runs the same ladder.
 
-The reference host, `Bpmn.Runtime.InMemory`, will do exactly this in the interpreter step (#66), so the
-behavior is tested end to end. It does not pass codes through yet.
+The reference host, `Bpmn.Runtime.InMemory`, does exactly this since the interpreter step (#66), so the
+behavior is tested end to end.
 No new command or capability is needed. A fault is a verdict, not a command (ADR 0003), and the host
 already acts on that verdict.
 
@@ -183,9 +185,9 @@ escalation does with `SignalEnclosingScope`. Rejected. An error ends the child s
 verdict already is the message. A second, command-shaped copy of the same fact is what ADR 0003
 removed once already. Escalation needs a signal because the child keeps running. An error does not.
 
-**Put the code in `Fault.Code`.** This would use `bpmn.error.thrown:CREDIT_DECLINED`, or the BPMN code
-itself, as the fault code. Rejected. `Fault.Code` is the library's namespace of reasons a scope
-stopped, and hosts switch on it. Mixing user-defined codes into it would make a document able to
+**Put the BPMN error code in `Fault.Code`.** This would use `bpmn.error.thrown:CREDIT_DECLINED`, or the BPMN code
+itself, as the fault code. Rejected. For BPMN errors, `Fault.Code` is the library's namespace of
+reasons a scope stopped, and hosts switch on it. Mixing user-defined codes into it would make a document able to
 forge a library reason, and would force hosts to parse a string to separate the two.
 
 **Keep reading error end events as plain end events until the interpreter supports them.** Rejected,

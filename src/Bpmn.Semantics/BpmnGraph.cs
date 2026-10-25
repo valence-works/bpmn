@@ -22,12 +22,14 @@ public sealed class BpmnGraph
     private readonly ILookup<string, BpmnSequenceFlow> _inboundByTarget;
     private readonly ILookup<string, BpmnElement> _boundariesByHost;
     private readonly IReadOnlySet<string> _backwardFlowIds;
+    private readonly IReadOnlySet<string> _linkFlowIds;
     private readonly IReadOnlyList<BpmnEventSubprocessCatcher> _eventSubprocesses;
 
     private BpmnGraph(
         BpmnProcessDefinition definition,
         IReadOnlyCollection<BpmnElement> elements,
         IReadOnlyCollection<BpmnSequenceFlow> sequenceFlows,
+        IReadOnlyCollection<BpmnSequenceFlow> linkFlows,
         IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef,
         bool isTransaction,
         IReadOnlyList<BpmnEventSubprocessCatcher> eventSubprocesses)
@@ -39,12 +41,17 @@ public sealed class BpmnGraph
         _boundWorkByRef = boundWorkByRef;
         _eventSubprocesses = eventSubprocesses;
         _elementsById = elements.ToDictionary(element => element.ElementId, StringComparer.Ordinal);
-        _flowsById = sequenceFlows.ToDictionary(flow => flow.FlowId, StringComparer.Ordinal);
+
+        // A link throw reaches its catch along a synthesized flow, so every rule that reasons about flows (routing,
+        // reachability, loop-back detection, the cycle-that-cannot-wait check) sees the jump as the edge it is.
+        var routingFlows = sequenceFlows.Concat(linkFlows).ToArray();
+        _linkFlowIds = linkFlows.Select(flow => flow.FlowId).ToHashSet(StringComparer.Ordinal);
+        _flowsById = routingFlows.ToDictionary(flow => flow.FlowId, StringComparer.Ordinal);
         _elementsByBindingRef = elements
             .Where(element => element.BindingRef is not null)
             .ToDictionary(element => element.BindingRef!, StringComparer.Ordinal);
-        _outboundBySource = sequenceFlows.ToLookup(flow => flow.SourceRef, StringComparer.Ordinal);
-        _inboundByTarget = sequenceFlows.ToLookup(flow => flow.TargetRef, StringComparer.Ordinal);
+        _outboundBySource = routingFlows.ToLookup(flow => flow.SourceRef, StringComparer.Ordinal);
+        _inboundByTarget = routingFlows.ToLookup(flow => flow.TargetRef, StringComparer.Ordinal);
         _boundariesByHost = elements
             .Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.BoundaryEvent) && element.AttachedToRef is not null)
             .ToLookup(element => element.AttachedToRef!, StringComparer.Ordinal);
@@ -70,7 +77,11 @@ public sealed class BpmnGraph
 
     public IReadOnlyCollection<BpmnElement> Elements { get; }
 
-    /// <summary>Every sequence flow in the process.</summary>
+    /// <summary>
+    /// Every sequence flow the definition declares. The synthesized link flows (see <see cref="IsLinkFlow"/>) are not
+    /// among them, although <see cref="OutboundFlows"/>, <see cref="InboundFlows"/> and <see cref="GetRequiredFlow"/>
+    /// include them.
+    /// </summary>
     public IReadOnlyCollection<BpmnSequenceFlow> SequenceFlows { get; }
 
     /// <summary>The process's start events.</summary>
@@ -87,12 +98,6 @@ public sealed class BpmnGraph
     /// graph. Throws <see cref="BpmnExecutionException"/> for a structurally invalid definition, including one with
     /// a cycle that can never wait, and <see cref="BpmnCapabilityException"/> when the definition needs a host
     /// capability <paramref name="capabilities"/> does not declare.
-    /// <para>
-    /// A nested body is built on its own, when its subprocess starts. What a body cannot run should still be refused
-    /// before the root runs, so this also refuses an error end event in any body <paramref name="boundWork"/>
-    /// carries in <see cref="BpmnBoundWork.NestedProcess"/>. Bodies nested deeper are resolved by the host, not
-    /// carried here: a host that runs them should build each one before it runs the root.
-    /// </para>
     /// </summary>
     /// <param name="definition">The process to execute.</param>
     /// <param name="boundWork">
@@ -123,9 +128,9 @@ public sealed class BpmnGraph
         var variableNames = definition.Variables.Select(variable => variable.Name).ToHashSet(StringComparer.Ordinal);
 
         var eventSubprocesses = Validate(elements, flows, boundWorkByRef, variableNames, definition.IsTransaction);
-        RefuseErrorEndEventsInCarriedBodies(elements, boundWorkByRef);
+        var linkFlows = LinkFlows(elements, flows);
 
-        var graph = new BpmnGraph(definition, elements, flows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
+        var graph = new BpmnGraph(definition, elements, flows, linkFlows, boundWorkByRef, definition.IsTransaction, eventSubprocesses);
         graph.RefuseCyclesThatCannotWait();
         return graph;
     }
@@ -138,7 +143,7 @@ public sealed class BpmnGraph
         if (_elementsById.TryGetValue(elementId, out var element))
             return element;
 
-        throw new BpmnExecutionException($"BPMN element '{elementId}' does not exist in the process graph.");
+        throw new BpmnExecutionException($"BPMN element '{elementId}' does not exist in the process graph.") { ElementIds = [elementId] };
     }
 
     /// <summary>The sequence flow with this id, or throws when the process has none.</summary>
@@ -149,7 +154,7 @@ public sealed class BpmnGraph
         if (_flowsById.TryGetValue(flowId, out var flow))
             return flow;
 
-        throw new BpmnExecutionException($"BPMN sequence flow '{flowId}' does not exist in the process graph.");
+        throw new BpmnExecutionException($"BPMN sequence flow '{flowId}' does not exist in the process graph.") { ElementIds = [flowId] };
     }
 
     /// <summary>The element whose <see cref="BpmnElement.BindingRef"/> is <paramref name="bindingRef"/>, or <c>null</c>.</summary>
@@ -185,9 +190,32 @@ public sealed class BpmnGraph
             .Where(BpmnElementFamilies.IsEscalationBoundary)
             .ToArray();
 
-    /// <summary>The single error boundary attached to <paramref name="hostElementId"/>, or <c>null</c> when the host has none; validation caps a host at one error boundary.</summary>
-    public BpmnElement? AttachedErrorBoundary(string hostElementId) =>
-        _boundariesByHost[hostElementId].FirstOrDefault(BpmnElementFamilies.IsErrorBoundary);
+    /// <summary>The error boundary events attached to <paramref name="hostElementId"/>, in element order; dormant and fault-driven. A host may carry several with distinct codes plus at most one code-less catch-all.</summary>
+    public IReadOnlyCollection<BpmnElement> AttachedErrorBoundaries(string hostElementId) =>
+        _boundariesByHost[hostElementId]
+            .Where(BpmnElementFamilies.IsErrorBoundary)
+            .ToArray();
+
+    /// <summary>
+    /// The error boundary on <paramref name="hostElementId"/> that catches an error coded <paramref name="errorCode"/>:
+    /// the boundary declaring exactly that code wins; else the code-less catch-all; else <c>null</c>. An error with
+    /// no code (<c>null</c>) reaches only the catch-all.
+    /// </summary>
+    public BpmnElement? AttachedErrorBoundary(string hostElementId, string? errorCode)
+    {
+        var boundaries = AttachedErrorBoundaries(hostElementId);
+        return (errorCode is null ? null : boundaries.FirstOrDefault(boundary => StringComparer.Ordinal.Equals(ReadErrorCode(boundary), errorCode)))
+               ?? boundaries.FirstOrDefault(boundary => ReadErrorCode(boundary) is null);
+    }
+
+    /// <summary>
+    /// The code-less catch-all error boundary attached to <paramref name="hostElementId"/>, which is the only one an
+    /// error with no code reaches, or <c>null</c>. A host used to carry at most one error boundary, which caught any
+    /// error; since error codes are matched (ADR 0012) a host may carry several, so "the" error boundary no longer
+    /// exists.
+    /// </summary>
+    [Obsolete("A host may carry several error boundaries since error codes are matched (ADR 0012). Use AttachedErrorBoundary(hostElementId, errorCode) or AttachedErrorBoundaries(hostElementId).")]
+    public BpmnElement? AttachedErrorBoundary(string hostElementId) => AttachedErrorBoundary(hostElementId, errorCode: null);
 
     /// <summary>The single compensation boundary attached to <paramref name="hostElementId"/>, or <c>null</c> when the host has none; validation caps a host at one compensation boundary.</summary>
     public BpmnElement? AttachedCompensationBoundary(string hostElementId) =>
@@ -226,9 +254,32 @@ public sealed class BpmnGraph
         _eventSubprocesses.FirstOrDefault(catcher =>
             catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Escalation && catcher.Code is null);
 
-    /// <summary>The scope's single error event subprocess, or <c>null</c> when it has none; validation caps a scope at one.</summary>
-    public BpmnEventSubprocessCatcher? ErrorEventSubprocess() =>
-        _eventSubprocesses.FirstOrDefault(catcher => catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error);
+    /// <summary>
+    /// The error event subprocess of this scope that catches an error coded <paramref name="errorCode"/>: an exact
+    /// code match wins; else the code-less catch-all; else <c>null</c>. An error with no code (<c>null</c>) reaches
+    /// only the catch-all.
+    /// </summary>
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocess(string? errorCode) =>
+        (errorCode is null ? null : ErrorEventSubprocessExact(errorCode)) ?? ErrorCatchAllEventSubprocess();
+
+    /// <summary>The error event subprocess with the exact code <paramref name="errorCode"/>, or <c>null</c>.</summary>
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocessExact(string errorCode) =>
+        _eventSubprocesses.FirstOrDefault(catcher =>
+            catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error &&
+            catcher.Code is not null && StringComparer.Ordinal.Equals(catcher.Code, errorCode));
+
+    /// <summary>The code-less catch-all error event subprocess, or <c>null</c>.</summary>
+    public BpmnEventSubprocessCatcher? ErrorCatchAllEventSubprocess() =>
+        _eventSubprocesses.FirstOrDefault(catcher =>
+            catcher.TriggerKind == BpmnEventSubprocessTriggerKind.Error && catcher.Code is null);
+
+    /// <summary>
+    /// The code-less catch-all error event subprocess, which is the only one an error with no code reaches, or
+    /// <c>null</c>. A scope used to carry at most one error event subprocess, which caught any error; since error
+    /// codes are matched (ADR 0012) a scope may carry several, so "the" error event subprocess no longer exists.
+    /// </summary>
+    [Obsolete("A scope may carry several error event subprocesses since error codes are matched (ADR 0012). Use ErrorEventSubprocess(errorCode).")]
+    public BpmnEventSubprocessCatcher? ErrorEventSubprocess() => ErrorCatchAllEventSubprocess();
 
     /// <summary>The element's default sequence flow, or <c>null</c> when it declares none.</summary>
     public BpmnSequenceFlow? GetDefaultFlow(BpmnElement element)
@@ -276,6 +327,88 @@ public sealed class BpmnGraph
         ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
         return _backwardFlowIds.Contains(flowId);
     }
+
+    /// <summary>
+    /// Whether <paramref name="flowId"/> is a synthesized link flow: the edge from a link throw to the link catch of the
+    /// same name in this scope, with the id <c>link:</c> followed by the throw's element id. A token that takes a
+    /// link jump reports that id as the flow it arrived by. The definition declares no such flow.
+    /// </summary>
+    public bool IsLinkFlow(string flowId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flowId);
+        return _linkFlowIds.Contains(flowId);
+    }
+
+    /// <summary>The id of the synthesized flow a link throw jumps along: <c>link:</c> followed by the throw's element id, which no BPMN id can equal.</summary>
+    private static string LinkFlowId(string throwElementId) => $"link:{throwElementId}";
+
+    /// <summary>
+    /// Validates the scope's link events and returns one synthesized flow per link throw, from the throw to the link
+    /// catch of the same name. A link pairs throws and catches within one scope only; a subprocess body is its own
+    /// graph. Refuses, naming the elements and flows involved: a link event with no name or with bound work, two
+    /// catches with one name, a throw with no catch of its name, a sequence flow into a catch or out of a throw, and a
+    /// declared flow whose id is the one the throw's link flow needs.
+    /// </summary>
+    private static IReadOnlyCollection<BpmnSequenceFlow> LinkFlows(IReadOnlyCollection<BpmnElement> elements, IReadOnlyCollection<BpmnSequenceFlow> flows)
+    {
+        var throws = elements.Where(element => BpmnElementFamilies.Resolve(element) == BpmnElementFamilies.IntermediateThrowEventLink).ToArray();
+        var catches = elements.Where(element => BpmnElementFamilies.Resolve(element) == BpmnElementFamilies.IntermediateCatchEventLink).ToArray();
+        if (throws.Length == 0 && catches.Length == 0)
+        {
+            return [];
+        }
+
+        foreach (var link in throws.Concat(catches))
+        {
+            var kind = Array.IndexOf(throws, link) >= 0 ? "throw" : "catch";
+            if (LinkName(link) is null)
+                throw new BpmnExecutionException($"BPMN link {kind} event '{link.ElementId}' must declare a non-empty link name; the name is what pairs a throw with its catch.") { ElementIds = [link.ElementId] };
+            if (link.BindingRef is not null || link.ListenerBindingRef is not null)
+                throw new BpmnExecutionException($"BPMN link {kind} event '{link.ElementId}' cannot bind work; a link only moves the token to its catch.") { ElementIds = [link.ElementId] };
+        }
+
+        var catchesByName = new Dictionary<string, BpmnElement>(StringComparer.Ordinal);
+        foreach (var named in catches.GroupBy(element => LinkName(element)!, StringComparer.Ordinal).OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            if (named.Count() > 1)
+                throw new BpmnExecutionException($"BPMN link catch events {string.Join(", ", named.Select(element => $"'{element.ElementId}'"))} share the link name '{named.Key}'; a scope may have only one catch per link name, so a throw knows where to jump.") { ElementIds = [.. named.Select(element => element.ElementId)] };
+            catchesByName[named.Key] = named.Single();
+        }
+
+        foreach (var linkCatch in catches)
+        {
+            var inbound = flows.Where(flow => StringComparer.Ordinal.Equals(flow.TargetRef, linkCatch.ElementId)).ToArray();
+            if (inbound.Length > 0)
+                throw new BpmnExecutionException($"BPMN link catch event '{linkCatch.ElementId}' has incoming sequence flows {string.Join(", ", inbound.Select(flow => $"'{flow.FlowId}'"))}; a link catch is reached only by a link throw.") { ElementIds = [linkCatch.ElementId, .. inbound.Select(flow => flow.FlowId)] };
+        }
+
+        var declaredFlowIds = flows.Select(flow => flow.FlowId).ToHashSet(StringComparer.Ordinal);
+        var linkFlows = new List<BpmnSequenceFlow>(throws.Length);
+        foreach (var linkThrow in throws)
+        {
+            var outbound = flows.Where(flow => StringComparer.Ordinal.Equals(flow.SourceRef, linkThrow.ElementId)).ToArray();
+            if (outbound.Length > 0)
+                throw new BpmnExecutionException($"BPMN link throw event '{linkThrow.ElementId}' has outgoing sequence flows {string.Join(", ", outbound.Select(flow => $"'{flow.FlowId}'"))}; a link throw continues only at its catch.") { ElementIds = [linkThrow.ElementId, .. outbound.Select(flow => flow.FlowId)] };
+
+            var name = LinkName(linkThrow)!;
+            if (!catchesByName.TryGetValue(name, out var linkCatch))
+                throw new BpmnExecutionException($"BPMN link throw event '{linkThrow.ElementId}' jumps to link '{name}', but no link catch event in its scope has that name.") { ElementIds = [linkThrow.ElementId] };
+
+            var flowId = LinkFlowId(linkThrow.ElementId);
+            if (declaredFlowIds.Contains(flowId))
+                throw new BpmnExecutionException($"BPMN sequence flow id '{flowId}' is the id of link throw event '{linkThrow.ElementId}''s link flow; rename the sequence flow.") { ElementIds = [flowId, linkThrow.ElementId] };
+
+            linkFlows.Add(new BpmnSequenceFlow(flowId, linkThrow.ElementId, linkCatch.ElementId));
+        }
+
+        return linkFlows;
+    }
+
+    /// <summary>The trimmed link name a link event's definition declares, or <c>null</c> when it declares none.</summary>
+    private static string? LinkName(BpmnElement element) =>
+        element.EventDefinitions.Single().Properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) && !string.IsNullOrWhiteSpace(name)
+            ? name.Trim()
+            : null;
 
     /// <summary>
     /// Classifies the graph's backward (loop-closing) sequence flows once at construction. A
@@ -413,21 +546,31 @@ public sealed class BpmnGraph
             cycle = cycle.Skip(backward + 1).Concat(cycle.Take(backward + 1)).ToList();
 
         var elementIds = cycle.Select(flow => flow.SourceRef).ToList();
-        var ignored = elementIds.Select(id => IgnoredConditionalFlows(GetRequiredElement(id), passThrough[id])).Where(clause => clause is not null);
+        var ignored = elementIds
+            .Select(id => IgnoredConditionalFlows(GetRequiredElement(id), passThrough[id]))
+            .Where(clause => clause is not null)
+            .Select(clause => clause!.Value)
+            .ToList();
 
         return new BpmnExecutionException(
             $"BPMN process '{ProcessId}' has a cycle that can never wait: {string.Join(" -> ", elementIds.Append(elementIds[0]).Select(id => $"'{id}'"))}. "
             + "Every element on it passes a token straight on in the same evaluation, so a token that enters it circulates forever and the evaluation never returns. "
-            + string.Concat(ignored.Select(clause => clause + " "))
-            + "Put something on the cycle that waits, such as an element that binds work (a task, a catch event, a decision gateway), or route out of it.");
+            + string.Concat(ignored.Select(clause => clause.Sentence + " "))
+            + "Put something on the cycle that waits, such as an element that binds work (a task, a catch event, a decision gateway), or route out of it.")
+        {
+            ElementIds = [.. elementIds, .. ignored.SelectMany(clause => clause.FlowIds)]
+        };
     }
 
-    /// <summary>The sentence naming the conditional flows <paramref name="element"/> never takes, or <c>null</c> when it takes every one it has.</summary>
-    private string? IgnoredConditionalFlows(BpmnElement element, IReadOnlyCollection<BpmnSequenceFlow> taken)
+    /// <summary>
+    /// The sentence naming the conditional flows <paramref name="element"/> never takes, with their ids, or <c>null</c>
+    /// when it takes every one it has.
+    /// </summary>
+    private (string Sentence, IReadOnlyList<string> FlowIds)? IgnoredConditionalFlows(BpmnElement element, IReadOnlyCollection<BpmnSequenceFlow> taken)
     {
         var ignored = OutboundFlows(element.ElementId)
             .Where(flow => flow.ConditionOutcome is not null && !taken.Any(candidate => StringComparer.Ordinal.Equals(candidate.FlowId, flow.FlowId)))
-            .Select(flow => $"'{flow.FlowId}'")
+            .Select(flow => flow.FlowId)
             .ToArray();
         if (ignored.Length == 0)
             return null;
@@ -435,9 +578,10 @@ public sealed class BpmnGraph
         var binds = BpmnElementFamilies.Resolve(element) is BpmnElementFamilies.ExclusiveGateway or BpmnElementFamilies.InclusiveGateway
             ? "binds no decision"
             : "binds no work";
-        return ignored.Length == 1
-            ? $"'{element.ElementId}' {binds}, so its conditional flow {ignored[0]} is never taken."
-            : $"'{element.ElementId}' {binds}, so its conditional flows {string.Join(", ", ignored)} are never taken.";
+        var sentence = ignored.Length == 1
+            ? $"'{element.ElementId}' {binds}, so its conditional flow '{ignored[0]}' is never taken."
+            : $"'{element.ElementId}' {binds}, so its conditional flows {string.Join(", ", ignored.Select(id => $"'{id}'"))} are never taken.";
+        return (sentence, ignored);
     }
 
     /// <summary>
@@ -483,11 +627,13 @@ public sealed class BpmnGraph
         {
             case BpmnElementFamilies.ParallelGateway:
             case BpmnElementFamilies.EventBasedGateway:
+            case BpmnElementFamilies.IntermediateThrowEventLink:
                 return outbound;
             case BpmnElementFamilies.ExclusiveGateway:
                 return BpmnFlowSelector.CertainExclusiveFlowOnArrival(element, outbound);
             case BpmnElementFamilies.Task:
             case BpmnElementFamilies.InclusiveGateway:
+            case BpmnElementFamilies.IntermediateCatchEventLink:
                 return BpmnFlowSelector.CertainTaskFlowsOnArrival(element, outbound);
             case BpmnElementFamilies.IntermediateThrowEventEscalation:
                 // Validation already refused a throw without a code; without one, nothing in the scope could catch it.
@@ -517,9 +663,9 @@ public sealed class BpmnGraph
         foreach (var flow in flows)
         {
             if (!elementIds.Contains(flow.SourceRef))
-                throw new BpmnExecutionException($"BPMN sequence flow '{flow.FlowId}' source '{flow.SourceRef}' does not exist.");
+                throw new BpmnExecutionException($"BPMN sequence flow '{flow.FlowId}' source '{flow.SourceRef}' does not exist.") { ElementIds = [flow.FlowId, flow.SourceRef] };
             if (!elementIds.Contains(flow.TargetRef))
-                throw new BpmnExecutionException($"BPMN sequence flow '{flow.FlowId}' target '{flow.TargetRef}' does not exist.");
+                throw new BpmnExecutionException($"BPMN sequence flow '{flow.FlowId}' target '{flow.TargetRef}' does not exist.") { ElementIds = [flow.FlowId, flow.TargetRef] };
         }
 
         var boundBindingRefs = new HashSet<string>(StringComparer.Ordinal);
@@ -531,10 +677,16 @@ public sealed class BpmnGraph
             if (family == BpmnElementFamilies.StartEventTimer)
                 _ = BpmnTimerStartSchedule.Resolve(element);
 
+            // A start's cycle is checked by its schedule above, and an event-subprocess start's by its parent's
+            // catcher below; a timer catch or boundary checks its own.
+            if (family is BpmnElementFamilies.IntermediateCatchEvent or BpmnElementFamilies.BoundaryEvent
+                && TimerDefinition(element) is { } timer)
+                _ = BpmnTimerCycleRules.Resolve(timer.Properties, $"BPMN timer {element.ElementType} '{element.ElementId}'", [element.ElementId]);
+
             if (element.BindingRef is not null)
             {
                 if (!boundWorkByRef.ContainsKey(element.BindingRef))
-                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' binds work '{element.BindingRef}', which the host did not supply.");
+                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' binds work '{element.BindingRef}', which the host did not supply.") { ElementIds = [element.ElementId] };
                 if (!boundBindingRefs.Add(element.BindingRef))
                     throw new BpmnExecutionException($"BPMN bound work '{element.BindingRef}' is bound by more than one element.");
             }
@@ -544,7 +696,7 @@ public sealed class BpmnGraph
             if (element.ListenerBindingRef is not null)
             {
                 if (!boundWorkByRef.ContainsKey(element.ListenerBindingRef))
-                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' binds scope-listener work '{element.ListenerBindingRef}', which the host did not supply.");
+                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' binds scope-listener work '{element.ListenerBindingRef}', which the host did not supply.") { ElementIds = [element.ElementId] };
                 if (!boundBindingRefs.Add(element.ListenerBindingRef))
                     throw new BpmnExecutionException($"BPMN bound work '{element.ListenerBindingRef}' is bound by more than one element.");
             }
@@ -559,24 +711,31 @@ public sealed class BpmnGraph
                 case BpmnElementFamilies.StartEventError:
                 case BpmnElementFamilies.EndEventNone:
                 case BpmnElementFamilies.EndEventTerminate:
+                case BpmnElementFamilies.EndEventError:
                 case BpmnElementFamilies.ParallelGateway:
                 case BpmnElementFamilies.EventBasedGateway:
                     if (element.BindingRef is not null)
-                        throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) cannot bind work.");
+                        throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) cannot bind work.") { ElementIds = [element.ElementId] };
                     break;
                 case BpmnElementFamilies.SubProcess:
                     if (element.BindingRef is null)
-                        throw new BpmnExecutionException($"BPMN subprocess '{element.ElementId}' requires bound work (a nested BPMN process).");
+                        throw new BpmnExecutionException($"BPMN subprocess '{element.ElementId}' requires bound work (a nested BPMN process).") { ElementIds = [element.ElementId] };
                     break;
                 case BpmnElementFamilies.IntermediateCatchEvent:
                     if (element.BindingRef is null)
-                        throw new BpmnExecutionException($"BPMN intermediate catch event '{element.ElementId}' requires bound suspending work (a timer, or a message or signal subscription).");
+                        throw new BpmnExecutionException($"BPMN intermediate catch event '{element.ElementId}' requires bound suspending work (a timer, or a message or signal subscription).") { ElementIds = [element.ElementId] };
                     break;
                 case BpmnElementFamilies.IntermediateThrowEventMessage:
                 case BpmnElementFamilies.EndEventMessage:
                     // A message throw/end is a bound-work send — it binds the work that publishes the message.
                     if (element.BindingRef is null)
-                        throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{element.ElementId}' requires bound work (the send that publishes the message).");
+                        throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{element.ElementId}' requires bound work (the send that publishes the message).") { ElementIds = [element.ElementId] };
+                    break;
+                case BpmnElementFamilies.IntermediateThrowEventSignal:
+                case BpmnElementFamilies.EndEventSignal:
+                    // A signal throw/end is a bound-work broadcast — it binds the work that publishes the signal.
+                    if (element.BindingRef is null)
+                        throw new BpmnExecutionException($"BPMN signal {(StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{element.ElementId}' requires bound work (the broadcast that publishes the signal).") { ElementIds = [element.ElementId] };
                     break;
             }
         }
@@ -594,29 +753,29 @@ public sealed class BpmnGraph
         foreach (var startEvent in startEvents)
         {
             if (inboundByTarget[startEvent.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN start event '{startEvent.ElementId}' cannot have inbound sequence flows.");
+                throw new BpmnExecutionException($"BPMN start event '{startEvent.ElementId}' cannot have inbound sequence flows.") { ElementIds = [startEvent.ElementId] };
         }
 
         foreach (var endEvent in elements.Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.EndEvent)))
         {
             if (outboundBySource[endEvent.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN end event '{endEvent.ElementId}' cannot have outbound sequence flows.");
+                throw new BpmnExecutionException($"BPMN end event '{endEvent.ElementId}' cannot have outbound sequence flows.") { ElementIds = [endEvent.ElementId] };
         }
 
         foreach (var element in elements)
         {
             var defaults = outboundBySource[element.ElementId].Where(flow => flow.IsDefault).ToArray();
             if (defaults.Length > 1)
-                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares more than one default sequence flow.");
+                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares more than one default sequence flow.") { ElementIds = [element.ElementId] };
 
             if (element.DefaultFlowId is not null)
             {
                 var referenced = flows.FirstOrDefault(flow => StringComparer.Ordinal.Equals(flow.FlowId, element.DefaultFlowId))
-                                 ?? throw new BpmnExecutionException($"BPMN element '{element.ElementId}' default flow '{element.DefaultFlowId}' does not exist.");
+                                 ?? throw new BpmnExecutionException($"BPMN element '{element.ElementId}' default flow '{element.DefaultFlowId}' does not exist.") { ElementIds = [element.ElementId, element.DefaultFlowId] };
                 if (!StringComparer.Ordinal.Equals(referenced.SourceRef, element.ElementId))
-                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' default flow '{element.DefaultFlowId}' does not originate from it.");
+                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' default flow '{element.DefaultFlowId}' does not originate from it.") { ElementIds = [element.ElementId, element.DefaultFlowId] };
                 if (defaults.Length == 1 && !StringComparer.Ordinal.Equals(defaults[0].FlowId, element.DefaultFlowId))
-                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares conflicting default flows '{defaults[0].FlowId}' and '{element.DefaultFlowId}'.");
+                    throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares conflicting default flows '{defaults[0].FlowId}' and '{element.DefaultFlowId}'.") { ElementIds = [element.ElementId, defaults[0].FlowId, element.DefaultFlowId] };
             }
         }
 
@@ -648,39 +807,18 @@ public sealed class BpmnGraph
     }
 
     /// <summary>
-    /// Refuses an error end event in a body this definition's bound work carries, embedded or event subprocess
-    /// alike. A body's own graph is built only when its subprocess starts, so without this the refusal would surface
-    /// mid-run, after earlier work had already happened. A body carries no bound work of its own, so the bodies
-    /// nested inside it are not visible here: the host resolves those, and must build each one before running the
-    /// root to refuse them up front too.
-    /// </summary>
-    private static void RefuseErrorEndEventsInCarriedBodies(
-        IReadOnlyCollection<BpmnElement> elements,
-        IReadOnlyDictionary<string, BpmnBoundWork> boundWorkByRef)
-    {
-        foreach (var element in elements)
-        {
-            if (element.BindingRef is null || boundWorkByRef[element.BindingRef].NestedProcess is not { } body)
-                continue;
-
-            if (body.Elements.FirstOrDefault(BpmnElementFamilies.IsErrorEndEvent) is { } thrower)
-                throw BpmnElementFamilies.ErrorEndEventRefusal(thrower, element.ElementId);
-        }
-    }
-
-    /// <summary>
     /// Event subprocess rules. A <c>TriggeredByEvent</c> element is a flow-less <c>subProcess</c>
     /// binding a body: it participates in no sequence flows, carries no loop characteristics, hosts no attached
     /// boundary, is not a compensation handler, not referenced as one, and is neither a compensation handler nor a
     /// transaction (the compensation-handler rule family, mirrored). Its body must declare exactly one start event
-    /// carrying exactly one supported trigger definition — escalation (with optional code; code-less = catch-all),
-    /// error (catch-all only), or a message/signal (with a <c>name</c>) / timer (with an <c>interval</c>) — with no
+    /// carrying exactly one supported trigger definition — escalation or error (each with an optional code;
+    /// code-less = catch-all), or a message/signal (with a <c>name</c>) / timer (with an <c>interval</c>) — with no
     /// nested <c>TriggeredByEvent</c> inside the body (rejected). A message/signal/timer event subprocess
     /// declares a required <see cref="BpmnElement.ListenerBindingRef"/> (the armed scope listener) that
     /// escalation/error must NOT declare (dormant catchers). The body start event's interrupting flag (its
     /// <see cref="BpmnElement.CancelActivity"/>, the BPMN <c>isInterrupting</c> default-true convention) must be
-    /// interrupting for an error trigger. Per scope: escalation codes are distinct with at most one code-less
-    /// catch-all, and at most one error event subprocess. The body structure is read the way MI validation reads
+    /// interrupting for an error trigger. Per scope and per trigger kind, escalation and error alike: codes are
+    /// distinct, with at most one code-less catch-all. The body structure is read the way MI validation reads
     /// the definition's own variable declarations — authoring-time knowledge, no runtime cross-scope reach.
     /// Returns the graph-derived catcher index.
     /// </summary>
@@ -707,44 +845,45 @@ public sealed class BpmnGraph
         var catchers = new List<BpmnEventSubprocessCatcher>();
         var escalationCodes = new HashSet<string>(StringComparer.Ordinal);
         var hasEscalationCatchAll = false;
-        var hasError = false;
+        var errorCodes = new HashSet<string>(StringComparer.Ordinal);
+        var hasErrorCatchAll = false;
 
         foreach (var element in triggered)
         {
             // Rule 1 — element-level shape (the compensation-handler rule family, mirrored).
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) is marked as an event subprocess, but only a subprocess element may be an event subprocess.");
+                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) is marked as an event subprocess, but only a subprocess element may be an event subprocess.") { ElementIds = [element.ElementId] };
             if (element.BindingRef is null)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' requires bound work (the nested event-subprocess body).");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' requires bound work (the nested event-subprocess body).") { ElementIds = [element.ElementId] };
             if (inboundByTarget[element.ElementId].Any() || outboundBySource[element.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot participate in sequence flows; it is activated by its body start-event trigger, not by token flow.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot participate in sequence flows; it is activated by its body start-event trigger, not by token flow.") { ElementIds = [element.ElementId] };
             if (element.LoopCharacteristics is not null)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot carry multi-instance loop characteristics.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot carry multi-instance loop characteristics.") { ElementIds = [element.ElementId] };
             if (boundaryHosts.Contains(element.ElementId))
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot host attached boundary events.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot host attached boundary events.") { ElementIds = [element.ElementId] };
             if (element.IsForCompensation)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot also be a compensation handler.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot also be a compensation handler.") { ElementIds = [element.ElementId] };
             if (compensationHandlerRefs.Contains(element.ElementId))
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot be referenced as a compensation handler.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot be referenced as a compensation handler.") { ElementIds = [element.ElementId] };
             if (element.IsTransaction)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot also be a transaction.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' cannot also be a transaction.") { ElementIds = [element.ElementId] };
 
             // Rule 2 — body structure: exactly one start event with one supported trigger definition; no nested
             // event subprocess. The body definition travels on the bound work.
             var bodyStructure = boundWorkByRef.TryGetValue(element.BindingRef, out var bodyWork) ? bodyWork.NestedProcess : null;
             if (bodyStructure is null)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body must be a nested BPMN process (its bound work carries none).");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body must be a nested BPMN process (its bound work carries none).") { ElementIds = [element.ElementId] };
             if (bodyStructure.Elements.Any(bodyElement => bodyElement.TriggeredByEvent))
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body declares a nested event subprocess; nested event subprocesses are not supported.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body declares a nested event subprocess; nested event subprocesses are not supported.") { ElementIds = [element.ElementId] };
 
             var bodyStarts = bodyStructure.Elements
                 .Where(bodyElement => StringComparer.Ordinal.Equals(bodyElement.ElementType, BpmnElementTypes.StartEvent))
                 .ToArray();
             if (bodyStarts.Length != 1)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body must declare exactly one start event; it declares {bodyStarts.Length}.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body must declare exactly one start event; it declares {bodyStarts.Length}.") { ElementIds = [element.ElementId] };
             var bodyStart = bodyStarts[0];
             if (bodyStart.EventDefinitions.Count != 1)
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' must declare exactly one event definition of a supported trigger (escalation, error, message, signal, or timer); it declares {bodyStart.EventDefinitions.Count}.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' must declare exactly one event definition of a supported trigger (escalation, error, message, signal, or timer); it declares {bodyStart.EventDefinitions.Count}.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
 
             // Rule 3 — interrupting flag from the body start event's CancelActivity (isInterrupting, default true).
             var interrupting = bodyStart.CancelActivity;
@@ -754,36 +893,46 @@ public sealed class BpmnGraph
             {
                 // Escalation and error are dormant catchers — they must NOT declare a scope listener.
                 if (element.ListenerBindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN escalation event subprocess '{element.ElementId}' declares scope-listener work, but escalation event subprocesses are dormant (activated by a signal, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
+                    throw new BpmnExecutionException($"BPMN escalation event subprocess '{element.ElementId}' declares scope-listener work, but escalation event subprocesses are dormant (activated by a signal, not an armed listener); only message/signal/timer event subprocesses may declare a listener.") { ElementIds = [element.ElementId] };
 
                 var code = ReadEscalationCode(bodyStart);
                 if (code is null)
                 {
                     if (hasEscalationCatchAll)
-                        throw new BpmnExecutionException($"BPMN scope declares more than one code-less catch-all escalation event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
+                        throw new BpmnExecutionException($"BPMN scope declares more than one code-less catch-all escalation event subprocess (at '{element.ElementId}'); a scope may carry at most one.") { ElementIds = [element.ElementId] };
                     hasEscalationCatchAll = true;
                 }
                 else if (!escalationCodes.Add(code))
                 {
-                    throw new BpmnExecutionException($"BPMN scope declares more than one escalation event subprocess for code '{code}' (at '{element.ElementId}'); escalation event-subprocess codes in one scope must be distinct.");
+                    throw new BpmnExecutionException($"BPMN scope declares more than one escalation event subprocess for code '{code}' (at '{element.ElementId}'); escalation event-subprocess codes in one scope must be distinct.") { ElementIds = [element.ElementId] };
                 }
 
                 catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Escalation, code, interrupting));
             }
             else if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Error))
             {
-                // An error-triggered event subprocess catches the fault of work started in this scope and then runs
-                // its body. Interrupting only (per BPMN), and a scope carries at most one. Its code is recorded so a
-                // catch reports what the catcher declares, but selection does not yet narrow on it.
+                // An error-triggered event subprocess catches an error raised in this scope — a work fault, a call
+                // activity's failure outcome, or an error end event — and then runs its body. Interrupting only (per
+                // BPMN). A coded one catches only its code, so a scope may carry several with distinct codes plus one
+                // code-less catch-all: the escalation rule, applied to errors.
                 if (element.ListenerBindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by a work fault, not an armed listener); only message/signal/timer event subprocesses may declare a listener.");
+                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' declares scope-listener work, but error event subprocesses are dormant (activated by an error, not an armed listener); only message/signal/timer event subprocesses may declare a listener.") { ElementIds = [element.ElementId] };
                 if (!interrupting)
-                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' must be interrupting; error events are always interrupting per BPMN.");
-                if (hasError)
-                    throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess (at '{element.ElementId}'); a scope may carry at most one.");
-                hasError = true;
+                    throw new BpmnExecutionException($"BPMN error event subprocess '{element.ElementId}' must be interrupting; error events are always interrupting per BPMN.") { ElementIds = [element.ElementId] };
 
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, ReadErrorCode(bodyStart), Interrupting: true));
+                var errorCode = ReadErrorCode(bodyStart);
+                if (errorCode is null)
+                {
+                    if (hasErrorCatchAll)
+                        throw new BpmnExecutionException($"BPMN scope declares more than one code-less catch-all error event subprocess (at '{element.ElementId}'); a scope may carry at most one.") { ElementIds = [element.ElementId] };
+                    hasErrorCatchAll = true;
+                }
+                else if (!errorCodes.Add(errorCode))
+                {
+                    throw new BpmnExecutionException($"BPMN scope declares more than one error event subprocess for code '{errorCode}' (at '{element.ElementId}'); error event-subprocess codes in one scope must be distinct.") { ElementIds = [element.ElementId] };
+                }
+
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, BpmnEventSubprocessTriggerKind.Error, errorCode, Interrupting: true));
             }
             else if (ExternalTriggerKind(definitionType) is { } externalTriggerKind)
             {
@@ -792,14 +941,18 @@ public sealed class BpmnGraph
                 // exactly-one-binding loop. The body start's trigger facts (message/signal name; timer interval) are
                 // validated non-empty; cyclic timers are not supported for event subprocesses.
                 if (element.ListenerBindingRef is null)
-                    throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' requires scope-listener work (a message/signal/timer event subprocess arms a suspending listener at scope start); none is bound.");
+                    throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' requires scope-listener work (a message/signal/timer event subprocess arms a suspending listener at scope start); none is bound.") { ElementIds = [element.ElementId] };
 
                 ValidateExternalTriggerDefinition(element, bodyStart, definitionType);
-                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, externalTriggerKind, Code: null, interrupting, element.ListenerBindingRef));
+                catchers.Add(new BpmnEventSubprocessCatcher(element.ElementId, element.BindingRef, bodyStart.ElementId, externalTriggerKind, Code: null, interrupting, element.ListenerBindingRef)
+                {
+                    FiresOnce = externalTriggerKind == BpmnEventSubprocessTriggerKind.Timer
+                                && HasNonBlank(bodyStart.EventDefinitions.Single().Properties, BpmnEventDefinitionProperties.Date)
+                });
             }
             else
             {
-                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares an unsupported trigger definition '{definitionType}'; only escalation, error, message, signal, and timer triggers are supported.");
+                throw new BpmnExecutionException($"BPMN event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares an unsupported trigger definition '{definitionType}'; only escalation, error, message, signal, and timer triggers are supported.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
             }
         }
 
@@ -815,24 +968,37 @@ public sealed class BpmnGraph
 
     /// <summary>
     /// Validates a message/signal/timer event-subprocess body start's stimulus facts: message/signal
-    /// declare a non-empty <c>name</c>; a timer declares a non-empty <c>interval</c> (<c>timeDuration</c>-shaped) and
-    /// no <c>cron</c> (cyclic timers are not supported for event subprocesses).
+    /// declare a non-empty <c>name</c>; a timer declares a <c>cycle</c> (<c>timeCycle</c>-shaped, see
+    /// <see cref="BpmnTimerCycleRules"/>), or else exactly one non-empty <c>interval</c> (<c>timeDuration</c>-shaped) or
+    /// <c>date</c> (<c>timeDate</c>-shaped), and no <c>cron</c> outside a cycle.
     /// </summary>
     private static void ValidateExternalTriggerDefinition(BpmnElement element, BpmnElement bodyStart, string definitionType)
     {
         var properties = bodyStart.EventDefinitions.Single().Properties;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Timer))
         {
+            if (BpmnTimerCycleRules.Resolve(properties, $"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}'", [element.ElementId, bodyStart.ElementId]) is not null)
+                return;
             if (properties.TryGetValue(BpmnEventDefinitionProperties.Cron, out var cron) && !string.IsNullOrWhiteSpace(cron))
-                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule; cron/timeCycle timers are not supported for event subprocesses (only a one-shot interval, re-armed per non-interrupting fire).");
-            if (!properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) || string.IsNullOrWhiteSpace(interval))
-                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval; a timer event subprocess needs a one-shot duration interval.");
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' declares a cron schedule without a cycle; a cron timer event subprocess declares its timeCycle as '{BpmnEventDefinitionProperties.Cycle}'.") { ElementIds = [element.ElementId] };
+            if (!HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && !HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no interval or date; a timer event subprocess needs a one-shot duration interval or a date.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
+            // Both would leave whether the listener re-arms after a non-interrupting fire to whichever one wins.
+            if (HasNonBlank(properties, BpmnEventDefinitionProperties.Interval) && HasNonBlank(properties, BpmnEventDefinitionProperties.Date))
+                throw new BpmnExecutionException($"BPMN timer event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares both an interval and a date; a timer event subprocess needs exactly one.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
             return;
         }
 
         if (!properties.TryGetValue(BpmnEventDefinitionProperties.Name, out var name) || string.IsNullOrWhiteSpace(name))
-            throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no event name; a {definitionType} event subprocess resolves its stimulus from a non-empty name.");
+            throw new BpmnExecutionException($"BPMN {definitionType} event subprocess '{element.ElementId}' body start event '{bodyStart.ElementId}' declares no event name; a {definitionType} event subprocess resolves its stimulus from a non-empty name.") { ElementIds = [element.ElementId, bodyStart.ElementId] };
     }
+
+    /// <summary>An element's timer event definition, or <c>null</c> when it declares none.</summary>
+    internal static BpmnEventDefinition? TimerDefinition(BpmnElement element) =>
+        element.EventDefinitions.FirstOrDefault(definition => StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer));
+
+    private static bool HasNonBlank(IReadOnlyDictionary<string, string> properties, string key) =>
+        properties.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value);
 
     /// <summary>
     /// Multi-instance loop rules: loop characteristics are valid only on a task-family or
@@ -848,23 +1014,23 @@ public sealed class BpmnGraph
                 continue;
 
             if (!BpmnElementFamilies.IsBoundaryHostFamily(element) || element.BindingRef is null)
-                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) declares multi-instance loop characteristics but is not a task-family or subprocess host with bound work.");
+                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) declares multi-instance loop characteristics but is not a task-family or subprocess host with bound work.") { ElementIds = [element.ElementId] };
 
             var hasCardinality = loop.Cardinality is not null;
             var hasCollection = loop.CollectionVariable is not null;
             if (hasCardinality == hasCollection)
-                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' must declare exactly one of a positive cardinality or a collection variable.");
+                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' must declare exactly one of a positive cardinality or a collection variable.") { ElementIds = [element.ElementId] };
 
             if (hasCardinality && loop.Cardinality < 1)
-                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' declares a cardinality of {loop.Cardinality}; the cardinality must be a positive integer.");
+                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' declares a cardinality of {loop.Cardinality}; the cardinality must be a positive integer.") { ElementIds = [element.ElementId] };
 
             if (hasCollection && !declaredVariableNames.Contains(loop.CollectionVariable!))
-                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' names collection variable '{loop.CollectionVariable}', which is not a declared container-scoped variable of the process.");
+                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' names collection variable '{loop.CollectionVariable}', which is not a declared container-scoped variable of the process.") { ElementIds = [element.ElementId] };
 
             // The item key must not collide with the reserved loopIndex key the iteration frame always seeds
             // — a collision would silently overwrite one with the other.
             if (hasCollection && StringComparer.Ordinal.Equals(loop.ItemVariable, BpmnLoopCharacteristics.LoopIndexVariable))
-                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' uses item variable '{BpmnLoopCharacteristics.LoopIndexVariable}', which is reserved for the zero-based iteration index; choose a different item variable.");
+                throw new BpmnExecutionException($"BPMN multi-instance element '{element.ElementId}' uses item variable '{BpmnLoopCharacteristics.LoopIndexVariable}', which is reserved for the zero-based iteration index; choose a different item variable.") { ElementIds = [element.ElementId] };
         }
     }
 
@@ -872,8 +1038,8 @@ public sealed class BpmnGraph
     /// Boundary event rules: the <c>attachedToRef</c> host must exist, be a task-family or
     /// subprocess element, and bind work; a boundary takes no inbound flows and at least one
     /// outbound flow; a catch boundary (timer/message/signal) binds listener work while an error
-    /// boundary binds none and must be interrupting; a host carries at most one error boundary; a boundary
-    /// declares no default flow (its outbound is taken unconditionally when it fires).
+    /// boundary binds none and must be interrupting; a host's error boundary codes are distinct, with at most one
+    /// code-less catch-all; a boundary declares no default flow (its outbound is taken unconditionally when it fires).
     /// </summary>
     private static void ValidateBoundaryEvents(
         IReadOnlyCollection<BpmnElement> elements,
@@ -881,24 +1047,25 @@ public sealed class BpmnGraph
         ILookup<string, BpmnSequenceFlow> inboundByTarget)
     {
         var elementsById = elements.ToDictionary(element => element.ElementId, StringComparer.Ordinal);
-        var errorBoundaryCountByHost = new Dictionary<string, int>(StringComparer.Ordinal);
+        var errorCodesByHost = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var errorCatchAllHosts = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var boundary in elements.Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.BoundaryEvent)))
         {
             if (boundary.AttachedToRef is not { } hostId)
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' must declare an attachedToRef host element.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' must declare an attachedToRef host element.") { ElementIds = [boundary.ElementId] };
 
             if (!elementsById.TryGetValue(hostId, out var host))
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to '{hostId}', which does not exist.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to '{hostId}', which does not exist.") { ElementIds = [boundary.ElementId, hostId] };
 
             if (!BpmnElementFamilies.IsBoundaryHostFamily(host))
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}), which is not a task-family or subprocess host.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}), which is not a task-family or subprocess host.") { ElementIds = [boundary.ElementId, hostId] };
 
             if (host.BindingRef is null)
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to host '{hostId}', which binds no work; a boundary event can only attach to a host that runs work.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' is attached to host '{hostId}', which binds no work; a boundary event can only attach to a host that runs work.") { ElementIds = [boundary.ElementId, hostId] };
 
             if (inboundByTarget[boundary.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' cannot have inbound sequence flows; it is entered by its host's activation.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' cannot have inbound sequence flows; it is entered by its host's activation.") { ElementIds = [boundary.ElementId] };
 
             // A compensation boundary inverts the outbound rule — it has zero outbound flows (its
             // "outbound" is the association to its handler); every other boundary needs at least one.
@@ -906,15 +1073,15 @@ public sealed class BpmnGraph
             if (isCompensationBoundary)
             {
                 if (outboundBySource[boundary.ElementId].Any())
-                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' cannot have outbound sequence flows; its handler is reached by association, not by token flow.");
+                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' cannot have outbound sequence flows; its handler is reached by association, not by token flow.") { ElementIds = [boundary.ElementId] };
             }
             else if (!outboundBySource[boundary.ElementId].Any())
             {
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' must have at least one outbound sequence flow.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' must have at least one outbound sequence flow.") { ElementIds = [boundary.ElementId] };
             }
 
             if (boundary.DefaultFlowId is not null || outboundBySource[boundary.ElementId].Any(flow => flow.IsDefault))
-                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' cannot declare a default sequence flow; its outbound is taken unconditionally when it fires.");
+                throw new BpmnExecutionException($"BPMN boundary event '{boundary.ElementId}' cannot declare a default sequence flow; its outbound is taken unconditionally when it fires.") { ElementIds = [boundary.ElementId] };
 
             if (isCompensationBoundary)
             {
@@ -922,20 +1089,31 @@ public sealed class BpmnGraph
                 // its host must not carry loop characteristics (multi-instance host compensation is a stated cut).
                 // The handler reference is validated in ValidateCompensation.
                 if (boundary.BindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' cannot bind work; it has no listener and fires after its host completes.");
+                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' cannot bind work; it has no listener and fires after its host completes.") { ElementIds = [boundary.ElementId] };
                 if (host.LoopCharacteristics is not null)
-                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' is attached to multi-instance host '{hostId}'; compensation on a multi-instance host is not supported.");
+                    throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' is attached to multi-instance host '{hostId}'; compensation on a multi-instance host is not supported.") { ElementIds = [boundary.ElementId, hostId] };
             }
             else if (BpmnElementFamilies.IsErrorBoundary(boundary))
             {
                 if (boundary.BindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN error boundary event '{boundary.ElementId}' cannot bind work; it catches the host's work fault and has no listener.");
+                    throw new BpmnExecutionException($"BPMN error boundary event '{boundary.ElementId}' cannot bind work; it catches the host's work fault and has no listener.") { ElementIds = [boundary.ElementId] };
                 if (!boundary.CancelActivity)
-                    throw new BpmnExecutionException($"BPMN error boundary event '{boundary.ElementId}' must be interrupting (cancelActivity=true); a non-interrupting error boundary is not meaningful.");
+                    throw new BpmnExecutionException($"BPMN error boundary event '{boundary.ElementId}' must be interrupting (cancelActivity=true); a non-interrupting error boundary is not meaningful.") { ElementIds = [boundary.ElementId] };
 
-                errorBoundaryCountByHost[hostId] = (errorBoundaryCountByHost.TryGetValue(hostId, out var count) ? count : 0) + 1;
-                if (errorBoundaryCountByHost[hostId] > 1)
-                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one error boundary event; without error-code matching a host may carry at most one.");
+                // A coded boundary catches only its code, so a host may carry several: distinct codes plus at most
+                // one code-less catch-all, the escalation rule applied to errors.
+                var code = ReadErrorCode(boundary);
+                if (code is null)
+                {
+                    if (!errorCatchAllHosts.Add(hostId))
+                        throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one code-less catch-all error boundary; a host may carry at most one.") { ElementIds = [hostId] };
+                }
+                else
+                {
+                    var codes = errorCodesByHost.TryGetValue(hostId, out var existing) ? existing : errorCodesByHost[hostId] = new HashSet<string>(StringComparer.Ordinal);
+                    if (!codes.Add(code))
+                        throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one error boundary for code '{code}'; error boundary codes on one host must be distinct.") { ElementIds = [hostId] };
+                }
             }
             else if (BpmnElementFamilies.IsCancelBoundary(boundary))
             {
@@ -944,7 +1122,7 @@ public sealed class BpmnGraph
                 // is ignored (the host is already finished when it fires). The host-is-a-transaction and
                 // at-most-one-per-host rules live in ValidateTransaction.
                 if (boundary.BindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN cancel boundary event '{boundary.ElementId}' cannot bind work; it is dormant and fires on the transaction's Cancelled outcome.");
+                    throw new BpmnExecutionException($"BPMN cancel boundary event '{boundary.ElementId}' cannot bind work; it is dormant and fires on the transaction's Cancelled outcome.") { ElementIds = [boundary.ElementId] };
             }
             else if (BpmnElementFamilies.IsEscalationBoundary(boundary))
             {
@@ -953,11 +1131,11 @@ public sealed class BpmnGraph
                 // honored (interrupting and non-interrupting are both meaningful). The host-must-be-a-subprocess,
                 // distinct-codes, and single-catch-all rules live in ValidateEscalation.
                 if (boundary.BindingRef is not null)
-                    throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' cannot bind work; it is dormant and fires when a matching escalation signal arrives.");
+                    throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' cannot bind work; it is dormant and fires when a matching escalation signal arrives.") { ElementIds = [boundary.ElementId] };
             }
             else if (boundary.BindingRef is null)
             {
-                throw new BpmnExecutionException($"BPMN catch boundary event '{boundary.ElementId}' requires bound suspending listener work (a timer, or a message or signal subscription).");
+                throw new BpmnExecutionException($"BPMN catch boundary event '{boundary.ElementId}' requires bound suspending listener work (a timer, or a message or signal subscription).") { ElementIds = [boundary.ElementId] };
             }
         }
     }
@@ -978,9 +1156,9 @@ public sealed class BpmnGraph
         foreach (var thrower in elements.Where(BpmnElementFamilies.IsEscalationThrowOrEnd))
         {
             if (thrower.BindingRef is not null)
-                throw new BpmnExecutionException($"BPMN escalation {(StringComparer.Ordinal.Equals(thrower.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{thrower.ElementId}' cannot bind work.");
+                throw new BpmnExecutionException($"BPMN escalation {(StringComparer.Ordinal.Equals(thrower.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{thrower.ElementId}' cannot bind work.") { ElementIds = [thrower.ElementId] };
             if (ReadEscalationCode(thrower) is null)
-                throw new BpmnExecutionException($"BPMN escalation {(StringComparer.Ordinal.Equals(thrower.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{thrower.ElementId}' must declare a non-empty escalation code; a throw must say what it escalates.");
+                throw new BpmnExecutionException($"BPMN escalation {(StringComparer.Ordinal.Equals(thrower.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{thrower.ElementId}' must declare a non-empty escalation code; a throw must say what it escalates.") { ElementIds = [thrower.ElementId] };
         }
 
         // Rules 2/3 — escalation boundary host family + per-host distinct codes and a single catch-all.
@@ -992,25 +1170,29 @@ public sealed class BpmnGraph
             if (boundary.AttachedToRef is not { } hostId || !elementsById.TryGetValue(hostId, out var host))
                 continue;
             if (!StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess))
-                throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}); an escalation boundary may only attach to a subprocess host (a task's bound work is a leaf that can never escalate).");
+                throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}); an escalation boundary may only attach to a subprocess host (a task's bound work is a leaf that can never escalate).") { ElementIds = [boundary.ElementId, hostId] };
 
             var code = ReadEscalationCode(boundary);
             if (code is null)
             {
                 if (!catchAllByHost.Add(hostId))
-                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one code-less catch-all escalation boundary; a host may carry at most one.");
+                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one code-less catch-all escalation boundary; a host may carry at most one.") { ElementIds = [hostId] };
             }
             else
             {
                 var codes = codesByHost.TryGetValue(hostId, out var existing) ? existing : codesByHost[hostId] = new HashSet<string>(StringComparer.Ordinal);
                 if (!codes.Add(code))
-                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one escalation boundary for code '{code}'; escalation boundary codes on one host must be distinct.");
+                    throw new BpmnExecutionException($"BPMN host '{hostId}' declares more than one escalation boundary for code '{code}'; escalation boundary codes on one host must be distinct.") { ElementIds = [hostId] };
             }
         }
     }
 
-    /// <summary>The code an error event definition declares, or <c>null</c> for a catch-all. Errors keep their code under the same key as escalations.</summary>
-    private static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
+    /// <summary>
+    /// The code an error event definition declares — what a catcher catches, or what an error end event throws — or
+    /// <c>null</c> for a catch-all, or for a thrown error with no code. Errors keep their code under the same key as
+    /// escalations; surrounding whitespace is trimmed, and a blank code counts as none.
+    /// </summary>
+    internal static string? ReadErrorCode(BpmnElement element) => ReadEscalationCode(element);
 
     /// <summary>The non-empty escalation code an escalation throw/end/boundary declares, or <c>null</c> when absent/blank (a code-less boundary is the catch-all).</summary>
     private static string? ReadEscalationCode(BpmnElement element) =>
@@ -1021,17 +1203,23 @@ public sealed class BpmnGraph
             : null;
 
     /// <summary>
-    /// Message throw/end rules. A message throw/end event is a bound-work send: its single message event
-    /// definition must carry a non-empty <c>name</c> (a send must say what it publishes), and it binds a synthesized
-    /// the work that publishes it (the bound-work requirement is enforced in the per-family switch above). Rejects
-    /// deterministically with the offending element named.
+    /// Message and signal throw/end rules. A message throw/end event is a bound-work send and a signal throw/end
+    /// event a bound-work broadcast: its single event definition must carry a non-empty <c>name</c> (a send or
+    /// broadcast must say what it publishes), and it binds the work that publishes it (the bound-work requirement
+    /// is enforced in the per-family switch above). Rejects deterministically with the offending element named.
     /// </summary>
     private static void ValidateMessageThrowEnd(IReadOnlyCollection<BpmnElement> elements)
     {
         foreach (var sender in elements.Where(BpmnElementFamilies.IsMessageThrowOrEnd))
         {
             if (ReadMessageName(sender) is null)
-                throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(sender.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{sender.ElementId}' must declare a non-empty message name; a send must say what it publishes.");
+                throw new BpmnExecutionException($"BPMN message {(StringComparer.Ordinal.Equals(sender.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{sender.ElementId}' must declare a non-empty message name; a send must say what it publishes.") { ElementIds = [sender.ElementId] };
+        }
+
+        foreach (var broadcaster in elements.Where(BpmnElementFamilies.IsSignalThrowOrEnd))
+        {
+            if (ReadMessageName(broadcaster) is null)
+                throw new BpmnExecutionException($"BPMN signal {(StringComparer.Ordinal.Equals(broadcaster.ElementType, BpmnElementTypes.EndEvent) ? "end" : "throw")} event '{broadcaster.ElementId}' must declare a non-empty signal name; a broadcast must say what it publishes.") { ElementIds = [broadcaster.ElementId] };
         }
     }
 
@@ -1068,11 +1256,11 @@ public sealed class BpmnGraph
         foreach (var boundary in elements.Where(BpmnElementFamilies.IsCompensationBoundary))
         {
             if (boundary.CompensationHandlerElementId is not { } handlerId)
-                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' must reference a compensation handler via its compensation-handler element id.");
+                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' must reference a compensation handler via its compensation-handler element id.") { ElementIds = [boundary.ElementId] };
             if (!elementsById.TryGetValue(handlerId, out var referenced))
-                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' references handler '{handlerId}', which does not exist.");
+                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' references handler '{handlerId}', which does not exist.") { ElementIds = [boundary.ElementId, handlerId] };
             if (!referenced.IsForCompensation)
-                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' references '{handlerId}', which is not a compensation handler element (isForCompensation).");
+                throw new BpmnExecutionException($"BPMN compensation boundary event '{boundary.ElementId}' references '{handlerId}', which is not a compensation handler element (isForCompensation).") { ElementIds = [boundary.ElementId, handlerId] };
         }
 
         // Rule 2 — handler shape (task-family/subProcess, binds work, zero flows, no loop characteristics, hosts
@@ -1080,39 +1268,39 @@ public sealed class BpmnGraph
         foreach (var handler in elements.Where(element => element.IsForCompensation))
         {
             if (!BpmnElementFamilies.IsBoundaryHostFamily(handler))
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' ({handler.ElementType}) must be a task-family or subprocess element.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' ({handler.ElementType}) must be a task-family or subprocess element.") { ElementIds = [handler.ElementId] };
             if (handler.BindingRef is null)
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' must bind work.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' must bind work.") { ElementIds = [handler.ElementId] };
             if (inboundByTarget[handler.ElementId].Any() || outboundBySource[handler.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot participate in sequence flows; it is invoked only by the compensation replay.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot participate in sequence flows; it is invoked only by the compensation replay.") { ElementIds = [handler.ElementId] };
             if (handler.LoopCharacteristics is not null)
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot carry loop characteristics.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot carry loop characteristics.") { ElementIds = [handler.ElementId] };
             if (attachedByHost[handler.ElementId].Any())
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot host attached boundary events.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' cannot host attached boundary events.") { ElementIds = [handler.ElementId] };
 
             var references = boundariesByHandler[handler.ElementId].Count();
             if (references == 0)
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' is referenced by no compensation boundary (orphan handler); it cannot ride normal flow.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' is referenced by no compensation boundary (orphan handler); it cannot ride normal flow.") { ElementIds = [handler.ElementId] };
             if (references > 1)
-                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' is referenced by more than one compensation boundary; a handler binds exactly one boundary.");
+                throw new BpmnExecutionException($"BPMN compensation handler '{handler.ElementId}' is referenced by more than one compensation boundary; a handler binds exactly one boundary.") { ElementIds = [handler.ElementId] };
         }
 
         // Rule 3 — a handler never sits at a start-event slot (its zero-flows rule already blocks it from
         // gateway targets and boundary-host slots, which are reached/entered by flows or activation).
         foreach (var start in elements.Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.StartEvent) && element.IsForCompensation))
-            throw new BpmnExecutionException($"BPMN start event '{start.ElementId}' cannot be a compensation handler.");
+            throw new BpmnExecutionException($"BPMN start event '{start.ElementId}' cannot be a compensation handler.") { ElementIds = [start.ElementId] };
 
         // Rule 4 — a compensation-handler reference belongs only on a compensation boundary, and a compensate
         // throw event binds no work.
         foreach (var element in elements.Where(element => element.CompensationHandlerElementId is not null && !BpmnElementFamilies.IsCompensationBoundary(element)))
-            throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares a compensation-handler reference but is not a compensation boundary event.");
+            throw new BpmnExecutionException($"BPMN element '{element.ElementId}' declares a compensation-handler reference but is not a compensation boundary event.") { ElementIds = [element.ElementId] };
 
         // A message throw is also an intermediateThrowEvent but IS a bound-work send, so this compensate-only
         // rule is scoped to compensate throws; escalation throws are handled by ValidateEscalation.
         foreach (var throwEvent in elements.Where(element => StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.IntermediateThrowEvent) && BpmnElementFamilies.HasCompensateDefinition(element)))
         {
             if (throwEvent.BindingRef is not null)
-                throw new BpmnExecutionException($"BPMN compensate throw event '{throwEvent.ElementId}' cannot bind work.");
+                throw new BpmnExecutionException($"BPMN compensate throw event '{throwEvent.ElementId}' cannot bind work.") { ElementIds = [throwEvent.ElementId] };
         }
 
         // Rule 5 — an activityRef on a compensate throw/end names an existing element with an attached
@@ -1131,9 +1319,9 @@ public sealed class BpmnGraph
             if (activityRef is null)
                 continue;
             if (!elementsById.ContainsKey(activityRef))
-                throw new BpmnExecutionException($"BPMN compensate event '{thrower.ElementId}' targets activityRef '{activityRef}', which does not exist in this process.");
+                throw new BpmnExecutionException($"BPMN compensate event '{thrower.ElementId}' targets activityRef '{activityRef}', which does not exist in this process.") { ElementIds = [thrower.ElementId, activityRef] };
             if (!compensationHosts.Contains(activityRef))
-                throw new BpmnExecutionException($"BPMN compensate event '{thrower.ElementId}' targets activityRef '{activityRef}', which has no attached compensation boundary.");
+                throw new BpmnExecutionException($"BPMN compensate event '{thrower.ElementId}' targets activityRef '{activityRef}', which has no attached compensation boundary.") { ElementIds = [thrower.ElementId, activityRef] };
         }
     }
 
@@ -1152,18 +1340,18 @@ public sealed class BpmnGraph
         foreach (var element in elements.Where(element => element.IsTransaction))
         {
             if (!StringComparer.Ordinal.Equals(element.ElementType, BpmnElementTypes.SubProcess))
-                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) is marked as a transaction, but only a subprocess element may be a transaction.");
+                throw new BpmnExecutionException($"BPMN element '{element.ElementId}' ({element.ElementType}) is marked as a transaction, but only a subprocess element may be a transaction.") { ElementIds = [element.ElementId] };
             if (element.BindingRef is null)
-                throw new BpmnExecutionException($"BPMN transaction '{element.ElementId}' requires bound work (the nested transaction process).");
+                throw new BpmnExecutionException($"BPMN transaction '{element.ElementId}' requires bound work (the nested transaction process).") { ElementIds = [element.ElementId] };
             if (element.LoopCharacteristics is not null)
-                throw new BpmnExecutionException($"BPMN transaction '{element.ElementId}' cannot carry multi-instance loop characteristics; multi-instance transactions are not supported.");
+                throw new BpmnExecutionException($"BPMN transaction '{element.ElementId}' cannot carry multi-instance loop characteristics; multi-instance transactions are not supported.") { ElementIds = [element.ElementId] };
         }
 
         // Rule 2 — a cancel end event is valid only inside a transaction structure.
         foreach (var cancelEnd in elements.Where(BpmnElementFamilies.IsCancelEndEvent))
         {
             if (!structureIsTransaction)
-                throw new BpmnExecutionException($"BPMN cancel end event '{cancelEnd.ElementId}' is only valid inside a transaction; this process is not a transaction.");
+                throw new BpmnExecutionException($"BPMN cancel end event '{cancelEnd.ElementId}' is only valid inside a transaction; this process is not a transaction.") { ElementIds = [cancelEnd.ElementId] };
         }
 
         // Rule 2/3 — a cancel boundary attaches only to a transaction host, at most one per host.
@@ -1174,11 +1362,11 @@ public sealed class BpmnGraph
             if (boundary.AttachedToRef is not { } hostId || !elementsById.TryGetValue(hostId, out var host))
                 continue;
             if (!host.IsTransaction)
-                throw new BpmnExecutionException($"BPMN cancel boundary event '{boundary.ElementId}' is attached to '{hostId}', which is not a transaction; a cancel boundary may only attach to a transaction.");
+                throw new BpmnExecutionException($"BPMN cancel boundary event '{boundary.ElementId}' is attached to '{hostId}', which is not a transaction; a cancel boundary may only attach to a transaction.") { ElementIds = [boundary.ElementId, hostId] };
 
             cancelBoundaryCountByHost[hostId] = (cancelBoundaryCountByHost.TryGetValue(hostId, out var count) ? count : 0) + 1;
             if (cancelBoundaryCountByHost[hostId] > 1)
-                throw new BpmnExecutionException($"BPMN transaction '{hostId}' declares more than one cancel boundary event; a transaction host may carry at most one.");
+                throw new BpmnExecutionException($"BPMN transaction '{hostId}' declares more than one cancel boundary event; a transaction host may carry at most one.") { ElementIds = [hostId] };
         }
     }
 
@@ -1210,7 +1398,7 @@ public sealed class BpmnGraph
             };
             foreach (var flow in outboundBySource[element.ElementId].Where(BpmnFlowSelector.IsExpressionOnly))
                 throw new BpmnExecutionException(
-                    $"BPMN {kind} '{element.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition expression; a {kind} takes every outgoing flow and never evaluates one.");
+                    $"BPMN {kind} '{element.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition expression; a {kind} takes every outgoing flow and never evaluates one.") { ElementIds = [element.ElementId, flow.FlowId] };
         }
     }
 
@@ -1231,23 +1419,23 @@ public sealed class BpmnGraph
         {
             var outbound = outboundBySource[gateway.ElementId].ToArray();
             if (outbound.Length < 2)
-                throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' must have at least two outbound sequence flows (a race needs at least two catch events); it has {outbound.Length}.");
+                throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' must have at least two outbound sequence flows (a race needs at least two catch events); it has {outbound.Length}.") { ElementIds = [gateway.ElementId] };
 
             if (gateway.DefaultFlowId is not null)
-                throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' cannot declare a default sequence flow.");
+                throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' cannot declare a default sequence flow.") { ElementIds = [gateway.ElementId] };
 
             foreach (var flow in outbound)
             {
                 if (flow.ConditionOutcome is not null || flow.ConditionExpression is not null || flow.IsDefault)
-                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition or be a default flow; the race is decided by stimulus arrival.");
+                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' outbound flow '{flow.FlowId}' cannot carry a condition or be a default flow; the race is decided by stimulus arrival.") { ElementIds = [gateway.ElementId, flow.FlowId] };
 
                 if (!elementsById.TryGetValue(flow.TargetRef, out var target) ||
                     !StringComparer.Ordinal.Equals(target.ElementType, BpmnElementTypes.IntermediateCatchEvent))
-                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' outbound flow '{flow.FlowId}' must target an intermediate catch event; it targets '{flow.TargetRef}'.");
+                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' outbound flow '{flow.FlowId}' must target an intermediate catch event; it targets '{flow.TargetRef}'.") { ElementIds = [gateway.ElementId, flow.FlowId, flow.TargetRef] };
 
                 var targetInbound = inboundByTarget[flow.TargetRef].Count();
                 if (targetInbound != 1)
-                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' targets catch event '{flow.TargetRef}', which must have exactly one inbound flow (the gateway); it has {targetInbound}.");
+                    throw new BpmnExecutionException($"BPMN event-based gateway '{gateway.ElementId}' targets catch event '{flow.TargetRef}', which must have exactly one inbound flow (the gateway); it has {targetInbound}.") { ElementIds = [gateway.ElementId, flow.TargetRef] };
             }
         }
     }
@@ -1260,7 +1448,7 @@ public enum BpmnEventSubprocessTriggerKind
     /// <summary>An escalation-triggered event subprocess (interrupting or non-interrupting), matched by code (exact beats code-less catch-all).</summary>
     Escalation,
 
-    /// <summary>An error-triggered event subprocess (interrupting only, per BPMN), catch-all (no error-code matching).</summary>
+    /// <summary>An error-triggered event subprocess (interrupting only, per BPMN), matched by code (exact beats code-less catch-all).</summary>
     Error,
 
     /// <summary>A message-triggered event subprocess: armed as a scope listener at scope start, fired by a named-event stimulus.</summary>
@@ -1269,7 +1457,10 @@ public enum BpmnEventSubprocessTriggerKind
     /// <summary>A signal-triggered event subprocess: armed as a scope listener at scope start, fired by a named-event stimulus.</summary>
     Signal,
 
-    /// <summary>A timer-triggered event subprocess: armed as a scope listener at scope start (a one-shot <c>Delay</c>), re-armed per non-interrupting fire for repetition.</summary>
+    /// <summary>
+    /// A timer-triggered event subprocess: armed as a scope listener at scope start (a one-shot <c>Delay</c>). A duration
+    /// or cycle timer is re-armed per non-interrupting fire for repetition; a date timer fires once (see <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>).
+    /// </summary>
     Timer
 }
 
@@ -1289,6 +1480,12 @@ public sealed record BpmnEventSubprocessCatcher(
     bool Interrupting,
     string? ListenerBindingRef = null)
 {
+    /// <summary>
+    /// True when the listener fires at most once, so a non-interrupting fire does not re-arm it: a timer at a date,
+    /// whose instant has passed once it fired. Re-arming it would fire again at once, without end.
+    /// </summary>
+    public bool FiresOnce { get; init; }
+
     /// <summary>True when this catcher is an external-trigger listener (message/signal/timer): armed at scope start with the suspending work named by <see cref="ListenerBindingRef"/>. Escalation and error catchers are dormant.</summary>
     public bool IsExternalTrigger =>
         TriggerKind is BpmnEventSubprocessTriggerKind.Message or BpmnEventSubprocessTriggerKind.Signal or BpmnEventSubprocessTriggerKind.Timer;
@@ -1303,8 +1500,7 @@ public sealed record BpmnEventSubprocessCatcher(
 /// <param name="NestedProcess">
 /// The process definition this work runs, when the work is a nested BPMN process. Required for an event
 /// subprocess body, whose start-event trigger the graph validator reads; <c>null</c> for every other kind of
-/// work, including subprocesses whose body the host resolves on its own. A body carried here is checked when the
-/// enclosing graph builds; one the host resolves on its own is checked only when the host builds it.
+/// work, including subprocesses whose body the host resolves on its own.
 /// </param>
 public sealed record BpmnBoundWork(string BindingRef, BpmnProcessDefinition? NestedProcess = null)
 {

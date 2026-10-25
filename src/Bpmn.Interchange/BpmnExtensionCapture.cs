@@ -127,6 +127,45 @@ internal static class BpmnExtensionCapture
     }
 
     /// <summary>
+    /// Reads a <c>scriptTask</c>'s script: its <c>scriptFormat</c> attribute and its first <c>&lt;script&gt;</c>
+    /// child, or <c>null</c> when it has neither, or only a <c>&lt;script&gt;</c> with nothing in it. The body is
+    /// read as <see cref="CaptureConditionExpression"/> reads one. BPMN gives a script no attributes or child
+    /// elements of its own, so every attribute and child element on it is retained as foreign content, unless
+    /// <paramref name="fidelity"/> is <see cref="BpmnFidelity.Semantic"/>.
+    /// </summary>
+    public static BpmnScript? CaptureScript(
+        XElement scriptTask,
+        XElement? script,
+        BpmnFidelity fidelity,
+        BpmnVendorNames vendor,
+        RetentionLog log)
+    {
+        var format = (string?)scriptTask.Attribute("scriptFormat");
+        if (script is null)
+            return string.IsNullOrWhiteSpace(format) ? null : new BpmnScript("", format);
+
+        var body = string.Concat(script.Nodes().OfType<XText>().Select(text => text.Value));
+        var extensions = Capture(script, fidelity, vendor, _ => false, log);
+
+        if (fidelity != BpmnFidelity.Semantic)
+        {
+            var ownAttributes = script.Attributes()
+                .Where(attribute => !attribute.IsNamespaceDeclaration)
+                .Where(attribute => attribute.Name.Namespace == XNamespace.None || attribute.Name == BpmnXmlNames.SchemaInstance + "type")
+                .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(script, attribute)))
+                .ToArray();
+
+            if (ownAttributes.Length > 0)
+                extensions = extensions with { ForeignAttributes = [.. ownAttributes, .. extensions.ForeignAttributes] };
+        }
+
+        if (body.Length == 0 && string.IsNullOrWhiteSpace(format) && extensions.IsEmpty)
+            return null;
+
+        return new BpmnScript(body, format, extensions);
+    }
+
+    /// <summary>
     /// Whether an <c>xsi:type</c> value is <c>tFormalExpression</c> under a prefix bound to the BPMN model
     /// namespace in <paramref name="scope"/>: exactly what capture stores as <c>bpmn:tFormalExpression</c>.
     /// An unprefixed value is kept as authored, as <see cref="CaptureAttributeValue"/> keeps it, because

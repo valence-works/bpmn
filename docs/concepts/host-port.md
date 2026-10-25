@@ -22,22 +22,34 @@ expression.
 | Entry point | The event it carries | Returns |
 | --- | --- | --- |
 | `Start` | The scope is beginning, optionally at a start event an external trigger matched. | `BpmnEvaluation` |
-| `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names. | `BpmnEvaluation` |
-| `OnWorkFaulted` | A unit of work failed, with a human-readable message. | `BpmnEvaluation` |
+| `OnWorkCompleted` | A unit of work finished, reporting zero or more outcome names, and for a call activity's `Faulted` outcome optionally the BPMN error the called process raised. | `BpmnEvaluation` |
+| `OnWorkFaulted` | A unit of work failed, with a human-readable message and optionally the BPMN error it raised. | `BpmnEvaluation` |
 | `OnWorkSignalled` | A nested scope this one invoked signalled outward. | `BpmnEvaluation` |
 
-Work is named by two values together. The **binding ref** is the interpreter's name for it, taken
-from `BpmnElement.BindingRef` or `BpmnElement.ListenerBindingRef`. The **handle** is the host's own
-opaque identifier, which the interpreter stores and echoes and never parses. Every callback carries
-both, and multi-instance work additionally carries the iteration id it ran under. A completion and a
-signal take it as a trailing parameter; a fault takes it as the init-only
-`BpmnWorkFaultedRequest.FaultedIterationId`. The interpreter finds the unit a completion or a fault
-reports from the binding ref and iteration id alone. A reported iteration id must match exactly; only
-a report without one falls back to the binding's single outstanding unit. So a report for one of
-several concurrent instances that leaves the iteration id out throws `BpmnExecutionException`
-rather than guess which. That is deliberately not what a fault for work nothing matches does: such a
-fault faults the scope, because a unit failed that the scope cannot account for, whereas an
-ambiguous report is the host leaving out what it must report.
+Work carries three complementary identifiers. The **binding ref** is the interpreter's name for it,
+taken from `BpmnElement.BindingRef` or `BpmnElement.ListenerBindingRef`. The **handle** is the host's
+own opaque identifier for the physical work; the interpreter stores and echoes it but never parses
+it. The **work token ID** is the scope-local `BpmnHostCommand.StartWork.TokenId` that started this
+invocation. Save that ID with the handle and echo it as `WorkTokenId` on the live-work snapshot and
+callback request. It is not an iteration ID, a nested scope's token, or `InvocationCorrelation`.
+
+For completion and fault callbacks, an explicit `WorkTokenId` selects one active-work record. Its
+binding ref and any reported iteration ID must agree with that record; an unknown, blank, or
+contradictory ID is rejected rather than used to select a sibling. Without an ID, a supplied
+iteration ID must match exactly. If the callback omits its iteration ID, it resolves only when that
+binding has exactly one outstanding invocation. Ambiguous legacy completions and faults throw
+`BpmnExecutionException`; an unmatched legacy fault faults the scope.
+
+Recognized legacy escalation signals use a different lookup: the binding ref and
+`SignallingIterationId` must match the same slot exactly. A null signalling iteration matches only a
+null-iteration slot; it never falls back to a sole multi-instance invocation. An ambiguous exact
+slot throws. If the exact slot resolves an active invocation, the snapshot must contain its matching
+`LiveWork` entry and `SignallingHandle` must equal that entry's handle; this applies to ID-less
+invocation records too. Only when no active invocation matches that exact slot does the established
+legacy late-signal behavior apply. A recognized escalation with explicit `WorkTokenId` must identify
+live work and its matching handle must remain in `LiveWork`. Unrecognized signal codes remain
+diagnostic pass-throughs and do not use `WorkTokenId` to route. Hosts that already retired a work
+handle absorb its late signal before calling the interpreter, as the reference host does.
 
 ## Inputs
 
@@ -57,13 +69,21 @@ characteristics, a binding supplied twice. Those throw `BpmnExecutionException`;
 an undeclared capability throws `BpmnCapabilityException`. A graph that builds is a graph the
 interpreter is willing to run.
 
+A refusal's `ElementIds` lists the elements and sequence flows it is about, so a host can point at them
+(mark them in a designer, say) without parsing the message. Most refusals list them in the order the
+message names them. A `BpmnCapabilityException` lists its `DrivingElementIds`, in their ordinal order.
+`ElementIds` is empty for a refusal about the definition as a whole, such as one with no start event. It
+can name an element the definition does not contain when that absence is the defect, such as a flow's
+missing target.
+
 #### A cycle must be able to wait
 
 Cycles are executable, but one structural problem is specific to them. If every element on a cycle
 passes a token straight on, a token that enters it is routed around the cycle forever within one
 evaluation, and the evaluation never returns to the host. `Build` refuses such a definition with a
 `BpmnExecutionException` that names the cycle's element ids in flow order, starting where the loop-back
-flow lands.
+flow lands; its `ElementIds` are those ids, in that order, followed by the conditional flows the
+message says the cycle never takes.
 
 A cycle can wait when at least one element on it can hold a token:
 
@@ -125,11 +145,9 @@ described under [the continuation](#the-continuation) stops a run on which they 
 Treat it as opaque. It serializes to JSON; the only rule is that the state you pass in is the state
 you last got out for that scope instance.
 
-Call `Prune()` before persisting. It removes the records that can never influence a future decision —
-consumed tokens no longer referenced by active work, and diagnostics beyond `DiagnosticsCap` (200) —
-so a long-running process does not re-serialize an ever-growing blob. Canceled tokens are never
-pruned: tearing work down drops its record while the work may still report back, and the cancelled
-token carries the torn-down handle that recognizes that late callback (see
+Call `Prune()` before persisting. It removes consumed tokens no longer referenced by active work and
+diagnostics beyond `DiagnosticsCap` (200). Canceled tokens are never pruned: a stopped-work handle
+must remain available to recognize a late callback (see
 [Callbacks for work already stopped](#callbacks-for-work-already-stopped)).
 
 Ids being a pure function of `Sequence` is what makes a run reproducible: replay the same events
@@ -145,7 +163,7 @@ call. It is a value, built fresh per evaluation, never held.
 | --- | --- | --- |
 | `ScopeInstanceId` | An opaque host-chosen identity for this scope. | Echoed onto tokens for provenance. Never parsed. |
 | `HasEnclosingScope` | Whether a parent exists to receive a signal. | A root process has none, so an unhandled escalation is a documented no-op rather than a fault. |
-| `LiveWork` | `BpmnLiveWork(BindingRef, IterationId, Handle)` per outstanding unit. | Deciding what an interruption must tear down, and whether a scope can complete. |
+| `LiveWork` | One `BpmnLiveWork` per outstanding unit, including its `WorkTokenId`. | Resolving reports and deciding what an interruption must tear down, and whether a scope can complete. |
 | `InvocationCorrelation` | The correlation dictionary the host carried into this invocation, echoed back verbatim. | Empty for a process started directly. Carries the start-element hint for an event subprocess body. Never used to find the work a callback reports: in a nested scope the token id it carries belongs to the enclosing scope. |
 | `Variables` | An `IBpmnVariableReader`. | Reading a named value mid-evaluation. |
 | `Capabilities` | What this host can do. | Consistency with the graph it was built against. |
@@ -177,7 +195,7 @@ What the scope itself should do now.
 | --- | --- |
 | `Complete(Outcome)` | The scope finished: no token remains and no work is running. `Outcome` is `"Done"` normally, or `"Cancelled"` when a cancel end event cancelled a transaction. It is what a conditional flow in the parent selects on. |
 | `Defer` | Still running: work was started, a token waits at a join, or a listener is armed. |
-| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. |
+| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. `Code` is the library's reason, except that a refused variable read preserves the host's exact fault code. The init-only `ErrorCode` names the BPMN error behind the fault, when there is one. |
 
 `Defer` is not "waiting". The interpreter has no notion of waiting; it has a notion of having nothing
 left to decide. What you do during that gap — suspend, poll, park a message subscription, hold a
@@ -216,8 +234,18 @@ it.
 It carries the `BindingRef` naming the work, the `ElementId` and `SchedulingCause` for your own
 reporting, the `TokenId` parked while the work runs, and a `Correlation` dictionary of opaque
 interpreter state. The dictionary has exactly one use: when the work is a nested BPMN process,
-supply it as that process's `InvocationCorrelation`. Nothing hands it back. A completion, fault or
-signal is matched by its binding ref, iteration id and handle alone.
+supply it as that process's `InvocationCorrelation`. Nothing hands it back. Keep `TokenId` with the
+handle and echo it as `WorkTokenId` in live-work snapshots and callback requests. Completion and
+fault callbacks may use legacy binding/iteration lookup: a supplied iteration must match exactly,
+and an omitted iteration is accepted only when that binding has one outstanding invocation. A
+recognized legacy escalation signal instead requires an exact `(BindingRef,
+SignallingIterationId)` slot match. A null signalling iteration matches only a null slot and cannot
+select a sole multi-instance instance. When that exact slot has an active invocation, the snapshot
+must contain its matching `LiveWork` entry and `SignallingHandle` must match the entry's handle,
+including when the invocation record is ID-less. The legacy late-signal path applies only when no
+active invocation matches the exact slot. For a recognized escalation with explicit `WorkTokenId`,
+the invocation and its matching handle must still be live. Unknown signal codes pass through as
+diagnostic evidence without identity-based routing.
 
 Two optional fields appear on specific constructs. `IterationScope` carries the per-instance values a
 multi-instance instance must be seeded with: always the zero-based `loopIndex`, plus the current item
@@ -275,66 +303,108 @@ Build that payload with `BpmnInterpreter.EscalationPayload` and read it with
 `BpmnInterpreter.TryReadEscalationCode` rather than reproducing its shape; see
 [Errors and escalation](errors-and-escalation.md#escalation-crosses-scopes-by-signalling).
 
+For that recognized code, include the `WorkTokenId` of the parent-scope invocation that started the
+signalling child and leave its `BpmnLiveWork` entry in the snapshot. An explicit ID must match the
+live invocation and handle; it does not fall back to another unit on the same slot. Legacy callers
+may omit the ID, subject to unique lookup for the exact binding/iteration slot. If that slot resolves
+an active invocation, its `BpmnLiveWork` entry must be present and the signalled handle must match
+that entry; the existing late-signal behavior applies only when no active invocation matches the
+slot. A signal with another code is diagnostic pass-through, and its identity is not used to route it.
+
 If `HasEnclosingScope` is false, the interpreter will not emit this command. It asks nothing of a
 host it knows cannot answer.
 
 ### The error disposition
 
 `BpmnEvaluation.ErrorDisposition` is a nullable `BpmnErrorDisposition`. It reports how BPMN handled a
-host-reported failure without making the host adopt an incident or retry policy:
+host-reported failure, or an error an error end event threw, without making the host adopt an incident
+or retry policy:
 
 - `Caught(CatchingElementId, ErrorCode?)` — an error boundary event or an error event subprocess took
-  the failure and this evaluation returned without fault. Recovery work may still be running. A
-  null `ErrorCode` means the catcher is a catch-all.
+  the failure and this evaluation returned without fault. Recovery work may still be running.
+  `ErrorCode` is the code the catcher declares, which is the code it caught; it is null only for a
+  catch-all.
 - `Propagated` — the final evaluation has a `Fault` continuation. This means no catcher in the scope
   matched, or a catcher's route faulted during this evaluation; the failure is now the enclosing
   scope's problem, or at the root, yours.
 - `Absorbed` — the failure belonged to work or a scope that had already stopped.
 
-The disposition is present for failed work reported by `OnWorkFaulted`, and for a call-activity
+The disposition is present for failed work reported by `OnWorkFaulted`, for a call-activity
 completion reported by `OnWorkCompleted` with
-the outcome `Faulted`, `DispatchFailed`, or `Cancelled`. Those call-activity outcomes use the same
-error-catcher routing as a fault report. A late failure for work or a scope that was already stopped
-is reported as `Absorbed`.
+the outcome `Faulted`, `DispatchFailed`, or `Cancelled`, and for an evaluation in which an error end
+event threw. Those call-activity outcomes use the same error-catcher routing as a fault report. A
+thrown error is `Caught` when an error event subprocess of its own scope takes it, and `Propagated`
+otherwise. A late failure for work or a scope that was already stopped is reported as `Absorbed`.
 
-The property is `null` when no host-reported failure was routed or absorbed. That includes normal
+The property is `null` when no failure was routed or absorbed and no error was thrown. That includes normal
 starts, completions and signals, transaction cancellation, and an event subprocess activated on an
 unrelated path. In particular, a transaction's `Cancelled` completion is distinct from a call
 activity's `Cancelled` failure outcome. `BpmnTranscriptEntry.Disposition` is a separate transcript
 field and is unchanged.
-
-Note what `BpmnWorkFaultedRequest` does not carry: an error code. The host reports that work failed
-and describes why in human terms. Today every error catcher takes any failure. This changes in 0.4.0:
-[ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md) adds an error code to the
-fault request and to the `Fault` continuation, and makes a coded catcher catch only its own code.
 
 This is the only place the library says anything about failure policy, and it says the minimum: what
 BPMN did. Whether a propagated fault is an incident, whether it is retried, whether anyone is paged
 is not modeled here, because BPMN does not model it. See
 [Errors and escalation](errors-and-escalation.md).
 
+### Error codes
+
+Which BPMN error was raised is a fact about the run, and only whatever raised it knows that. Which
+catcher it reaches is a property of the model
+([ADR 0012](../adr/0012-hosts-and-error-end-events-name-bpmn-errors.md)). Three init-only properties
+carry it, so positional constructors and deconstruction are unchanged:
+
+| Property | Meaning |
+| --- | --- |
+| `BpmnWorkFaultedRequest.ErrorCode` | The BPMN error the failed work raised, or `null` when the host cannot name one. The message stays a human-readable description. |
+| `BpmnWorkCompletedRequest.ErrorCode` | The error a called process raised. Meaningful only with a call activity's `Faulted` outcome; the interpreter ignores it on any other completion, including `DispatchFailed` and `Cancelled`. |
+| `BpmnContinuation.Fault.ErrorCode` | The BPMN error behind the fault, or `null` when the fault is not a BPMN error. |
+
+Matching is strict. A catcher that declares a code catches only that code, and wins over a catch-all;
+an error with no code reaches only catch-alls. The fault ladder tries an error boundary on the failing
+activity, then an error event subprocess of the scope, and otherwise faults the scope with the code
+preserved on `Fault.ErrorCode`. A reported code is trimmed, and a blank one counts as none.
+
+Crossing scopes stays your job. When a nested scope ends with a `Fault`, copy its `ErrorCode` into the
+parent's report: `BpmnWorkFaultedRequest.ErrorCode` for an embedded subprocess, or
+`BpmnWorkCompletedRequest.ErrorCode` with the `Faulted` outcome for a call activity. A host that forgets
+degrades every crossing error to an uncoded one, which only a catch-all catches. Faults that are not
+BPMN errors, such as `bpmn.propagation.limit` or `bpmn.gateway.no-flow-selected`, carry no code.
+
 ### Callbacks for work already stopped
 
-A callback can still reach a running scope for work it already tore down: a completion that raced
-the teardown an interruption issued. The scope recognizes it by its handle. Each `CancelWorkSubtree`
-that goes out on a non-fault continuation records its handle on the token it cancelled
-(`BpmnToken.StoppedHandle`, added in payload format 1.1.0). A completion or fault reporting one of
-those handles is absorbed once: it changes nothing in the scope, nothing is issued, and a `Canceled`
-diagnostic records it. The record is then spent, so a second report for the same handle is not
-absorbed. Matching is on the handle alone, never on the binding or the element, because a loop that
-re-enters an element starts a new unit on the same `(binding ref, iteration id)` slot, and an earlier
-pass's late report must neither pass for the later pass's nor stop a later pass's duplicate from
-being caught. That requires a handle to name one unit for the scope's lifetime: never reuse one.
+A callback can still reach a running scope for work it already tore down: a completion or fault that
+raced the teardown an interruption issued. The scope recognizes it by its handle. Each
+`CancelWorkSubtree` that goes out on a non-fault continuation records its handle on the token it
+cancelled (`BpmnToken.StoppedHandle`, added in payload format 1.1.0). A completion or fault reporting
+one of those handles is absorbed once: it changes nothing in the scope, nothing is issued, and a
+`Canceled` diagnostic records it. If the request supplies `WorkTokenId`, it must match the token
+carrying that stopped handle before the one-shot marker is cleared; a mismatch is rejected without
+spending the marker. An ID-less legacy report retains handle-only absorption. The record is then
+spent, so a second report for the same handle is not absorbed. A handle must name one unit for the
+scope's lifetime; never reuse one.
+
+With staged teardown in a scope that remains running, `LiveWork` may still contain a row for a handle
+recorded by `StoppedHandle`. The interpreter treats that row as residual stopped work, outside active-invocation
+correlation, only when its handle matches exactly one stopped marker and its `WorkTokenId` is absent
+or matches that marker's token ID. An explicit mismatch or a handle matching multiple stopped markers
+is rejected. Repeated rows for the same stopped handle are harmless only when each row satisfies
+that identity rule. A terminated scope uses a separate cleanup rule: the interpreter issues teardown for every distinct
+handle still in the snapshot; token identity does not select or suppress those teardown targets.
 
 Any other callback is a broken contract rather than a race, and stays loud: a completion throws
 `BpmnExecutionException`, and a fault faults the scope. That covers a second report for work that
 completed normally, a binding no element binds, and work the interpreter withdrew before you ever
-started it, which has no handle to match. A report the snapshot contradicts throws even when a
-record would match it: the reported unit has already left `LiveWork`, so if the snapshot still lists
-the slot of the record the report resolves to under another handle, that record belongs to other
-work. That includes a report with no iteration id that would fall back to the binding's only record. A state an earlier version persisted
-records no handles, so a late callback against it is never absorbed. A late completion throws. A
-late fault faults the scope, or throws when the snapshot still lists its slot under another handle.
+started it, which has no handle to match. Terminal work's own handle and token ID must have left
+`LiveWork`; a snapshot entry for that exact invocation contradicts the report. A different
+invocation on the same binding and iteration is valid when its own explicit `WorkTokenId` resolves.
+Without an ID, the legacy binding/iteration lookup must be unambiguous; it cannot guess between
+siblings that share a slot. Ambiguity in a different legacy slot does not prevent unrelated work
+from progressing. Selective teardown still refuses if it needs that ambiguous slot; it never drops
+a required handle silently. Whole-scope termination retains the distinct-handle cleanup rule above.
+A state an earlier version persisted records no handles, so a late callback against it is never
+absorbed. A late completion throws. A late fault faults the scope, or throws when the snapshot still
+lists the resolved invocation under another handle.
 
 ## The callbacks
 
@@ -457,7 +527,8 @@ it already rested on your variable reader.
 1. Pass back the state you were last given, for that scope instance — pruned, if you like.
 2. Apply commands in order.
 3. Report a callback with the binding ref and handle the work was started under, and with its
-   iteration id when it is a multi-instance instance.
+   iteration id when it is a multi-instance instance. Echo `StartWork.TokenId` as `WorkTokenId` when
+   using explicit invocation identity.
 4. Pass `StartWork.Correlation` to a nested process as its `InvocationCorrelation`, and write nothing
    else into that dictionary.
 5. Make `CancelWorkSubtree` recursive.
@@ -465,8 +536,11 @@ it already rested on your variable reader.
    them that way even where a compiler would let you cheat.
 7. Declare capabilities honestly, and declare the same set to `Build` and to every snapshot. See
    [Host capabilities](capabilities.md).
-8. Never reuse a handle within a scope. A late report for work the scope tore down is recognized by
-   its handle alone.
+8. Never reuse a handle within a scope. A late ID-less terminal report for work the scope tore down
+   is absorbed by its handle; if it supplies `WorkTokenId`, that ID must also match the stopped
+   token. Absorb a signal for a handle the host already retired before calling the interpreter.
+9. When a nested scope ends with a `Fault`, copy its `ErrorCode` into the parent's fault report, or into
+   the parent's `Faulted` completion for a call activity.
 
 ## Related
 

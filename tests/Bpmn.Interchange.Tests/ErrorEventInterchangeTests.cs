@@ -129,6 +129,70 @@ public sealed class ErrorEventInterchangeTests
         read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "Failed");
     }
 
+    private static string BoundaryWithId(string id, string errorRef) => $"""
+        <bpmn:boundaryEvent id="{id}" attachedToRef="Charge">{ErrorDefinition(errorRef)}</bpmn:boundaryEvent>
+        <bpmn:endEvent id="{id}End" />
+        <bpmn:sequenceFlow id="{id}Flow" sourceRef="{id}" targetRef="{id}End" />
+        """;
+
+    private static string EventSubprocessWithId(string id, string errorRef) => $"""
+        <bpmn:subProcess id="{id}" triggeredByEvent="true">
+          <bpmn:startEvent id="{id}Start">{ErrorDefinition(errorRef)}</bpmn:startEvent>
+          <bpmn:endEvent id="{id}End" />
+          <bpmn:sequenceFlow id="{id}Flow" sourceRef="{id}Start" targetRef="{id}End" />
+        </bpmn:subProcess>
+        """;
+
+    [Fact]
+    public void Several_error_catchers_with_distinct_codes_and_one_catch_all_read_without_findings()
+    {
+        // Error_IdOnly declares no errorCode, so its id is its code: distinct from CREDIT_DECLINED.
+        var read = _reader.Read(Document(
+            BoundaryWithId("OnCredit", "Error_Credit") + BoundaryWithId("OnIdOnly", "Error_IdOnly") + BoundaryWithId("OnAny", "")
+            + EventSubprocessWithId("SubCredit", "Error_Credit") + EventSubprocessWithId("SubIdOnly", "Error_IdOnly") + EventSubprocessWithId("SubAny", "")));
+
+        var elementIds = read.Definitions.Processes.Single().Elements.Select(element => element.ElementId).ToArray();
+        elementIds.ShouldContain("OnCredit");
+        elementIds.ShouldContain("OnIdOnly");
+        elementIds.ShouldContain("OnAny");
+        elementIds.ShouldContain("SubCredit");
+        elementIds.ShouldContain("SubIdOnly");
+        elementIds.ShouldContain("SubAny");
+        read.Analysis.Issues.ShouldNotContain(issue => issue.Severity == BpmnImportIssueSeverity.Dropped);
+    }
+
+    [Theory]
+    [InlineData("", "", "second code-less catch-all")]
+    [InlineData("Error_Credit", "Error_Credit", "error code 'CREDIT_DECLINED'")]
+    [InlineData("Error_Credit", "CREDIT_DECLINED", "error code 'CREDIT_DECLINED'")]
+    public void A_second_error_boundary_with_a_claimed_code_or_a_second_catch_all_is_dropped(string first, string second, string finding)
+    {
+        // An undeclared ref is its own code, so a ref naming CREDIT_DECLINED directly collides with Error_Credit.
+        var read = _reader.Read(Document(BoundaryWithId("First", first) + BoundaryWithId("Second", second)));
+
+        var elementIds = read.Definitions.Processes.Single().Elements.Select(element => element.ElementId).ToArray();
+        elementIds.ShouldContain("First");
+        elementIds.ShouldNotContain("Second");
+        var dropped = read.Analysis.Issues.Single(issue => issue.ElementId == "Second");
+        dropped.Severity.ShouldBe(BpmnImportIssueSeverity.Dropped);
+        dropped.Message.ShouldContain(finding);
+    }
+
+    [Theory]
+    [InlineData("", "", "second code-less catch-all")]
+    [InlineData("Error_Credit", "Error_Credit", "error code 'CREDIT_DECLINED'")]
+    public void A_second_error_event_subprocess_with_a_claimed_code_or_a_second_catch_all_is_dropped(string first, string second, string finding)
+    {
+        var read = _reader.Read(Document(EventSubprocessWithId("First", first) + EventSubprocessWithId("Second", second)));
+
+        var elementIds = read.Definitions.Processes.Single().Elements.Select(element => element.ElementId).ToArray();
+        elementIds.ShouldContain("First");
+        elementIds.ShouldNotContain("Second");
+        var dropped = read.Analysis.Issues.Single(issue => issue.ElementId == "Second");
+        dropped.Severity.ShouldBe(BpmnImportIssueSeverity.Dropped);
+        dropped.Message.ShouldContain(finding);
+    }
+
     [Fact]
     public void An_error_definition_carries_the_declared_error_name()
     {
