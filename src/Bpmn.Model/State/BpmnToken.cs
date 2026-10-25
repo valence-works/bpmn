@@ -78,6 +78,18 @@ public sealed record BpmnToken
     public BpmnTokenKind? Kind { get; init; }
 
     /// <summary>
+    /// How many times the scope listener this token replaces has already fired: <c>null</c> on every token except a
+    /// <see cref="BpmnTokenKind.Listener"/> token re-armed after a non-interrupting fire of a timer on a counted cycle
+    /// (<c>R&lt;n&gt;/</c>), which carries the fired listener's count plus one. A listener armed at scope start has not
+    /// fired, and nothing counts the fires of an unbounded listener, so neither carries one. The count is what stops the
+    /// cycle re-arming once it has fired n times; it lives on the token, so it survives persisting and restoring the state
+    /// between fires. An init-only property, like <see cref="StoppedHandle"/>, so the constructor's signature is unchanged.
+    /// Additive in payload format 1.9.0.
+    /// </summary>
+    [JsonPropertyName("fireCount")]
+    public int? FireCount { get; init; }
+
+    /// <summary>
     /// The host handle of the work the interpreter tore down when it cancelled this token, or <c>null</c>.
     /// Set only on a <see cref="BpmnTokenStatus.Canceled"/> token, and only once the teardown was actually issued:
     /// a <c>CancelWorkSubtree</c> for this handle went out on a non-fault continuation. A completion or fault that

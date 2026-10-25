@@ -77,7 +77,9 @@ public static class BpmnPayloadFormat
     /// 1.9.0 adds one work-binding case, <c>timerCycleWait</c> (<c>BpmnWorkBinding.TimerCycleWait</c>): the wait a
     /// timer on a <c>&lt;timeCycle&gt;</c> binds, carrying the cycle as written and its parts. An event definition may
     /// now carry the <c>cycle</c>, <c>repetitions</c> and <c>start</c> properties, which the model's property bag
-    /// already allowed. A 1.8.0 document reads as before; a reader that predates 1.9.0 rejects the new discriminator
+    /// already allowed. 1.9.0 also adds one optional property, <c>BpmnToken.FireCount</c> (<c>fireCount</c>): how many
+    /// times a scope listener re-armed for a counted timer cycle has fired, which bounds its re-arms. A 1.8.0
+    /// document reads as before, with the property absent; a reader that predates 1.9.0 rejects the new discriminator
     /// rather than dropping the binding. See ADR 0007.
     /// </para>
     /// </summary>

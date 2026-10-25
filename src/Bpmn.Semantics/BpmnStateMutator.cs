@@ -22,8 +22,9 @@ internal static class BpmnStateMutator
         BpmnTokenStatus status,
         string? producingWorkHandle,
         string? iterationKey = null,
-        BpmnTokenKind? kind = null) =>
-        new(NewId(state, "token"), atElementId, flowId, parentTokenId, status, producingWorkHandle, iterationKey, kind);
+        BpmnTokenKind? kind = null,
+        int? fireCount = null) =>
+        new(NewId(state, "token"), atElementId, flowId, parentTokenId, status, producingWorkHandle, iterationKey, kind) { FireCount = fireCount };
 
     /// <summary>
     /// The loop-iteration key minted when a token traverses a backward (loop-back) sequence flow:
