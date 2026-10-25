@@ -48,6 +48,9 @@ internal static class BpmnChildOrder
         ["standardLoopCharacteristics"] = 14,
         ["multiInstanceLoopCharacteristics"] = 14,
 
+        // tScriptTask: script?, after everything tActivity declares
+        ["script"] = 15,
+
         // tParticipant: interfaceRef*, endPointRef*, participantMultiplicity?
         ["interfaceRef"] = 13,
         ["endPointRef"] = 14,

@@ -949,7 +949,8 @@ public sealed class BpmnInterpreter
     /// listener token is consumed (its work record was already dropped at the top of <see cref="OnWorkCompleted"/>).
     /// A <b>non-interrupting</b> catcher re-arms a fresh listener FIRST (deterministic ids from <c>Sequence</c>; timer
     /// repetition falls out of the re-arm loop, each arm a single one-shot timer) and then activates the body
-    /// non-interrupting alongside untouched scope work. An <b>interrupting</b> catcher does not re-arm: the activation's
+    /// non-interrupting alongside untouched scope work. A catcher that <see cref="BpmnEventSubprocessCatcher.FiresOnce"/>,
+    /// a timer at a date, is not re-armed. An <b>interrupting</b> catcher does not re-arm: the activation's
     /// <see cref="StopOtherLiveWork"/> drains every other live token — including sibling scope listeners (ordinary live
     /// tokens there, their suspended work riding the carried teardowns) — before starting the body.
     /// </summary>
@@ -969,7 +970,7 @@ public sealed class BpmnInterpreter
         state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.ScopeListenerFired, catcher.ElementId, null, listenerToken.TokenId,
             $"BPMN {(catcher.Interrupting ? "interrupting" : "non-interrupting")} {catcher.TriggerKind} scope listener for event subprocess '{catcher.ElementId}' fired.");
 
-        if (!catcher.Interrupting)
+        if (!catcher.Interrupting && !catcher.FiresOnce)
             state = ArmScopeListener(context, state, catcher, scopeInstanceId);
 
         var activation = ActivateEventSubprocess(context, graph, state, catcher, listenerToken.IterationKey,
@@ -1468,7 +1469,8 @@ public sealed class BpmnInterpreter
     /// Reads a collection-mode host's collection variable once at loop start, returning the
     /// per-instance item snapshot, in array order, or a deterministic fault: the variable is unreadable (a
     /// defensive case, unreachable once the graph validated the name), holds a present non-array value, or is
-    /// held outside the inline payload. A null or absent collection resolves to an empty snapshot, which the
+    /// held outside the inline payload, or explicitly refused by the host. A refusal preserves the host fault.
+    /// A null or absent collection resolves to an empty snapshot, which the
     /// caller routes as an immediate zero-instance completion.
     /// </summary>
     private static (BpmnExecutionState State, IReadOnlyList<JsonElement>? Items, BpmnFault? Fault) ResolveCollectionInstances(
@@ -1483,6 +1485,16 @@ public sealed class BpmnInterpreter
             var message = $"BPMN multi-instance element '{element.ElementId}' could not read collection variable '{variableName}'; it is not a visible declared container-scoped variable of the process.";
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, message);
             return (state, null, new BpmnFault(CollectionUnreadableFaultCode, message));
+        }
+
+        if (value.Presence == BpmnValuePresence.Refused)
+        {
+            var faultCode = string.IsNullOrWhiteSpace(value.FaultCode) ? CollectionUnreadableFaultCode : value.FaultCode;
+            var fallbackMessage = $"BPMN multi-instance element '{element.ElementId}' collection variable '{variableName}' was refused by the host.";
+            var message = value.FaultMessage ?? fallbackMessage;
+            var diagnosticMessage = string.IsNullOrWhiteSpace(message) ? fallbackMessage : message;
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, diagnosticMessage);
+            return (state, null, new BpmnFault(faultCode, message));
         }
 
         // Null or absent resolves to an empty loop: complete immediately and route outbound.

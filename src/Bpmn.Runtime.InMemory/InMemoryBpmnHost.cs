@@ -276,7 +276,8 @@ public sealed class InMemoryBpmnHost
     /// <para>
     /// A duration the model states but states wrongly throws, naming the text. A duration the model does not
     /// state at all is not an error: the work simply becomes something the caller finishes by hand, which is
-    /// the honest reading of "the definition never said how long".
+    /// the honest reading of "the definition never said how long". A timer at a date is such a timer: the virtual
+    /// clock has no calendar to place its instant on.
     /// </para>
     /// </summary>
     internal bool TryResolveTimer(BpmnGraph graph, string bindingRef, out TimeSpan duration)
@@ -327,11 +328,18 @@ public sealed class InMemoryBpmnHost
         element.EventDefinitions.FirstOrDefault(definition =>
             StringComparer.Ordinal.Equals(definition.Type, BpmnEventDefinitionTypes.Timer));
 
-    private static string? ReadInterval(BpmnEventDefinition definition) =>
-        definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval)
-        && !string.IsNullOrWhiteSpace(interval)
-            ? interval
+    private static string? ReadInterval(BpmnEventDefinition definition)
+    {
+        if (definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Interval, out var interval) && !string.IsNullOrWhiteSpace(interval))
+        {
+            return interval;
+        }
+
+        // A definition built in code may carry only its cycle; the cycle's period is then the wait.
+        return definition.Properties.TryGetValue(BpmnEventDefinitionProperties.Cycle, out var cycleText) && BpmnTimerCycle.TryParse(cycleText, out var cycle)
+            ? cycle.IsoDuration
             : null;
+    }
 
     private void FireTimer(PendingTimer timer)
     {

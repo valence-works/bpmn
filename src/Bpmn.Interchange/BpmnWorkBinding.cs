@@ -30,9 +30,12 @@ public enum BpmnBindingSlot
 /// <param name="Slot">Which channel of the element this binding fills.</param>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
 [JsonDerivedType(typeof(BpmnWorkBinding.TimerWait), "timerWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.TimerDateWait), "timerDateWait")]
+[JsonDerivedType(typeof(BpmnWorkBinding.TimerCycleWait), "timerCycleWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.MessageWait), "messageWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.SignalWait), "signalWait")]
 [JsonDerivedType(typeof(BpmnWorkBinding.MessagePublish), "messagePublish")]
+[JsonDerivedType(typeof(BpmnWorkBinding.SignalPublish), "signalPublish")]
 [JsonDerivedType(typeof(BpmnWorkBinding.CallProcess), "callProcess")]
 [JsonDerivedType(typeof(BpmnWorkBinding.NestedProcess), "nestedProcess")]
 [JsonDerivedType(typeof(BpmnWorkBinding.UnboundTask), "unboundTask")]
@@ -49,6 +52,37 @@ public abstract record BpmnWorkBinding(
         string BindingRef,
         BpmnBindingSlot Slot,
         [property: JsonPropertyName("isoDuration")] string IsoDuration) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+
+    /// <summary>
+    /// A wait that ends at an ISO-8601 instant, the <c>&lt;timeDate&gt;</c> of a timer catch event, timer boundary
+    /// event, or timer event-subprocess trigger. The instant is kept as written; the host parses and schedules it.
+    /// </summary>
+    public sealed record TimerDateWait(
+        string ProcessId,
+        string ElementId,
+        string BindingRef,
+        BpmnBindingSlot Slot,
+        [property: JsonPropertyName("isoDate")] string IsoDate) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+
+    /// <summary>
+    /// A wait on a recurring schedule, the <c>&lt;timeCycle&gt;</c> of a timer catch event, timer boundary event, or timer
+    /// event-subprocess trigger: one wait ends at the cycle's next occurrence. <see cref="Cycle"/> is the cycle as
+    /// written: an ISO-8601 repeating interval, a bare duration, or a cron expression. The other properties are its
+    /// parts (see <see cref="BpmnTimerCycle"/>), which the host schedules: <see cref="IsoDuration"/>, the duration
+    /// between occurrences (<c>null</c> for a cron cycle); <see cref="Cron"/> (<c>null</c> for an ISO-8601 cycle);
+    /// <see cref="Repetitions"/>, how many times the timer fires (<c>null</c> when it repeats without end); and
+    /// <see cref="Start"/>, the instant of the first occurrence (<c>null</c> when the cycle does not say).
+    /// </summary>
+    public sealed record TimerCycleWait(
+        string ProcessId,
+        string ElementId,
+        string BindingRef,
+        BpmnBindingSlot Slot,
+        [property: JsonPropertyName("cycle")] string Cycle,
+        [property: JsonPropertyName("isoDuration")] string? IsoDuration,
+        [property: JsonPropertyName("cron")] string? Cron,
+        [property: JsonPropertyName("repetitions")] int? Repetitions,
+        [property: JsonPropertyName("start")] string? Start) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A wait for a named message: a message catch event, message boundary event, receive task, or message event-subprocess trigger.</summary>
     public sealed record MessageWait(
@@ -73,6 +107,14 @@ public abstract record BpmnWorkBinding(
         string BindingRef,
         BpmnBindingSlot Slot,
         [property: JsonPropertyName("messageName")] string MessageName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
+
+    /// <summary>A broadcast of a named signal: a signal throw event or signal end event. Delivery to every catcher is the host's.</summary>
+    public sealed record SignalPublish(
+        string ProcessId,
+        string ElementId,
+        string BindingRef,
+        BpmnBindingSlot Slot,
+        [property: JsonPropertyName("signalName")] string SignalName) : BpmnWorkBinding(ProcessId, ElementId, BindingRef, Slot);
 
     /// <summary>A call activity: run a separately defined process the host resolves.</summary>
     public sealed record CallProcess(

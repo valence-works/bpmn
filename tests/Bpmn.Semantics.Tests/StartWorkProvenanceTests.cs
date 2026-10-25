@@ -168,7 +168,7 @@ public sealed class StartWorkProvenanceTests
             faultedHandle,
             "boom"));
 
-        evaluation.Disposition.ShouldBe(new BpmnErrorDisposition.Caught("Failed", ErrorCode: null));
+        evaluation.ErrorDisposition.ShouldBe(new BpmnErrorDisposition.Caught("Failed", ErrorCode: null));
         var recovery = StartedWork(evaluation).ShouldHaveSingleItem();
         recovery.BindingRef.ShouldBe("recover");
         recovery.ProducedByHandle.ShouldBe(faultedHandle);

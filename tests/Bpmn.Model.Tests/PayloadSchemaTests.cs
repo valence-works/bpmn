@@ -120,7 +120,7 @@ public sealed class PayloadSchemaTests
         var branches = union["oneOf"]!.AsArray();
         var discriminatorValues = new List<string>();
 
-        branches.Count.ShouldBe(7);
+        branches.Count.ShouldBe(10);
 
         foreach (var branch in branches)
         {
@@ -136,7 +136,10 @@ public sealed class PayloadSchemaTests
             "messagePublish",
             "messageWait",
             "nestedProcess",
+            "signalPublish",
             "signalWait",
+            "timerCycleWait",
+            "timerDateWait",
             "timerWait",
             "unboundTask"
         ]);
@@ -218,7 +221,11 @@ public sealed class PayloadSchemaTests
             { nameof(BpmnWorkBinding), bindings[3] },
             { nameof(BpmnWorkBinding), bindings[4] },
             { nameof(BpmnWorkBinding), bindings[5] },
-            { nameof(BpmnWorkBinding), bindings[6] }
+            { nameof(BpmnWorkBinding), bindings[6] },
+            { nameof(BpmnWorkBinding), bindings[7] },
+            { nameof(BpmnWorkBinding), bindings[8] },
+            { nameof(BpmnWorkBinding), bindings[9] },
+            { nameof(BpmnWorkBinding), bindings[10] }
         };
     }
 
@@ -367,6 +374,18 @@ public sealed class PayloadSchemaTests
         process = process with
         {
             ExpressionLanguage = "urn:example:language",
+            // A script task reaches the script shape and its retained content.
+            Elements =
+            [
+                .. process.Elements,
+                new BpmnElement("script", BpmnElementTypes.ScriptTask, bindingRef: "script")
+                {
+                    Script = new BpmnScript(
+                        "total = items.length",
+                        "text/javascript",
+                        new BpmnExtensions(ForeignAttributes: [new BpmnForeignAttribute(new BpmnQName("urn:vendor", "engine"), "nashorn")]))
+                }
+            ],
             SequenceFlows =
             [
                 .. process.SequenceFlows,
@@ -420,9 +439,13 @@ public sealed class PayloadSchemaTests
             new BpmnWorkBinding.MessageWait("process", "message", "message:listener", BpmnBindingSlot.ScopeListener, "Started"),
             new BpmnWorkBinding.SignalWait("process", "signal", "signal:primary", BpmnBindingSlot.Primary, "Ready"),
             new BpmnWorkBinding.MessagePublish("process", "publish", "publish:primary", BpmnBindingSlot.Primary, "Completed"),
+            new BpmnWorkBinding.SignalPublish("process", "broadcast", "broadcast:primary", BpmnBindingSlot.Primary, "Closed"),
             new BpmnWorkBinding.CallProcess("process", "call", "call:primary", BpmnBindingSlot.Primary, "called-process", WaitForCompletion: true),
             new BpmnWorkBinding.NestedProcess("process", "nested", "nested:primary", BpmnBindingSlot.Primary, process),
-            new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask")
+            new BpmnWorkBinding.UnboundTask("process", "task", "task:primary", BpmnBindingSlot.Primary, "serviceTask"),
+            new BpmnWorkBinding.TimerDateWait("process", "deadline", "deadline:primary", BpmnBindingSlot.Primary, "2026-12-24T18:00:00Z"),
+            new BpmnWorkBinding.TimerCycleWait("process", "reminder", "reminder:primary", BpmnBindingSlot.Primary, "R3/PT1H", "PT1H", null, 3, null),
+            new BpmnWorkBinding.TimerCycleWait("process", "nightly", "nightly:listener", BpmnBindingSlot.ScopeListener, "0 0 2 * * ?", null, "0 0 2 * * ?", null, null)
         ];
     }
 

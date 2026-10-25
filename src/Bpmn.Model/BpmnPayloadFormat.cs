@@ -56,8 +56,32 @@ public static class BpmnPayloadFormat
     /// every existing value so none is renumbered. Execution state written by 1.5.0 may carry them; a 1.4.0
     /// document reads as before. See ADR 0012.
     /// </para>
+    /// <para>
+    /// 1.6.0 adds one optional property, <c>BpmnElement.Script</c>, with the new <c>BpmnScript</c> shape: a
+    /// script task's <c>scriptFormat</c> and <c>&lt;script&gt;</c> body. A 1.5.0 document reads as before, with
+    /// the property absent; one that carried a script as a retained foreign child still writes it back.
+    /// </para>
+    /// <para>
+    /// 1.7.0 adds one work-binding case, <c>signalPublish</c> (<c>BpmnWorkBinding.SignalPublish</c>): the
+    /// broadcast a signal throw or signal end event binds. A 1.6.0 document reads as before; a reader that
+    /// predates 1.7.0 rejects the new discriminator rather than dropping the binding. See ADR 0007.
+    /// </para>
+    /// <para>
+    /// 1.8.0 adds one work-binding case, <c>timerDateWait</c> (<c>BpmnWorkBinding.TimerDateWait</c>): the wait a
+    /// timer at a <c>&lt;timeDate&gt;</c> binds, carrying the instant as <c>isoDate</c>. An event definition may now
+    /// carry the <c>date</c> property, which the model's property bag already allowed. A 1.7.0 document reads as
+    /// before; a reader that predates 1.8.0 rejects the new discriminator rather than dropping the binding. See
+    /// ADR 0007.
+    /// </para>
+    /// <para>
+    /// 1.9.0 adds one work-binding case, <c>timerCycleWait</c> (<c>BpmnWorkBinding.TimerCycleWait</c>): the wait a
+    /// timer on a <c>&lt;timeCycle&gt;</c> binds, carrying the cycle as written and its parts. An event definition may
+    /// now carry the <c>cycle</c>, <c>repetitions</c> and <c>start</c> properties, which the model's property bag
+    /// already allowed. A 1.8.0 document reads as before; a reader that predates 1.9.0 rejects the new discriminator
+    /// rather than dropping the binding. See ADR 0007.
+    /// </para>
     /// </summary>
-    public const string Version = "1.5.0";
+    public const string Version = "1.9.0";
 
     /// <summary>
     /// The <c>$id</c> of the published JSON Schema describing this format.

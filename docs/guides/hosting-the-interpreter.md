@@ -93,21 +93,31 @@ whenever it starts a root.
 
 #### Recurring timer starts
 
-Graph construction refuses a timer start unless it declares exactly one nonblank `interval` or
-`cron` property. Hosts registering recurring triggers use the same resolver:
+Graph construction refuses a timer start unless it declares exactly one nonblank `interval`,
+`cron` or `date` property. Hosts registering timer triggers use the same resolver:
 
 ```csharp
 var schedule = BpmnTimerStartSchedule.Resolve(timerStartElement);
-// schedule.Kind is BpmnTimerStartScheduleKind.Interval or Cron.
+// schedule.Kind is BpmnTimerStartScheduleKind.Interval, Cron or Date.
 // schedule.Expression is normalized for the host's scheduler.
+// schedule.Repetitions and schedule.Start come from a <timeCycle>, when the start declares one.
 ```
 
-An interval is trimmed; cron whitespace between fields is collapsed to one space. Blank values
-count as absent. Resolution validates the schedule choice, not ISO-8601 or cron syntax: validate
-the expression against your scheduler before registering it. The helper performs no scheduling
-and its result is not a new wire format. Event-subprocess timers retain their narrower rule:
-one nonblank interval and no nonblank cron, representing a one-shot listener re-armed on each
-non-interrupting fire. They are not recurring process-start registrations.
+An interval or date is trimmed; cron whitespace between fields is collapsed to one space. Blank
+values count as absent. A `Date` start runs once, at that ISO-8601 instant; an `Interval` or `Cron`
+start recurs. A start read from a `<timeCycle>` keeps the cycle as written in its `cycle` property;
+`Repetitions` is the count of an `R<n>/` cycle, after which the host stops the trigger, and `Start` the
+instant of its first occurrence, both `null` when the cycle does not say. The parts beside a `cycle`
+must agree with it, and a definition built in code may leave them out. Resolution validates the
+schedule choice, not ISO-8601 or cron syntax: validate the expression against your scheduler before
+registering it. The helper performs no scheduling and its result is not a new wire format.
+
+Event-subprocess timers take a cycle, or else one nonblank interval or date and no nonblank cron.
+A duration or cycle listener is re-armed on each non-interrupting fire, without end: the interpreter
+does not yet count a cycle's repetitions. A date listener (`BpmnEventSubprocessCatcher.FiresOnce`) is
+not re-armed, because its instant has passed. They are not recurring process-start registrations. A
+timer catch or boundary on a cycle binds a `timerCycleWait`, which ends at the cycle's first
+occurrence.
 
 ### 2. A snapshot
 
@@ -188,13 +198,19 @@ value cannot be hoisted into the snapshot.
 
 `BpmnNoVariables.Instance` is the do-nothing implementation for a host with no variables.
 
-Three answers are distinct, and the difference matters:
+The read outcomes are distinct, and the difference matters:
 
-- return `false` — you have no such variable at all.
-- return `true` with `BpmnValue.Null` — you have it, and it is null.
+- return `false` — you have no such variable at all; collection-mode evaluation faults with
+  `bpmn.loop.collection-unreadable`.
+- return `true` with `BpmnValue.Absent` — the read was answered, but there is no value; the collection
+  resolves as empty.
+- return `true` with `BpmnValue.Null` — you have it, and it is null; the collection also resolves as empty.
 - return `true` with `BpmnValuePresence.StoredExternally` — you have it, but not inline, so the
   interpreter cannot read it. Treated as unreadable rather than absent, so a multi-instance
   collection stored that way fails with a clear diagnostic instead of silently iterating zero times.
+- return `true` with `BpmnValue.Refused(code, message)` — you withhold it. A collection-mode loop
+  faults with your exact code and message, without starting an iteration. The reference reader exposes
+  this through `new InMemoryVariables().SetRefused("reviewers", "host.variable.denied", "Collection is withheld.")`.
 
 If your host would need to await something to answer, pre-resolve it before the evaluation. There is
 no async escape hatch here, deliberately.

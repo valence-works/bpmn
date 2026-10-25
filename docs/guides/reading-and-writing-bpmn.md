@@ -308,9 +308,11 @@ foreach (var binding in result.Bindings)
     var description = binding switch
     {
         BpmnWorkBinding.TimerWait timer        => $"wait {timer.IsoDuration}",
+        BpmnWorkBinding.TimerDateWait date     => $"wait until {date.IsoDate}",
         BpmnWorkBinding.MessageWait message    => $"await message '{message.MessageName}'",
         BpmnWorkBinding.SignalWait signal      => $"await signal '{signal.SignalName}'",
         BpmnWorkBinding.MessagePublish publish => $"publish message '{publish.MessageName}'",
+        BpmnWorkBinding.SignalPublish cast     => $"broadcast signal '{cast.SignalName}'",
         BpmnWorkBinding.CallProcess call       => $"call '{call.CalledElement}'" +
                                                   (call.WaitForCompletion ? " and wait" : ""),
         BpmnWorkBinding.NestedProcess nested   => $"run nested process '{nested.Definition.ProcessId}'",
@@ -406,6 +408,18 @@ the same shape that names another outcome, such as `outcome == 'Rejected'` on a 
 `<conditionExpression>` with no generated predicate beside it, and never evaluated, while
 `vw:conditionOutcome` still decides the route.
 
+A script task's `scriptFormat` and `<script>` are modeled the same way, as `BpmnElement.Script`: the
+`Body` is read like an expression's, the `Format` is the task's `scriptFormat`, and any attributes or
+child elements on `<script>` are retained on the script. `Script` is `null` on a task that declares
+neither. A task with a format and no `<script>` reads with an empty body and writes no `<script>`. BPMN
+allows one `<script>`; a second one is reported as `Dropped` and not written back. The
+library never runs a script: the host that runs the task's bound work reads it from the element.
+
+> **Upgrading from payload format 1.5.0.** A script task's `<script>` used to be retained in
+> `element.Extensions.ForeignChildren`, and its `scriptFormat` was dropped. Both are now read into
+> `element.Script`. A 1.5.0 payload that still carries the script as a foreign child is written once
+> and reads back as a modeled script.
+
 What the writer does not do is reproduce the source byte for byte.
 
 **Lossless for content, lossy for formatting.** Preserved: element structure, names, values, document
@@ -441,8 +455,8 @@ var rewritten = writer.Write(definitions, bindings);
 
 The envelope belongs to the host. Its two components use the library's
 [published schema](../reference/packages.md#the-serialization-is-owned-and-versioned); validate each
-binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `messageWait`, `signalWait`,
-`messagePublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
+binding against the `BpmnWorkBinding` root. Its cases are `timerWait`, `timerDateWait`, `timerCycleWait`, `messageWait`, `signalWait`,
+`messagePublish`, `signalPublish`, `callProcess`, `nestedProcess`, and `unboundTask`. Unknown `kind` values are rejected.
 Keep `kind` first when a client rebuilds a binding object: the default serializer writes it there,
 and [System.Text.Json requires discriminator metadata first by default](https://learn.microsoft.com/en-us/dotnet/standard/serialization/system-text-json/polymorphism).
 `slot` is numeric like other enums in the format: `0` for Primary and `1` for ScopeListener. Nested

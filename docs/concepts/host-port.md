@@ -69,13 +69,21 @@ characteristics, a binding supplied twice. Those throw `BpmnExecutionException`;
 an undeclared capability throws `BpmnCapabilityException`. A graph that builds is a graph the
 interpreter is willing to run.
 
+A refusal's `ElementIds` lists the elements and sequence flows it is about, so a host can point at them
+(mark them in a designer, say) without parsing the message. Most refusals list them in the order the
+message names them. A `BpmnCapabilityException` lists its `DrivingElementIds`, in their ordinal order.
+`ElementIds` is empty for a refusal about the definition as a whole, such as one with no start event. It
+can name an element the definition does not contain when that absence is the defect, such as a flow's
+missing target.
+
 #### A cycle must be able to wait
 
 Cycles are executable, but one structural problem is specific to them. If every element on a cycle
 passes a token straight on, a token that enters it is routed around the cycle forever within one
 evaluation, and the evaluation never returns to the host. `Build` refuses such a definition with a
 `BpmnExecutionException` that names the cycle's element ids in flow order, starting where the loop-back
-flow lands.
+flow lands; its `ElementIds` are those ids, in that order, followed by the conditional flows the
+message says the cycle never takes.
 
 A cycle can wait when at least one element on it can hold a token:
 
@@ -187,7 +195,7 @@ What the scope itself should do now.
 | --- | --- |
 | `Complete(Outcome)` | The scope finished: no token remains and no work is running. `Outcome` is `"Done"` normally, or `"Cancelled"` when a cancel end event cancelled a transaction. It is what a conditional flow in the parent selects on. |
 | `Defer` | Still running: work was started, a token waits at a join, or a listener is armed. |
-| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. `Code` is the library's reason. The init-only `ErrorCode` names the BPMN error behind the fault, when there is one. |
+| `Fault(Code, Message)` | The scope failed deterministically and cannot continue. `Code` is the library's reason, except that a refused variable read preserves the host's exact fault code. The init-only `ErrorCode` names the BPMN error behind the fault, when there is one. |
 
 `Defer` is not "waiting". The interpreter has no notion of waiting; it has a notion of having nothing
 left to decide. What you do during that gap — suspend, poll, park a message subscription, hold a
@@ -255,8 +263,9 @@ identity for those starts if your scheduler needs an owner; see
 [the host-port decision](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-17-amendment-scheduling-provenance).
 
 The property is additive in serialized commands. Older JSON without it deserializes with null;
-hosts using a closed command schema must allow the new field. Persisted execution state and the
-process-model schema are unchanged.
+hosts using a closed command schema must allow the new field. The property also participates in
+record value equality, so different producer values make otherwise identical commands unequal.
+Persisted execution state and the process-model schema are unchanged.
 
 The interpreter never parses a `BindingRef` — it compares and echoes it. Resolving one to an actual
 timer, work item, HTTP call or nested process is entirely yours.
@@ -301,6 +310,20 @@ It is the one command a `Fault` continuation may carry. An escalation throw issu
 is raised, before the evaluation reaches any verdict, so when the same evaluation then faults, the
 parent still hears the escalation. A scope that has already ended forwards nothing, and a fault at the
 propagation limit drops what it raised; see [the continuation](#the-continuation).
+
+**Host ordering invariant:** deliver these outward signals to the parent before reporting this
+scope's fault, or atomically together with that report. Apply the returned commands even when the
+continuation is `Fault`; dropping them would lose an escalation raised earlier in the evaluation.
+An interrupting parent catcher needs the signal before the child's fault terminalizes its work.
+The reference host applies the commands first, then queues the parent's fault callback. This is a
+host-port guarantee, with no `SignalsSurviveFault` capability or optional degradation; see
+[the decision](../adr/0009-raised-escalations-survive-a-later-fault.md).
+
+An incoming escalation that matches nothing and is re-signalled one hop outward takes a different
+path. `BubbleOrUnhandled` carries it as `PendingScopeSignal`, and the interpreter issues it only on
+a non-fault continuation. A scope holding a legacy `PendingFault` verdict absorbs the callback and
+forwards no re-signal. That deferred forwarding is distinct from the signal an escalation throw
+already raised in the current evaluation. The propagation-limit exception above remains unchanged.
 
 It carries a `Code` and an optional JSON `Payload`. There is exactly one code for escalation —
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity
@@ -431,20 +454,27 @@ public interface IBpmnVariableReader
 }
 ```
 
-Three answers are distinct:
+The read outcomes are distinct:
 
 | Answer | Meaning |
 | --- | --- |
-| `false` | No such variable. |
-| `true`, with `BpmnValue.Null` | The variable exists and is null. |
+| `false` | No such variable; a collection-mode loop faults with `bpmn.loop.collection-unreadable`. |
+| `true`, with `BpmnValue.Absent` | The read was answered, but there is no value; a collection-mode loop treats it as an empty collection. |
+| `true`, with `BpmnValue.Null` | The variable exists and is null; a collection-mode loop treats it as an empty collection. |
 | `true`, with `BpmnValuePresence.StoredExternally` | The variable exists, but not inline, so it cannot be read. |
+| `true`, with `BpmnValue.Refused(code, message)` | The host withholds the value; a collection-mode loop faults with exactly that code and message. |
 
 `BpmnNoVariables.Instance` is the shared implementation for a host with no variables at all.
 
-The third is the interesting one. It is treated as unreadable rather than absent, so a multi-instance
+External storage is treated as unreadable rather than absent, so a multi-instance
 collection held outside the inline payload fails with a clear diagnostic instead of silently
 iterating zero times. Distinguishing "no" from "cannot tell you" prevents a whole class of quiet
-wrong answers.
+wrong answers. A refusal is also distinct: return `true` with `BpmnValue.Refused("host.variable.denied", "The collection is withheld.")`.
+Both sequential and parallel collection loops return the host's exact fault code and message without
+starting iterations. A malformed refused value without a usable code faults as
+`bpmn.loop.collection-unreadable`; a missing message gets a deterministic diagnostic. Empty host
+messages are preserved on the fault verdict; the diagnostic uses fallback text for empty or
+whitespace-only messages. See [the decision](../adr/0008-variable-read-refusals-preserve-host-faults.md).
 
 Values cross the boundary as JSON with a host-interpreted type hint. `BpmnValueTypes` names the two
 hints the interpreter itself understands — `integer` and `any` — and every other string is yours to

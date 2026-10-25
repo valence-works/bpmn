@@ -110,5 +110,9 @@ null by default. This adds no capability or command kind, and does not change pe
 state or the process-model schema. Serialized `StartWork` commands do gain an additive
 `ProducedByHandle` field. Older command JSON that omits it still deserializes with a null value;
 hosts that validate or store commands with a closed schema must accommodate the new field.
+As a record property, it participates in command value equality. Commands with different producer
+values compare differently; hosts comparing old and newly evaluated commands, or using commands as
+keys, must account for that difference. The release containing this property must document both
+the additive JSON field and the equality change.
 Copying the token's `ProducingWorkHandle` for every start was rejected because it would wrongly
 attribute scope-owned starts, especially event-subprocess bodies, to the triggering work.

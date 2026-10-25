@@ -110,9 +110,10 @@ Then:
    stopping what the scope still runs is the host's half of the fault. The evaluation reports
    `Propagated`, because no catcher in the scope took the error.
 
-`BpmnInterpreter.ErrorThrownFaultCode` is the fault code. `Fault.Code` stays the library's reason the
-scope stopped; the BPMN error travels separately in `Fault.ErrorCode`, so a document can never forge a
-library reason. An uncaught error fails its scope, where an uncaught escalation is a no-op.
+`BpmnInterpreter.ErrorThrownFaultCode` is the fault code. For a BPMN error, `Fault.Code` stays the
+library's reason the scope stopped; the BPMN error travels separately in `Fault.ErrorCode`, so a
+document can never forge a library reason. A [host variable-read refusal](../adr/0008-variable-read-refusals-preserve-host-faults.md)
+is a separate host fault: it preserves the host's exact `Fault.Code` and leaves `Fault.ErrorCode` null. An uncaught error fails its scope, where an uncaught escalation is a no-op.
 
 ### Propagation
 
