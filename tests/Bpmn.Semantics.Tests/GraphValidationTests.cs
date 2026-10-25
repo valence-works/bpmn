@@ -152,6 +152,7 @@ public sealed class GraphValidationTests
             [Flow("start-catch", "start", "catch"), Flow("catch-end", "catch", "end")]);
         var exception = Should.Throw<BpmnExecutionException>(() => Build(definition));
         exception.Message.ShouldContain("intermediate catch event 'catch' declares event definition type 'error'");
+        exception.ElementIds.ShouldBe(["catch"]);
     }
 
     [Fact]
