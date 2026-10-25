@@ -1009,21 +1009,46 @@ public sealed class BpmnXmlWriter
         var taken = new HashSet<string>(fixedPrefixes, StringComparer.Ordinal) { "bpmn", "xml", "xmlns", "xsi" };
         foreach (var prefix in unboundPrefixes)
             taken.Add(prefix);
-        foreach (var declaration in root.Attributes().Where(attribute => attribute.IsNamespaceDeclaration))
-            if (declaration.Name.Namespace == XNamespace.Xmlns)
-                taken.Add(declaration.Name.LocalName);
+        foreach (var prefix in bindingsByElement.Values.SelectMany(bindings => bindings.Keys))
+            taken.Add(prefix);
+        foreach (var declaration in root.DescendantsAndSelf()
+                     .SelectMany(element => element.Attributes())
+                     .Where(attribute => attribute.IsNamespaceDeclaration))
+            taken.Add(declaration.Name.LocalName);
 
         var fallback = 1;
         foreach (var ns in namespaces)
         {
             if (root.GetPrefixOfNamespace(ns) is not null) continue;
-            var prefix = SuggestPrefix(ns);
-            if (prefix is null || !taken.Add(prefix))
-            {
-                do prefix = $"ext{fallback++}"; while (!taken.Add(prefix));
-            }
+            root.SetAttributeValue(XNamespace.Xmlns + AllocatePrefix(ns), ns);
+        }
 
-            root.SetAttributeValue(XNamespace.Xmlns + prefix, ns);
+        // A QName value may rebind a prefix inherited from the root on the same element whose XML
+        // name (or a namespaced attribute name) uses that inherited namespace. XElement chooses the
+        // inherited prefix for the name before writing the local declaration, and XmlWriter then
+        // rejects redefining that prefix on the start tag. Give the XML name a local alias first.
+        foreach (var element in root.DescendantsAndSelf())
+        {
+            if (!bindingsByElement.TryGetValue(element, out var bindings)) continue;
+
+            var nameNamespaces = element.Attributes()
+                .Where(attribute => !attribute.IsNamespaceDeclaration)
+                .Select(attribute => attribute.Name.Namespace)
+                .Append(element.Name.Namespace)
+                .Where(ns => ns != XNamespace.None && ns != XNamespace.Xml)
+                .Select(ns => ns.NamespaceName)
+                .ToHashSet(StringComparer.Ordinal);
+
+            foreach (var (prefix, localNamespace) in bindings)
+            {
+                var inheritedNamespace = element.Parent?.GetNamespaceOfPrefix(prefix)?.NamespaceName;
+                if (inheritedNamespace is null
+                    || StringComparer.Ordinal.Equals(inheritedNamespace, localNamespace)
+                    || !nameNamespaces.Contains(inheritedNamespace))
+                    continue;
+
+                EnsureLocalNamePrefix(element, inheritedNamespace, bindings);
+            }
         }
 
         foreach (var element in root.DescendantsAndSelf())
@@ -1038,6 +1063,30 @@ public sealed class BpmnXmlWriter
                     throw new BpmnInterchangeException($"Cannot preserve QName prefix '{prefix}' in a retained attribute value: expected it to be {expectation}, but the writer would bind it to '{actualNamespace ?? "(unbound)"}'.");
                 }
             }
+        }
+
+        string AllocatePrefix(string ns)
+        {
+            var suggested = SuggestPrefix(ns);
+            if (suggested is not null && taken.Add(suggested))
+                return suggested;
+
+            string prefix;
+            do prefix = $"ext{fallback++}"; while (!taken.Add(prefix));
+            return prefix;
+        }
+
+        void EnsureLocalNamePrefix(XElement element, string namespaceName, IReadOnlyDictionary<string, string?> valueBindings)
+        {
+            var existingAlias = element.Attributes()
+                .Where(attribute => attribute.IsNamespaceDeclaration && attribute.Name.Namespace == XNamespace.Xmlns)
+                .FirstOrDefault(attribute => StringComparer.Ordinal.Equals(attribute.Value, namespaceName)
+                    && (!valueBindings.TryGetValue(attribute.Name.LocalName, out var valueNamespace)
+                        || StringComparer.Ordinal.Equals(valueNamespace, namespaceName)));
+            if (existingAlias is not null) return;
+
+            var prefix = AllocatePrefix(namespaceName);
+            element.SetAttributeValue(XNamespace.Xmlns + prefix, namespaceName);
         }
     }
 
