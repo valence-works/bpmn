@@ -116,3 +116,19 @@ keys, must account for that difference. The release containing this property mus
 the additive JSON field and the equality change.
 Copying the token's `ProducingWorkHandle` for every start was rejected because it would wrongly
 attribute scope-owned starts, especially event-subprocess bodies, to the triggering work.
+
+## 2026-10-25 amendment: computed host values
+
+`BpmnValue.HasValue` is a computed C# convenience property, derived from `Presence` and `Json`.
+New JSON writes omit it. The property, positional constructor, three-value deconstruction, presence
+ordinals, inline data and optional refusal metadata keep their existing contracts. Legacy JSON
+containing `HasValue` (or `hasValue` under a camel-case naming policy) still reads; its supplied boolean
+is ignored and the getter computes the answer from the value.
+
+This is an intentional host-port JSON output change after the published v0.4.0 baseline, to be
+included in the next v0.5.0 migration notes. Hosts with a closed host-value schema must accept the
+shape without the derived property; hosts that require that field must compute it themselves.
+It is not a change to the published payload roots: `BpmnValue` is not reachable from
+`BpmnDefinitions`, `BpmnExecutionState` or `BpmnWorkBinding`, so their generated schema and
+`BpmnPayloadFormat.Version` remain unchanged. See [ADR 0005](0005-the-library-owns-a-versioned-payload-format.md)
+for that separate versioned contract.

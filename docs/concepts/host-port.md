@@ -485,6 +485,10 @@ Values cross the boundary as JSON with a host-interpreted type hint. `BpmnValueT
 hints the interpreter itself understands — `integer` and `any` — and every other string is yours to
 define. The library never assigns meaning to your type system.
 
+`BpmnValue.HasValue` remains a computed C# getter, but unreleased main omits it from JSON writes.
+Older JSON containing the derived boolean still reads. Hosts with a schema for these host-port values
+should read [the migration note](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-25-amendment-computed-host-values).
+
 If your host would need to await something to answer a read, pre-resolve it before the evaluation.
 There is deliberately no async path here.
 
