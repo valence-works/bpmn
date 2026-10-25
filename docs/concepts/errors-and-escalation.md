@@ -209,6 +209,11 @@ misreading of an escalation trace.
 
 ### Escalation crosses scopes by signalling
 
+On unreleased main after v0.4.0, escalation boundaries accept Call Activities as well as Sub-Processes.
+The called process signals through its Call Activity work binding; an interrupting boundary cancels
+that called scope, while a non-interrupting boundary leaves it running. Ordinary task hosts remain
+invalid. See [ADR0013](../adr/0013-host-work-availability-is-assessed-after-import.md).
+
 When an escalation must leave the scope it was raised in, the interpreter emits a
 `SignalEnclosingScope` command. Your host routes it to the immediate parent scope and delivers it
 there through `OnWorkSignalled`.

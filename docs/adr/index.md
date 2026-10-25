@@ -23,6 +23,7 @@ They are short and they take positions. An ADR that hedges is not worth keeping.
 | [0010](0010-work-callbacks-echo-the-started-token.md) | Work callbacks echo the started token (proposed) |
 | [0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) | Hosts evaluate condition expressions through a synchronous port |
 | [0012](0012-hosts-and-error-end-events-name-bpmn-errors.md) | Hosts and error end events name BPMN errors |
+| [0013](0013-host-work-availability-is-assessed-after-import.md) | Host work availability is assessed after import |
 
 ## Writing a new one
 

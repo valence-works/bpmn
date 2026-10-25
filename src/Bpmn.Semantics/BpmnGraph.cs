@@ -1128,8 +1128,8 @@ public sealed class BpmnGraph
             {
                 // An escalation boundary is dormant (no listener) and routes its outbound flows
                 // (≥1, already enforced above) when a matching escalation notification arrives. CancelActivity is
-                // honored (interrupting and non-interrupting are both meaningful). The host-must-be-a-subprocess,
-                // distinct-codes, and single-catch-all rules live in ValidateEscalation.
+                // honored (interrupting and non-interrupting are both meaningful). The subprocess/call-activity
+                // host, distinct-codes, and single-catch-all rules live in ValidateEscalation.
                 if (boundary.BindingRef is not null)
                     throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' cannot bind work; it is dormant and fires when a matching escalation signal arrives.") { ElementIds = [boundary.ElementId] };
             }
@@ -1143,10 +1143,10 @@ public sealed class BpmnGraph
     /// <summary>
     /// Escalation rules. An escalation throw (intermediate) or end event must carry a non-empty
     /// escalation <c>code</c> (a throw must say what it escalates) and bind no work. An escalation boundary must
-    /// bind no work (already enforced in <see cref="ValidateBoundaryEvents"/>), attach to a <c>subProcess</c>-family
-    /// host (a task host is dead by construction — a task's bound work is a leaf that can never escalate), and per
-    /// host the escalation boundary codes must be distinct with at most one code-less catch-all. Each rule rejects
-    /// deterministically with the offending element named.
+    /// bind no work (already enforced in <see cref="ValidateBoundaryEvents"/>), attach to a <c>subProcess</c> or
+    /// <c>callActivity</c> host (an ordinary task host is dead by construction — its bound work is a leaf that can
+    /// never escalate), and per host the escalation boundary codes must be distinct with at most one code-less
+    /// catch-all. Each rule rejects deterministically with the offending element named.
     /// </summary>
     private static void ValidateEscalation(IReadOnlyCollection<BpmnElement> elements)
     {
@@ -1169,8 +1169,9 @@ public sealed class BpmnGraph
             // ValidateBoundaryEvents already rejects a missing/unresolvable host, so a resolvable host is expected here.
             if (boundary.AttachedToRef is not { } hostId || !elementsById.TryGetValue(hostId, out var host))
                 continue;
-            if (!StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess))
-                throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}); an escalation boundary may only attach to a subprocess host (a task's bound work is a leaf that can never escalate).") { ElementIds = [boundary.ElementId, hostId] };
+            if (!StringComparer.Ordinal.Equals(host.ElementType, BpmnElementTypes.SubProcess)
+                && !BpmnElementFamilies.IsCallActivity(host))
+                throw new BpmnExecutionException($"BPMN escalation boundary event '{boundary.ElementId}' is attached to '{hostId}' ({host.ElementType}); an escalation boundary may only attach to a subprocess or call activity host (an ordinary task's bound work is a leaf that can never escalate).") { ElementIds = [boundary.ElementId, hostId] };
 
             var code = ReadEscalationCode(boundary);
             if (code is null)
