@@ -34,14 +34,48 @@ public sealed class BpmnEventDefinition
 /// </summary>
 public static class BpmnEventDefinitionProperties
 {
-    /// <summary>The event name a message/signal start (or catch) resolves its stimulus from (drives <c>EventStimulus.Hash</c>).</summary>
+    /// <summary>
+    /// The event name a message/signal start (or catch) resolves its stimulus from (drives <c>EventStimulus.Hash</c>).
+    /// On a <see cref="BpmnEventDefinitionTypes.Link"/> definition, the link name that pairs a throw with its catch.
+    /// </summary>
     public const string Name = "name";
 
-    /// <summary>An ISO-8601 duration for a timer start's recurring interval (mutually exclusive with <see cref="Cron"/>).</summary>
+    /// <summary>
+    /// An ISO-8601 duration: a timer start's recurring interval, the period of a <see cref="Cycle"/>, or the one-shot
+    /// delay of a catch, boundary or event-subprocess timer declared with <c>&lt;timeDuration&gt;</c> (mutually exclusive
+    /// with <see cref="Cron"/>).
+    /// </summary>
     public const string Interval = "interval";
 
-    /// <summary>A cron expression for a timer start's recurring schedule (mutually exclusive with <see cref="Interval"/>).</summary>
+    /// <summary>A cron expression for a timer's recurring schedule, the text of a cron <see cref="Cycle"/> (mutually exclusive with <see cref="Interval"/>).</summary>
     public const string Cron = "cron";
+
+    /// <summary>
+    /// An ISO-8601 instant from a timer's <c>&lt;timeDate&gt;</c>: the one moment the timer fires. Kept verbatim
+    /// (trimmed), never parsed; the host that schedules the timer reads it. Valid on a timer start, catch, boundary or
+    /// event-subprocess start, mutually exclusive with <see cref="Interval"/> and <see cref="Cron"/>.
+    /// </summary>
+    public const string Date = "date";
+
+    /// <summary>
+    /// A timer's <c>&lt;timeCycle&gt;</c> as written (trimmed): an ISO-8601 repeating interval, a bare duration, or a cron
+    /// expression (see <see cref="BpmnTimerCycle"/>). Valid on a timer start, catch, boundary or event-subprocess start.
+    /// It is the cycle's source of truth: <see cref="Interval"/> or <see cref="Cron"/>, <see cref="Repetitions"/> and
+    /// <see cref="Start"/> beside it are its parts, and must agree with it. Mutually exclusive with <see cref="Date"/>.
+    /// </summary>
+    public const string Cycle = "cycle";
+
+    /// <summary>
+    /// How many times a <see cref="Cycle"/> fires, the <c>n</c> of <c>R&lt;n&gt;/</c>, as a decimal; absent when it
+    /// repeats without end.
+    /// </summary>
+    public const string Repetitions = "repetitions";
+
+    /// <summary>
+    /// The instant of a <see cref="Cycle"/>'s first occurrence, the start of <c>R[n]/&lt;start&gt;/&lt;duration&gt;</c>,
+    /// kept as written; absent when the cycle does not say.
+    /// </summary>
+    public const string Start = "start";
 
     /// <summary>
     /// The element id a compensate throw/end event targets: compensate only that element's
@@ -55,6 +89,11 @@ public static class BpmnEventDefinitionProperties
     /// the matching key. <b>Required</b> and non-empty on an escalation throw/end event (a throw must say what
     /// it escalates); <b>optional</b> on an escalation boundary event — a code-less boundary is the code-less
     /// catch-all that matches any escalation whose specific code no other boundary on the host claims.
+    /// <para>
+    /// The same key carries an <see cref="BpmnEventDefinitionTypes.Error"/> definition's code: the code its
+    /// <c>errorRef</c> resolves to, which is the referenced error's <c>errorCode</c>, or its id when it declares
+    /// none. An error catcher without a code is a catch-all.
+    /// </para>
     /// </summary>
     public const string Code = "code";
 }
@@ -75,4 +114,11 @@ public static class BpmnEventDefinitionTypes
     /// on a boundary event attached to a transaction host it routes the cancellation path in the parent scope.
     /// </summary>
     public const string Cancel = "cancel";
+
+    /// <summary>
+    /// A link event definition: an intermediate throw jumps its token to the intermediate catch of the same
+    /// <see cref="BpmnEventDefinitionProperties.Name"/> in the same scope, as if a sequence flow joined them. It binds
+    /// no work. Valid only on intermediate throw and catch events.
+    /// </summary>
+    public const string Link = "link";
 }

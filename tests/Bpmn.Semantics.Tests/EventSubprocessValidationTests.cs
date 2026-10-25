@@ -39,7 +39,7 @@ public sealed class EventSubprocessValidationTests
         catcher.Code.ShouldBeNull();
         catcher.Interrupting.ShouldBeTrue();
         catcher.ListenerBindingRef.ShouldBeNull();
-        graph.ErrorEventSubprocess().ShouldBeSameAs(catcher);
+        graph.ErrorEventSubprocess(errorCode: null).ShouldBeSameAs(catcher);
     }
 
     [Fact]
@@ -158,11 +158,11 @@ public sealed class EventSubprocessValidationTests
 
         graph.EventSubprocesses.Count.ShouldBe(2);
         graph.EscalationEventSubprocess("E1")?.ElementId.ShouldBe("EscalationHandler");
-        graph.ErrorEventSubprocess()?.ElementId.ShouldBe("ErrorHandler");
+        graph.ErrorEventSubprocess(errorCode: null)?.ElementId.ShouldBe("ErrorHandler");
     }
 
     [Fact]
-    public void A_scope_rejects_two_error_event_subprocesses()
+    public void A_scope_rejects_two_catch_all_error_event_subprocesses()
     {
         var parent = Parent(
             EventSubprocess("FirstHandler", "first-body"),
@@ -171,7 +171,7 @@ public sealed class EventSubprocessValidationTests
         Should.Throw<BpmnExecutionException>(() => Build(parent,
             Body("first-body", "FirstStart", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error)),
             Body("second-body", "SecondStart", new BpmnEventDefinition(BpmnEventDefinitionTypes.Error))))
-            .Message.ShouldContain("at most one");
+            .Message.ShouldContain("code-less catch-all");
     }
 
     [Theory]

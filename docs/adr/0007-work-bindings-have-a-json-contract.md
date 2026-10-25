@@ -47,6 +47,32 @@ versioning and a reviewed schema diff. The previous uncontracted CLR/PascalCase 
 alternate accepted format; callers should use the published 1.2 contract. Existing 1.0/1.1 definitions
 and execution-state documents remain valid under the expanded schema.
 
+## Revisions
+
+**1.7.0: `signalPublish`.** A signal throw or signal end event binds the broadcast of its named signal,
+`BpmnWorkBinding.SignalPublish`, with the discriminator `signalPublish` and one property, `signalName`. It
+mirrors `messagePublish`; delivering the signal to every catcher stays the host's. Like a message
+publish it is ordinary bound work the host starts and completes, so it needs no host capability;
+`ScopeSignalling` is unrelated, being the escalation channel to an enclosing scope. The revision is additive:
+every 1.6.0 document is a valid 1.7.0 document. A reader that predates it rejects the new discriminator, as
+this ADR requires of any unknown kind, rather than reading the binding with its data lost.
+
+**1.8.0: `timerDateWait`.** A timer catch event, timer boundary event, or timer event-subprocess trigger
+declared with `<timeDate>` binds a wait that ends at an instant, `BpmnWorkBinding.TimerDateWait`, with the
+discriminator `timerDateWait` and one property, `isoDate`: the ISO-8601 instant as written, which the host
+parses and schedules. It is a new case rather than an optional field on `timerWait`, so `timerWait.isoDuration`
+stays required and a host that only knows durations is never handed a wait without one. The revision is
+additive: every 1.7.0 document is a valid 1.8.0 document, and a reader that predates it rejects the new
+discriminator rather than mistaking a date for a duration.
+
+**1.9.0: `timerCycleWait`.** A timer catch event, timer boundary event, or timer event-subprocess trigger
+declared with `<timeCycle>` binds a wait on a recurring schedule, `BpmnWorkBinding.TimerCycleWait`, with the
+discriminator `timerCycleWait`. `cycle` is the cycle as written, which a writer emits again verbatim; `isoDuration`
+or `cron`, `repetitions` and `start` are its parts, split but never interpreted, so a host schedules the cycle
+without parsing ISO-8601 repeating intervals itself. One wait ends at one occurrence. It is a new case for the same
+reason as `timerDateWait`: `timerWait.isoDuration` stays a one-shot delay. The revision is additive: every 1.8.0
+document is a valid 1.9.0 document.
+
 ## Alternatives considered
 
 **Let each host invent a discriminator and names.** Rejected for the same reason as ADR 0005: each

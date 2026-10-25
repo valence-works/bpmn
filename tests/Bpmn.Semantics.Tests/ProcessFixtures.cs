@@ -236,9 +236,12 @@ public static class ProcessFixtures
         return (parent, body);
     }
 
-    /// <summary>A subprocess with an escalation boundary on the parent, and a body that escalates nothing by itself.</summary>
+    /// <summary>
+    /// A subprocess with an escalation boundary on the parent, and a body that escalates nothing by itself. A null
+    /// <paramref name="code"/> makes the boundary the code-less catch-all.
+    /// </summary>
     public static (BpmnProcessDefinition Parent, BpmnProcessDefinition Body) SubProcessWithEscalationBoundary(
-        string code = "overdue",
+        string? code = "overdue",
         bool interrupting = true)
     {
         var body = new BpmnProcessBuilder("body")
@@ -252,7 +255,7 @@ public static class ProcessFixtures
             .StartEvent("Start")
             .SubProcess("Sub", bindingRef: "sub")
             .EndEvent("End")
-            .BoundaryEvent("Escalated", "Sub", Escalation(code), interrupting)
+            .BoundaryEvent("Escalated", "Sub", code is null ? CatchAllEscalation() : Escalation(code), interrupting)
             .EndEvent("EndEscalated")
             .ConnectSequence("Start", "Sub", "End")
             .ConnectSequence("Escalated", "EndEscalated")
@@ -855,6 +858,29 @@ public static class ProcessFixtures
             .Connect("Undecidable", "EndLeft", condition: "Left")
             .Connect("Undecidable", "EndRight", condition: "Right");
 
+    /// <summary>Gives the named flows a condition expression, keeping everything else on them.</summary>
+    public static BpmnProcessDefinition WithExpressions(BpmnProcessDefinition definition, params (string FlowId, string Body)[] expressions) =>
+        WithExpressions(definition, expressions.Select(entry => (entry.FlowId, new BpmnConditionExpression(entry.Body))).ToArray());
+
+    public static BpmnProcessDefinition WithExpressions(BpmnProcessDefinition definition, params (string FlowId, BpmnConditionExpression Expression)[] expressions)
+    {
+        var byFlow = expressions.ToDictionary(entry => entry.FlowId, entry => entry.Expression, StringComparer.Ordinal);
+        if (byFlow.Keys.Except(definition.SequenceFlows.Select(flow => flow.FlowId), StringComparer.Ordinal).Any())
+            throw new ArgumentException("A fixture names a flow that does not exist.", nameof(expressions));
+
+        return definition with
+        {
+            SequenceFlows = definition.SequenceFlows
+                .Select(flow => byFlow.TryGetValue(flow.FlowId, out var expression)
+                    ? new BpmnSequenceFlow(flow.FlowId, flow.SourceRef, flow.TargetRef, flow.Name, flow.ConditionOutcome, flow.IsDefault, flow.Extensions)
+                    {
+                        ConditionExpression = expression
+                    }
+                    : flow)
+                .ToArray()
+        };
+    }
+
     public static BpmnEventDefinition Terminate() => new(BpmnEventDefinitionTypes.Terminate);
 
     public static BpmnEventDefinition Timer(string isoDuration) =>
@@ -864,6 +890,9 @@ public static class ProcessFixtures
     public static BpmnEventDefinition Escalation(string code) =>
         new(BpmnEventDefinitionTypes.Escalation,
             new Dictionary<string, string>(StringComparer.Ordinal) { [BpmnEventDefinitionProperties.Code] = code });
+
+    public static BpmnEventDefinition CatchAllEscalation() =>
+        new(BpmnEventDefinitionTypes.Escalation, new Dictionary<string, string>(StringComparer.Ordinal));
 
     public static BpmnEventDefinition Message(string name) =>
         new(BpmnEventDefinitionTypes.Message,

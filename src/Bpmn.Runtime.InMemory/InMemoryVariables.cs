@@ -8,11 +8,12 @@ namespace Bpmn.Runtime.InMemory;
 /// The host's <see cref="IBpmnVariableReader"/>: a mutable, ordinal-keyed dictionary of
 /// <see cref="BpmnValue"/>.
 /// <para>
-/// The three answers the port distinguishes are all reachable here, because collapsing them is exactly the
+/// The distinct answers the port distinguishes are all reachable here, because collapsing them is exactly the
 /// bug the port is shaped to prevent. A name that was never set reads as unknown (<c>TryRead</c> returns
 /// <c>false</c>); a name set through <see cref="SetNull"/> reads as known-and-null; a name set through
 /// <see cref="SetStoredExternally"/> reads as known-but-not-inline, which a collection-mode multi-instance
-/// activity turns into a clear fault rather than a silent zero-instance loop.
+/// activity turns into a clear fault rather than a silent zero-instance loop. A name set through
+/// <see cref="SetRefused"/> reads as a refusal with the host's fault code and message.
 /// </para>
 /// </summary>
 public sealed class InMemoryVariables : IBpmnVariableReader
@@ -105,6 +106,10 @@ public sealed class InMemoryVariables : IBpmnVariableReader
     public InMemoryVariables SetStoredExternally(string name, string? typeHint = null) =>
         Set(name, new BpmnValue(BpmnValuePresence.StoredExternally, typeHint));
 
+    /// <summary>Withholds a variable and reports the host's fault code and message when it is read.</summary>
+    public InMemoryVariables SetRefused(string name, string faultCode, string message) =>
+        Set(name, BpmnValue.Refused(faultCode, message));
+
     /// <summary>Removes a variable, so it reads as unknown again.</summary>
     public bool Remove(string name) => _values.Remove(name);
 
@@ -122,6 +127,7 @@ public sealed class InMemoryVariables : IBpmnVariableReader
         BpmnValuePresence.Present => value.Json?.ToString() ?? "(present)",
         BpmnValuePresence.Null => "null",
         BpmnValuePresence.StoredExternally => "(stored externally)",
+        BpmnValuePresence.Refused => "(refused)",
         _ => "(absent)"
     };
 }

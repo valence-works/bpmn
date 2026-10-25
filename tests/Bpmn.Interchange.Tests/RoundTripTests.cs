@@ -699,17 +699,25 @@ public sealed class RoundTripTests
         return expressions[0];
     }
 
-    private static BpmnExtensionElement RetainedExpression(BpmnImportResult result, string flowId)
+    /// <summary>
+    /// The author's expression, read into the model. It must not also be retained as a foreign child, or
+    /// the writer would have two to choose from.
+    /// </summary>
+    private static BpmnConditionExpression ModeledExpression(BpmnImportResult result, string flowId)
     {
-        var child = Process(result).SequenceFlows.Single(flow => flow.FlowId == flowId)
-            .Extensions.ForeignChildren
-            .Single(foreign => foreign.Element.Name.LocalName == "conditionExpression");
-        child.Element.Name.Namespace.ShouldBe(BpmnXmlNames.Model.NamespaceName);
-        return child.Element;
+        var flow = Process(result).SequenceFlows.Single(candidate => candidate.FlowId == flowId);
+        flow.Extensions.ForeignChildren.ShouldNotContain(foreign => foreign.Element.Name.LocalName == "conditionExpression");
+        return flow.ConditionExpression.ShouldNotBeNull();
     }
 
     private static string? Attribute(BpmnExtensionElement element, string? ns, string localName) =>
-        element.Attributes.SingleOrDefault(attribute =>
+        Attribute(element.Attributes, ns, localName);
+
+    private static string? Attribute(BpmnConditionExpression expression, string? ns, string localName) =>
+        Attribute(expression.Extensions.ForeignAttributes, ns, localName);
+
+    private static string? Attribute(IEnumerable<BpmnForeignAttribute> attributes, string? ns, string localName) =>
+        attributes.SingleOrDefault(attribute =>
             string.Equals(attribute.Name.LocalName, localName, StringComparison.Ordinal)
             && string.Equals(attribute.Name.Namespace, ns, StringComparison.Ordinal))?.Value;
 
@@ -719,16 +727,13 @@ public sealed class RoundTripTests
         var (first, firstXml, second, secondXml) = RoundTrip(ConditionalDocument);
 
         Process(first).SequenceFlows.Single(flow => flow.FlowId == "toReject").ConditionOutcome.ShouldBeNull();
-        first.Analysis.Issues.ShouldContain(issue =>
-            issue.Severity == BpmnImportIssueSeverity.Degraded
-            && issue.ElementId == "toReject"
-            && issue.Message.Contains("amount >= 1000", StringComparison.Ordinal));
+        first.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "toReject");
 
         foreach (var generation in new[] { first, second })
         {
-            var expression = RetainedExpression(generation, "toReject");
-            expression.Value.ShouldBe("amount >= 1000");
-            Attribute(expression, null, "language").ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
+            var expression = ModeledExpression(generation, "toReject");
+            expression.Body.ShouldBe("amount >= 1000");
+            expression.Language.ShouldBe("https://www.omg.org/spec/DMN/20191111/FEEL/");
             Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
         }
 
@@ -751,9 +756,9 @@ public sealed class RoundTripTests
             var flow = Process(generation).SequenceFlows.Single(candidate => candidate.FlowId == "toApprove");
             flow.ConditionOutcome.ShouldBe("Approved");
 
-            var expression = RetainedExpression(generation, "toApprove");
-            expression.Value.ShouldBe("amount < 1000");
-            Attribute(expression, null, "language").ShouldBe("http://www.w3.org/1999/XPath");
+            var expression = ModeledExpression(generation, "toApprove");
+            expression.Body.ShouldBe("amount < 1000");
+            expression.Language.ShouldBe("http://www.w3.org/1999/XPath");
             Attribute(expression, Xsi.NamespaceName, "type").ShouldBe("tFormalExpression");
             Attribute(expression, Triso.NamespaceName, "unparsed").ShouldBe("false");
         }
@@ -781,6 +786,8 @@ public sealed class RoundTripTests
         var flow = Process(read).SequenceFlows.Single();
         flow.ConditionOutcome.ShouldBe("approved");
         flow.Extensions.ForeignChildren.ShouldBeEmpty();
+        flow.ConditionExpression.ShouldBeNull("the generated predicate is consumed, not modeled");
+        read.Analysis.Issues.ShouldNotContain(issue => issue.ElementId == "f1");
     }
 
     [Fact]
@@ -806,33 +813,36 @@ public sealed class RoundTripTests
         flow.Attributes().ShouldNotContain(attribute => attribute.Name.LocalName == "conditionOutcome");
     }
 
+    /// <summary>
+    /// A payload serialized before format 1.3.0 carries an author's expression as a retained foreign child.
+    /// The reader that wrote it had already consumed the predicate for the outcome it read, so a retained
+    /// <c>outcome == '…'</c> child is an author's lookalike, and it is written back exactly as the same
+    /// expression read into <see cref="BpmnSequenceFlow.ConditionExpression"/> would be.
+    /// </summary>
     [Fact]
-    public void A_stale_generated_expression_on_the_model_is_replaced_when_the_outcome_changes()
+    public void A_retained_lookalike_from_a_pre_1_3_payload_is_written_back()
     {
-        var stale = new BpmnExtensions(ForeignChildren:
-        [
-            new BpmnForeignChild(
-                new BpmnExtensionElement(new BpmnQName(BpmnXmlNames.Model.NamespaceName, "conditionExpression"),
-                    Value: "outcome == 'approved'"),
-                Index: 0)
-        ]);
-
-        var xml = _writer.Write(new BpmnDefinitions(
-            Id: "built",
-            Processes:
-            [
-                new BpmnProcessDefinition("p", Elements:
-                [
-                    new BpmnElement("start", BpmnElementTypes.StartEvent),
-                    new BpmnElement("done", BpmnElementTypes.EndEvent)
-                ], SequenceFlows:
-                [
-                    new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: "rejected", extensions: stale)
-                ])
-            ]));
+        var xml = _writer.Write(OutcomeWithRetainedExpression("approved", "outcome == 'rejected'"));
 
         WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'rejected'");
         xml.ShouldNotContain("outcome == 'approved'");
+        WrittenOutcome(xml, "f1").ShouldBe("approved");
+    }
+
+    /// <summary>
+    /// A retained child that is exactly the predicate for the flow's current outcome — say the outcome was
+    /// edited to the one the lookalike names — is the library's own predicate: written once, not twice,
+    /// and consumed by the next read.
+    /// </summary>
+    [Fact]
+    public void A_retained_predicate_for_the_current_outcome_is_written_once()
+    {
+        var xml = _writer.Write(OutcomeWithRetainedExpression("rejected", "outcome == 'rejected'"));
+
+        WrittenExpression(xml, "f1").Value.ShouldBe("outcome == 'rejected'");
+        var flow = Process(Read(xml)).SequenceFlows.Single();
+        flow.ConditionExpression.ShouldBeNull();
+        flow.Extensions.ForeignChildren.ShouldBeEmpty();
     }
 
     [Fact]
@@ -851,42 +861,59 @@ public sealed class RoundTripTests
             """;
 
         var (first, firstXml, _, _) = RoundTrip(authored);
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'approved'");
+        ModeledExpression(first, "F").Body.ShouldBe("outcome == 'approved'");
         WrittenExpression(firstXml, "F").Value.ShouldBe("outcome == 'approved'");
         Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBeNull();
     }
 
     /// <summary>
-    /// A lookalike that does not match the current outcome is kept on read (not the library
-    /// predicate) and dropped on write (it has the generated shape while an outcome is still set).
+    /// A lookalike that names another outcome is not the library's predicate for this flow, so it is the
+    /// author's expression (ADR 0011): modeled on read and written back, with the outcome still carried by
+    /// the vendor attribute and no generated predicate beside it.
     /// </summary>
     [Fact]
-    public void A_lookalike_author_expression_is_kept_on_read_and_dropped_on_write()
+    public void A_lookalike_author_expression_for_another_outcome_is_kept_on_read_and_on_write()
     {
-        var first = Read(MismatchedLookalike);
-        Process(first).SequenceFlows.Single().ConditionOutcome.ShouldBe("Approved");
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+        var (first, firstXml, second, secondXml) = RoundTrip(MismatchedLookalike);
 
-        var xml = _writer.Write(first);
-        WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Approved'");
-        xml.ShouldNotContain("outcome == 'Rejected'");
+        foreach (var generation in new[] { first, second })
+        {
+            Process(generation).SequenceFlows.Single().ConditionOutcome.ShouldBe("Approved");
+            ModeledExpression(generation, "F").Body.ShouldBe("outcome == 'Rejected'");
+        }
+
+        WrittenExpression(firstXml, "F").Value.ShouldBe("outcome == 'Rejected'");
+        WrittenOutcome(firstXml, "F").ShouldBe("Approved");
+        firstXml.ShouldNotContain("outcome == 'Approved'");
+        secondXml.ShouldBe(firstXml);
     }
 
     /// <summary>
-    /// The same mismatched lookalike survives clearing the outcome: the writer only strips
-    /// generated-shaped expressions while a <c>conditionOutcome</c> is still present.
+    /// The same lookalike also survives clearing the outcome: it is the author's expression either way.
     /// </summary>
     [Fact]
     public void A_mismatched_lookalike_survives_clearing_the_outcome()
     {
         var first = Read(MismatchedLookalike);
-        RetainedExpression(first, "F").Value.ShouldBe("outcome == 'Rejected'");
+        ModeledExpression(first, "F").Body.ShouldBe("outcome == 'Rejected'");
 
         var xml = _writer.Write(WithFlowOutcome(first.Definitions, conditionOutcome: null));
         WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Rejected'");
-        XDocument.Parse(xml).Descendants()
-            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == "F")
-            .Attributes().ShouldNotContain(attribute => attribute.Name.LocalName == "conditionOutcome");
+        WrittenOutcome(xml, "F").ShouldBeNull();
+    }
+
+    /// <summary>
+    /// Editing the outcome to the one a modeled lookalike names makes it the library's predicate for the
+    /// flow: written once, and consumed by the next read.
+    /// </summary>
+    [Fact]
+    public void A_lookalike_that_matches_an_edited_outcome_is_written_once()
+    {
+        var first = Read(MismatchedLookalike);
+
+        var xml = _writer.Write(WithFlowOutcome(first.Definitions, "Rejected"));
+        WrittenExpression(xml, "F").Value.ShouldBe("outcome == 'Rejected'");
+        Process(Read(xml)).SequenceFlows.Single().ConditionExpression.ShouldBeNull();
     }
 
     [Fact]
@@ -908,9 +935,10 @@ public sealed class RoundTripTests
 
         var (first, firstXml, _, secondXml) = RoundTrip(prefixed);
 
-        var retained = RetainedExpression(first, "F");
-        retained.Value.ShouldBe("amount < 1000");
-        Attribute(retained, Xsi.NamespaceName, "type").ShouldBe("bpmn:tFormalExpression");
+        var modeled = ModeledExpression(first, "F");
+        modeled.Body.ShouldBe("amount < 1000");
+        modeled.Language.ShouldBeNull();
+        Attribute(modeled, Xsi.NamespaceName, "type").ShouldBe("bpmn:tFormalExpression");
 
         var written = WrittenExpression(firstXml, "F");
         written.Value.ShouldBe("amount < 1000");
@@ -962,8 +990,8 @@ public sealed class RoundTripTests
     }
 
     /// <summary>
-    /// An outcome plus a generated-shaped body that names a different outcome: kept on read,
-    /// dropped on write while the outcome remains, kept if the outcome is then cleared.
+    /// An outcome plus a generated-shaped body that names a different outcome: the author's expression,
+    /// kept on read and on write whether or not the outcome stays.
     /// </summary>
     private const string MismatchedLookalike = """
         <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -992,6 +1020,29 @@ public sealed class RoundTripTests
             ])
         ]);
 
+    private static BpmnDefinitions OutcomeWithRetainedExpression(string outcome, string retainedBody) =>
+        new(Id: "built", Processes:
+        [
+            new BpmnProcessDefinition("p", Elements:
+            [
+                new BpmnElement("start", BpmnElementTypes.StartEvent),
+                new BpmnElement("done", BpmnElementTypes.EndEvent)
+            ], SequenceFlows:
+            [
+                new BpmnSequenceFlow("f1", "start", "done", conditionOutcome: outcome, extensions: new BpmnExtensions(ForeignChildren:
+                [
+                    new BpmnForeignChild(
+                        new BpmnExtensionElement(new BpmnQName(BpmnXmlNames.Model.NamespaceName, "conditionExpression"), Value: retainedBody),
+                        Index: 0)
+                ]))
+            ])
+        ]);
+
+    private static string? WrittenOutcome(string xml, string flowId) =>
+        (string?)XDocument.Parse(xml).Descendants()
+            .Single(element => element.Name.LocalName == "sequenceFlow" && (string?)element.Attribute("id") == flowId)
+            .Attribute(XNamespace.Get(BpmnXmlNames.VendorNamespaceName) + "conditionOutcome");
+
     private static BpmnDefinitions WithFlowOutcome(BpmnDefinitions definitions, string? conditionOutcome)
     {
         var process = definitions.Processes.Single();
@@ -1005,6 +1056,9 @@ public sealed class RoundTripTests
                     SequenceFlows =
                     [
                         new BpmnSequenceFlow(flow.FlowId, flow.SourceRef, flow.TargetRef, flow.Name, conditionOutcome, flow.IsDefault, flow.Extensions)
+                        {
+                            ConditionExpression = flow.ConditionExpression
+                        }
                     ]
                 }
             ]

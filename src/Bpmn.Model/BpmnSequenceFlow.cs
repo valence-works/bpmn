@@ -6,14 +6,16 @@ namespace Bpmn.Model;
 /// One BPMN sequence flow, connecting a source element to a target element.
 /// <para>
 /// A flow with a <see cref="ConditionOutcome"/> is conditional: it is taken when the work bound to the
-/// source element reported that outcome name. Unconditional flows are always taken.
-/// <see cref="IsDefault"/> marks the source element's BPMN default flow, taken only when no conditional
-/// flow matched.
+/// source element reported that outcome name. A flow whose only condition is a
+/// <see cref="ConditionExpression"/> is taken when the host's condition evaluator answers true. A flow
+/// with neither is unconditional: always taken from an activity or an inclusive gateway, and counted as
+/// true in declaration order at an exclusive gateway. <see cref="IsDefault"/> marks the source element's
+/// BPMN default flow, which is never evaluated and taken only when no other flow was.
 /// </para>
 /// <para>
-/// Conditions are matched by outcome <i>name</i>. This library evaluates no expressions - there is no
-/// FEEL, JUEL, or script engine here - so a host that wants expression-based conditions resolves them and
-/// reports the resulting outcome name.
+/// This library evaluates no expressions - there is no FEEL, JUEL, or script engine here. A BPMN
+/// <c>&lt;conditionExpression&gt;</c> is modeled as <see cref="ConditionExpression"/> and evaluated by the
+/// host through the interpreter's condition port, which a host opts into with a capability. See ADR 0011.
 /// </para>
 /// </summary>
 public sealed class BpmnSequenceFlow
@@ -72,10 +74,34 @@ public sealed class BpmnSequenceFlow
     public bool IsDefault { get; }
 
     /// <summary>
+    /// The author's <c>&lt;conditionExpression&gt;</c>, or <c>null</c> when the flow declares none.
+    /// <para>
+    /// When <see cref="ConditionOutcome"/> is also set, the outcome decides and the expression is retained
+    /// only. The <c>outcome == '…'</c> predicate this library writes for an outcome is not an author's
+    /// expression: a read consumes an expression whose body is exactly <c>outcome == '&lt;outcome&gt;'</c>
+    /// for this flow's own outcome and carries no attributes or children, and does not model it. Any other
+    /// expression is the author's, including one of the same shape that names a different outcome: it is
+    /// modeled and written back as the flow's one <c>&lt;conditionExpression&gt;</c>, with no generated
+    /// predicate beside it, while the outcome still decides. The writer treats an expression as its own
+    /// only when it is exactly the predicate for the flow's current outcome. A flow whose only condition
+    /// is an expression is routed on the host's answer for it, and needs a host that declares condition
+    /// evaluation. See ADR 0011.
+    /// </para>
+    /// <para>
+    /// Additive in payload format 1.3.0, and init-only rather than a constructor parameter so the
+    /// constructor is unchanged.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("conditionExpression")]
+    public BpmnConditionExpression? ConditionExpression { get; init; }
+
+    /// <summary>
     /// Foreign XML retained from this flow: its <c>&lt;documentation&gt;</c>, its
-    /// <c>&lt;extensionElements&gt;</c> children, unrecognized children (including an author's
-    /// <c>&lt;conditionExpression&gt;</c>, which is carried rather than evaluated), and any attributes
-    /// from namespaces the reader does not own. The predicate this library writes for a
+    /// <c>&lt;extensionElements&gt;</c> children, unrecognized children, and any attributes from
+    /// namespaces the reader does not own. An author's <c>&lt;conditionExpression&gt;</c> is read into
+    /// <see cref="ConditionExpression"/> instead, and a second one on the same flow, which BPMN does not
+    /// allow, is dropped with a finding; a model serialized before payload format 1.3.0 may still carry one
+    /// here, and the writer honors it. The predicate this library writes for a
     /// <see cref="ConditionOutcome"/> is not retained, so a later edit of that outcome cannot leave
     /// a stale expression.
     /// <para>

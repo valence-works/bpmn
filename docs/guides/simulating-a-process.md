@@ -78,8 +78,11 @@ A simulation is a conversation: the host runs what it can, then stops and waits 
 // Finish a unit of work, naming the outcomes a conditional sequence flow selects on.
 instance.CompleteWork(handle, "Approved");
 
-// Fail one. An error boundary event on the activity may catch it.
+// Fail one. A catch-all error boundary event on the activity may catch it.
 instance.FaultWork(handle, "Credit limit exceeded");
+
+// Fail one with a named BPMN error. A boundary declaring that code catches it ahead of a catch-all.
+instance.FaultWork(handle, "Credit limit exceeded", errorCode: "CREDIT_DECLINED");
 
 // Move time.
 instance.Clock.Advance(TimeSpan.FromHours(2));
@@ -88,11 +91,28 @@ instance.Clock.Advance(TimeSpan.FromHours(2));
 `handle` is the opaque identifier the host assigned when it started the work, exactly as in a host
 you write yourself — see [The host port](../concepts/host-port.md).
 
-Outcome names are the whole conditional-routing story: the library evaluates no expressions, so a
-sequence flow's `ConditionOutcome` is matched against an outcome name the completing work reported.
-Note that faulting does not name an error code — which error a catcher matches is a property of the
-model, not of the report. See
-[Interpreter, not engine](../concepts/interpreter-not-engine.md#no-expressions).
+A sequence flow's `ConditionOutcome` is matched against an outcome name the completing work reported.
+The library evaluates no expressions itself. A definition whose flows carry condition expressions runs
+only when the host has an evaluator: set `InMemoryBpmnHostOptions.Conditions` (or
+`BpmnSimulationOptions.Conditions`) to an `IBpmnConditionEvaluator`, which also declares the
+`ConditionEvaluation` capability. `InMemoryConditions` answers by flow id, with no language in it:
+
+```csharp
+var conditions = new InMemoryConditions()
+    .When("to-approve", holds: true)
+    .When("to-batch", request => BpmnConditionResult.Of(request.Body.Contains("1000")));
+
+var host = new InMemoryBpmnHost(new InMemoryBpmnHostOptions { Conditions = conditions });
+```
+
+A flow the table has no answer for fails, so the scope faults with `bpmn.condition.failed` instead of
+routing one way by accident. `conditions.Requests` lists every condition asked, in order.
+
+`FaultWork` without an error code reports an uncoded failure, which only a catch-all error catcher
+takes; a catcher that declares a code catches only a fault naming that code. When a nested scope
+faults, the host passes its `Fault.ErrorCode` to the parent itself: with the fault report for a
+subprocess, or with the `Faulted` outcome for a call activity. See
+[Errors and escalation](../concepts/errors-and-escalation.md#matching).
 
 ## Inspecting what happened
 
@@ -128,7 +148,8 @@ foreach (var diagnostic in instance.State.Diagnostics)
 `Faulted`, plus the construct-specific ones — `CompensationRegistered`, `CompensationTriggered`,
 `Compensated`, `TransactionCancelled`, `EscalationRaised`, `EscalationCaught`, `EscalationUnhandled`,
 `EscalationLate`, `EventSubprocessActivated`, `EventSubprocessCompleted`,
-`CallActivityFailureRouted`, `ScopeListenerArmed`, `ScopeListenerFired`, `ScopeListenerRetired`.
+`CallActivityFailureRouted`, `ScopeListenerArmed`, `ScopeListenerFired`, `ScopeListenerRetired`,
+`ErrorThrown`, `ErrorCaught`.
 
 Two of those are worth knowing about before you go hunting for a bug. `EscalationUnhandled` means an
 escalation reached a scope that could not catch it — a no-op, never a fault. `EscalationLate` means

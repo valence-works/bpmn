@@ -23,8 +23,8 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
     /// <summary>The immutable state used to correlate entries in <see cref="BpmnHostSnapshot.LiveWork"/>.</summary>
     public BpmnExecutionState EntryState { get; } = entryState;
 
-    /// <summary>The lazily resolved host ledger, keyed by this scope's token ids.</summary>
-    public IReadOnlyDictionary<string, BpmnLiveWork>? LiveWorkByTokenId { get; set; }
+    /// <summary>The lazily indexed host ledger for this evaluation's entry state.</summary>
+    public BpmnLiveWorkSnapshotResolver? LiveWorkSnapshotResolver { get; set; }
 
     /// <summary>The graph this evaluation runs.</summary>
     public BpmnGraph Graph { get; } = graph;
@@ -101,6 +101,16 @@ internal sealed class BpmnEvaluationContext(BpmnGraph graph, BpmnHostSnapshot ho
 
     /// <summary>Carries a teardown to the clean exit, for a step whose result never reaches the caller.</summary>
     public void CarryTeardown(PendingTeardown teardown) => _carriedTeardowns.Add(teardown);
+
+    /// <summary>
+    /// How an error an error end event threw inside the propagation loop ended, for the same reason teardowns are
+    /// carried here: the loop drops everything but each step's state. The first error thrown in an evaluation
+    /// decides it; a host-reported failure's disposition, carried on the result, takes precedence.
+    /// </summary>
+    public BpmnErrorDisposition? ErrorDisposition { get; private set; }
+
+    /// <summary>Records how a thrown error ended, unless an earlier one in this evaluation already did.</summary>
+    public void RecordErrorDisposition(BpmnErrorDisposition disposition) => ErrorDisposition ??= disposition;
 
     /// <summary>
     /// How many tokens this evaluation has dispatched to an element behavior on arrival. Counted here rather

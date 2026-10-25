@@ -16,7 +16,8 @@ internal static class BpmnDiagnosticAccumulator
         string? elementId,
         string? flowId,
         string? tokenId,
-        string message)
+        string message,
+        IReadOnlyDictionary<string, string>? details = null)
     {
         var diagnostic = new BpmnDiagnosticEvent(
             BpmnStateMutator.NewId(state, "diag"),
@@ -24,7 +25,8 @@ internal static class BpmnDiagnosticAccumulator
             message,
             elementId,
             flowId,
-            tokenId);
+            tokenId,
+            details);
 
         return state with { Diagnostics = state.Diagnostics.Append(diagnostic).ToArray(), Sequence = state.Sequence + 1 };
     }

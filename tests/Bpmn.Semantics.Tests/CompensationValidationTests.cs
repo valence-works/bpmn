@@ -112,12 +112,12 @@ public sealed class CompensationValidationTests
     }
 
     [Fact]
-    public void ThrowEvent_WithNonCompensationDefinition_IsRejected()
+    public void SignalThrow_WithoutBoundWork_IsRejected()
     {
         var thrower = new BpmnElement("Throw", BpmnElementTypes.IntermediateThrowEvent,
             eventDefinitions: [new BpmnEventDefinition(BpmnEventDefinitionTypes.Signal)]);
 
-        Rejects(MinimalElements(thrower: thrower), MinimalFlows, "only compensate and escalation throw events are supported");
+        Rejects(MinimalElements(thrower: thrower), MinimalFlows, "signal throw event 'Throw' requires bound work");
     }
 
     [Fact]

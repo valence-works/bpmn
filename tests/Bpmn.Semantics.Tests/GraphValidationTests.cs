@@ -79,7 +79,7 @@ public sealed class GraphValidationTests
         var graph = Build(definition);
         BpmnElementFamilies.Resolve(graph.GetRequiredElement("call")).ShouldBe(BpmnElementFamilies.Task);
         BpmnElementFamilies.IsCallActivity(graph.GetRequiredElement("call")).ShouldBeTrue();
-        graph.AttachedErrorBoundary("call")!.ElementId.ShouldBe("error");
+        graph.AttachedErrorBoundary("call", errorCode: null)!.ElementId.ShouldBe("error");
     }
 
     [Fact]
@@ -150,7 +150,8 @@ public sealed class GraphValidationTests
         var definition = Definition("catch-error-definition",
             [Start(), Catch("catch", definition: BpmnEventDefinitionTypes.Error), End()],
             [Flow("start-catch", "start", "catch"), Flow("catch-end", "catch", "end")]);
-        Should.Throw<BpmnExecutionException>(() => Build(definition)).Message.ShouldContain("only timer, message, and signal catch events");
+        var exception = Should.Throw<BpmnExecutionException>(() => Build(definition));
+        exception.Message.ShouldContain("intermediate catch event 'catch' declares event definition type 'error'");
     }
 
     [Fact]
@@ -263,13 +264,13 @@ public sealed class GraphValidationTests
     }
 
     [Fact]
-    public void MultipleErrorBoundaryEvents_OnOneHost_AreRejected()
+    public void MultipleCatchAllErrorBoundaryEvents_OnOneHost_AreRejected()
     {
         var definition = Definition("two-error-boundaries",
             [Start(), Work("host", "host-work"),
              Boundary("error-a", "host", null, BpmnEventDefinitionTypes.Error), Boundary("error-b", "host", null, BpmnEventDefinitionTypes.Error), End("normal"), End("a"), End("b")],
             [Flow("start-host", "start", "host"), Flow("host-normal", "host", "normal"), Flow("a-end", "error-a", "a"), Flow("b-end", "error-b", "b")]);
-        Should.Throw<BpmnExecutionException>(() => Build(definition)).Message.ShouldContain("more than one error boundary");
+        Should.Throw<BpmnExecutionException>(() => Build(definition)).Message.ShouldContain("more than one code-less catch-all error boundary");
     }
 
     [Fact]
@@ -287,7 +288,7 @@ public sealed class GraphValidationTests
         var definition = BoundaryGraph(Boundary("timer", "host", "timer-listener"));
         var graph = Build(definition);
         graph.AttachedCatchBoundaries("host").Select(element => element.ElementId).ShouldBe(["timer"]);
-        graph.AttachedErrorBoundary("host").ShouldBeNull();
+        graph.AttachedErrorBoundary("host", errorCode: null).ShouldBeNull();
     }
 
     [Fact]
