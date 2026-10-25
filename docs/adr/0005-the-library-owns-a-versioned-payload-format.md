@@ -65,6 +65,9 @@ appends the `ErrorThrown` and `ErrorCaught` diagnostic kinds, as recorded in
 `script` property on an element, a script task's format and body. Format 1.7.0 adds the `signalPublish`
 work-binding case, as recorded in [ADR 0007](0007-work-bindings-have-a-json-contract.md). Format 1.8.0 adds
 the `timerDateWait` work-binding case, recorded there too, and format 1.9.0 the `timerCycleWait` case.
+Format 1.10.0 adds optional `valueNamespaces` provenance to retained foreign attributes, preserving
+recognized QName-value namespace context through JSON. See
+[ADR 0006](0006-vendor-extensions-are-retained-as-typed-data.md#2026-10-25-amendment-namespace-provenance-in-attribute-values).
 
 ### What publishing it exposed
 

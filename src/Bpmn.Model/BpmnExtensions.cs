@@ -11,8 +11,9 @@ namespace Bpmn.Model;
 /// </para>
 /// <para>
 /// Retention is <b>lossless for content, lossy for formatting</b>. Attribute order, whitespace, comments,
-/// CDATA-versus-text, and namespace prefix choices are not preserved; element structure, names, values, and
-/// document order are. That is a deliberate trade: a semantic round-trip a diff tool can compare is more
+/// CDATA-versus-text, and namespace prefixes on XML names are not preserved; element structure, names, values,
+/// and document order are. Recognized prefixed QName attribute values retain their namespace context; arbitrary
+/// expressions, unprefixed QName values, and QName text content are not interpreted. That is a deliberate trade: a semantic round-trip a diff tool can compare is more
 /// useful than a byte-exact one, and byte-exactness is unreachable without a source-preserving parser.
 /// </para>
 /// </summary>
@@ -89,8 +90,7 @@ public sealed record BpmnExtensions(
         var namespaces = new SortedSet<string>(StringComparer.Ordinal);
 
         foreach (var attribute in ForeignAttributes)
-            if (!string.IsNullOrEmpty(attribute.Name.Namespace))
-                namespaces.Add(attribute.Name.Namespace!);
+            Collect(attribute, namespaces);
 
         foreach (var element in ExtensionElements)
             Collect(element, namespaces);
@@ -105,10 +105,19 @@ public sealed record BpmnExtensions(
         if (!string.IsNullOrEmpty(element.Name.Namespace))
             namespaces.Add(element.Name.Namespace!);
         foreach (var attribute in element.Attributes)
-            if (!string.IsNullOrEmpty(attribute.Name.Namespace))
-                namespaces.Add(attribute.Name.Namespace!);
+            Collect(attribute, namespaces);
         foreach (var child in element.Children)
             Collect(child, namespaces);
+    }
+
+    private static void Collect(BpmnForeignAttribute attribute, SortedSet<string> namespaces)
+    {
+        if (!string.IsNullOrEmpty(attribute.Name.Namespace))
+            namespaces.Add(attribute.Name.Namespace!);
+        if (attribute.ValueNamespaces is null) return;
+        foreach (var binding in attribute.ValueNamespaces)
+            if (!string.IsNullOrEmpty(binding.Namespace))
+                namespaces.Add(binding.Namespace!);
     }
 }
 
@@ -128,7 +137,54 @@ public readonly record struct BpmnQName(
 /// <param name="Value">The attribute value.</param>
 public sealed record BpmnForeignAttribute(
     [property: JsonPropertyName("name")] BpmnQName Name,
-    [property: JsonPropertyName("value")] string Value);
+    [property: JsonPropertyName("value")] string Value)
+{
+    /// <summary>
+    /// Namespace bindings observed for valid, prefixed QName tokens in <see cref="Value"/>.
+    /// <para>
+    /// A null namespace records an unbound prefix. A null collection means the value's namespace provenance
+    /// is unknown, as it is for payloads written before format 1.10.0. The prefix choices are not part of
+    /// the retained XML formatting; this data preserves the values' namespace meaning.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("valueNamespaces")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<BpmnNamespaceBinding>? ValueNamespaces { get; init; }
+
+    /// <summary>Compares namespace provenance by value while retaining the original two-argument record API.</summary>
+    public bool Equals(BpmnForeignAttribute? other) =>
+        other is not null
+        && Name.Equals(other.Name)
+        && StringComparer.Ordinal.Equals(Value, other.Value)
+        && (ValueNamespaces is null
+            ? other.ValueNamespaces is null
+            : other.ValueNamespaces is not null && ValueNamespaces.SequenceEqual(other.ValueNamespaces));
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Name);
+        hash.Add(Value, StringComparer.Ordinal);
+        if (ValueNamespaces is null)
+            hash.Add(false);
+        else
+        {
+            hash.Add(true);
+            foreach (var binding in ValueNamespaces)
+                hash.Add(binding);
+        }
+
+        return hash.ToHashCode();
+    }
+}
+
+/// <summary>A namespace binding observed for one prefix in a retained attribute value.</summary>
+/// <param name="Prefix">The prefix used by a QName token in the attribute value.</param>
+/// <param name="Namespace">The resolved namespace URI, or null when the source prefix was unbound.</param>
+public sealed record BpmnNamespaceBinding(
+    [property: JsonPropertyName("prefix")] string Prefix,
+    [property: JsonPropertyName("ns")] string? Namespace);
 
 /// <summary>A <c>&lt;documentation&gt;</c> entry.</summary>
 /// <param name="Text">The documentation text.</param>

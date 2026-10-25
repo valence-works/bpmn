@@ -1,3 +1,4 @@
+using System.Xml;
 using System.Xml.Linq;
 using Bpmn.Model;
 
@@ -68,7 +69,7 @@ internal static class BpmnExtensionCapture
             if (ns == XNamespace.None || BpmnXmlNames.IsOwnedNamespace(ns) || ns == BpmnXmlNames.SchemaInstance) continue;
             if (vendor.IsInterpreted(attribute.Name)) continue;
 
-            foreignAttributes.Add(new BpmnForeignAttribute(ToQName(attribute.Name), attribute.Value));
+            foreignAttributes.Add(CaptureAttribute(source, attribute));
             namespaces.Add(ns.NamespaceName);
             retainedNodes[ns.NamespaceName] = retainedNodes.TryGetValue(ns.NamespaceName, out var count) ? count + 1 : 1;
         }
@@ -117,7 +118,7 @@ internal static class BpmnExtensionCapture
             .Where(attribute => attribute.Name == BpmnXmlNames.SchemaInstance + "type"
                 ? !(hasLanguage && IsFormalExpressionType(source, attribute.Value))
                 : attribute.Name.Namespace == XNamespace.None && attribute.Name.LocalName != "language")
-            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(source, attribute)))
+            .Select(attribute => CaptureAttribute(source, attribute))
             .ToArray();
 
         if (ownAttributes.Length > 0)
@@ -152,7 +153,7 @@ internal static class BpmnExtensionCapture
             var ownAttributes = script.Attributes()
                 .Where(attribute => !attribute.IsNamespaceDeclaration)
                 .Where(attribute => attribute.Name.Namespace == XNamespace.None || attribute.Name == BpmnXmlNames.SchemaInstance + "type")
-                .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(script, attribute)))
+                .Select(attribute => CaptureAttribute(script, attribute))
                 .ToArray();
 
             if (ownAttributes.Length > 0)
@@ -203,11 +204,29 @@ internal static class BpmnExtensionCapture
     private static BpmnQName ToQName(XName name) =>
         new(name.Namespace == XNamespace.None ? null : name.NamespaceName, name.LocalName);
 
+    private static BpmnForeignAttribute CaptureAttribute(XElement scope, XAttribute attribute)
+    {
+        var value = CaptureAttributeValue(scope, attribute);
+        IReadOnlyList<BpmnNamespaceBinding>? valueNamespaces;
+
+        if (!StringComparer.Ordinal.Equals(value, attribute.Value))
+        {
+            var tokens = TryGetQNameValueTokens(value);
+            valueNamespaces = tokens is { Length: 1 }
+                ? [new BpmnNamespaceBinding("bpmn", BpmnXmlNames.Model.NamespaceName)]
+                : null;
+        }
+        else
+            valueNamespaces = CaptureValueNamespaces(scope, value);
+
+        return new BpmnForeignAttribute(ToQName(attribute.Name), value) { ValueNamespaces = valueNamespaces };
+    }
+
     private static BpmnExtensionElement ToExtensionElement(XElement element)
     {
         var attributes = element.Attributes()
             .Where(attribute => !attribute.IsNamespaceDeclaration)
-            .Select(attribute => new BpmnForeignAttribute(ToQName(attribute.Name), CaptureAttributeValue(element, attribute)))
+            .Select(attribute => CaptureAttribute(element, attribute))
             .ToArray();
         var children = element.Elements().Select(ToExtensionElement).ToArray();
         var value = children.Length == 0 && !string.IsNullOrEmpty(element.Value) ? element.Value : null;
@@ -237,24 +256,82 @@ internal static class BpmnExtensionCapture
             : value;
     }
 
-    /// <summary>Writes one retained attribute, restoring the <c>bpmn</c> prefix an <c>xsi:type</c> value needs.</summary>
+    private static IReadOnlyList<BpmnNamespaceBinding>? CaptureValueNamespaces(XElement scope, string value)
+    {
+        var tokens = TryGetQNameValueTokens(value);
+        if (tokens is null) return null;
+
+        var bindings = new List<BpmnNamespaceBinding>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var token in tokens)
+        {
+            var prefix = token[..token.IndexOf(':')];
+            if (!seen.Add(prefix)) continue;
+            bindings.Add(new BpmnNamespaceBinding(prefix, scope.GetNamespaceOfPrefix(prefix)?.NamespaceName));
+        }
+
+        return bindings;
+    }
+
+    /// <summary>
+    /// Recognizes only values that consist entirely of XML-whitespace-separated prefixed QNames.
+    /// Values outside that grammar, such as URLs with a scheme separator and arbitrary expressions, remain
+    /// opaque. A one-colon value such as urn:value still matches; this does not infer a vendor's type system.
+    /// </summary>
+    private static string[]? TryGetQNameValueTokens(string value)
+    {
+        var tokens = value.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0) return null;
+
+        foreach (var token in tokens)
+        {
+            var colon = token.IndexOf(':');
+            if (colon <= 0 || colon != token.LastIndexOf(':') || colon == token.Length - 1)
+                return null;
+
+            try
+            {
+                XmlConvert.VerifyNCName(token[..colon]);
+                XmlConvert.VerifyNCName(token[(colon + 1)..]);
+            }
+            catch (XmlException)
+            {
+                return null;
+            }
+        }
+
+        return tokens;
+    }
+
+    private sealed record ValueNamespaceProvenance(IReadOnlyList<BpmnNamespaceBinding> Bindings);
+
+    /// <summary>Gets capture-time QName namespace provenance attached while the XML tree is being written.</summary>
+    internal static IReadOnlyList<BpmnNamespaceBinding>? ValueNamespaceBindings(XAttribute attribute) =>
+        attribute.Annotation<ValueNamespaceProvenance>()?.Bindings;
+
+    /// <summary>
+    /// Writes one retained attribute. Captured namespace provenance is attached to the XML attribute for the
+    /// writer's final namespace pass; legacy payloads without provenance keep the established <c>xsi:type</c>
+    /// handling.
+    /// </summary>
     public static void WriteAttribute(XElement xml, BpmnForeignAttribute attribute)
     {
         var name = ToXName(attribute.Name);
-        if (name == BpmnXmlNames.SchemaInstance + "type")
+        if (name == BpmnXmlNames.SchemaInstance + "type" && attribute.ValueNamespaces is null)
         {
             WriteTypeAttribute(xml, attribute.Value);
             return;
         }
 
         xml.SetAttributeValue(name, attribute.Value);
+        if (attribute.ValueNamespaces is { } bindings)
+            xml.Attribute(name)!.AddAnnotation(new ValueNamespaceProvenance(bindings.ToArray()));
     }
 
     /// <summary>
-    /// Writes <c>xsi:type</c>. Capture already rewrote a prefix bound to the BPMN model namespace as
-    /// <c>bpmn:&lt;local&gt;</c>; this method declares <c>xmlns:bpmn</c> so that form resolves. Any
-    /// other prefix is written as stored and is not rebound — a leftover <c>model:</c> came from a
-    /// prefix that was not bound to BPMN, and must not steal a vendor <c>xmlns:model</c>.
+    /// Writes <c>xsi:type</c> when no captured namespace provenance is available, such as for a legacy payload
+    /// or a type generated from a modeled expression. A <c>bpmn:&lt;local&gt;</c> value receives its traditional
+    /// BPMN declaration; another prefix is written as stored and is not rebound.
     /// </summary>
     public static void WriteTypeAttribute(XElement xml, string value)
     {

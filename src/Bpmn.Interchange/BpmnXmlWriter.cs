@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Xml;
 using System.Xml.Linq;
 using Bpmn.Model;
 
@@ -650,7 +651,7 @@ public sealed class BpmnXmlWriter
         {
             var name = BpmnExtensionCapture.ToXName(attribute.Name);
             if (target.Attribute(name) is not null) continue;
-            target.SetAttributeValue(name, attribute.Value);
+            BpmnExtensionCapture.WriteAttribute(target, attribute);
         }
     }
 
@@ -914,11 +915,82 @@ public sealed class BpmnXmlWriter
     /// <summary>
     /// Declares every namespace the retained content uses at the root, with a prefix guessed from the
     /// namespace's own host name, so <c>camunda:formData</c> stays readable rather than becoming
-    /// <c>p7:formData</c>. Prefixes are cosmetic: the original ones are not part of the model.
+    /// <c>p7:formData</c>. XML-name prefixes may change; recorded QName-value bindings are restored locally
+    /// and checked separately before the document is returned.
     /// </summary>
     private static void DeclareForeignNamespaces(XElement root, BpmnVendorNames vendor)
     {
         var namespaces = new SortedSet<string>(StringComparer.Ordinal);
+        var unboundPrefixes = new HashSet<string>(StringComparer.Ordinal);
+        var bindingsByElement = new Dictionary<XElement, Dictionary<string, string?>>(ReferenceEqualityComparer.Instance);
+
+        foreach (var node in root.DescendantsAndSelf())
+        {
+            foreach (var attribute in node.Attributes().Where(attribute => !attribute.IsNamespaceDeclaration))
+            {
+                var bindings = BpmnExtensionCapture.ValueNamespaceBindings(attribute);
+                if (bindings is null) continue;
+
+                if (!bindingsByElement.TryGetValue(node, out var elementBindings))
+                    bindingsByElement.Add(node, elementBindings = new Dictionary<string, string?>(StringComparer.Ordinal));
+
+                foreach (var binding in bindings)
+                {
+                    ValidateQNamePrefix(binding.Prefix);
+                    if (binding.Namespace is null)
+                        unboundPrefixes.Add(binding.Prefix);
+                    else if (string.IsNullOrEmpty(binding.Namespace))
+                        throw new BpmnInterchangeException($"Cannot preserve QName prefix '{binding.Prefix}' because its namespace is empty.");
+
+                    if (elementBindings.TryGetValue(binding.Prefix, out var existing)
+                        && !StringComparer.Ordinal.Equals(existing, binding.Namespace))
+                        throw new BpmnInterchangeException($"Cannot preserve QName prefix '{binding.Prefix}' because one element uses it for conflicting namespaces.");
+
+                    elementBindings[binding.Prefix] = binding.Namespace;
+                }
+            }
+        }
+
+        var fixedPrefixes = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "bpmndi", "dc", "di", vendor.Prefix
+        };
+        foreach (var prefix in unboundPrefixes)
+            if (fixedPrefixes.Contains(prefix))
+                throw new BpmnInterchangeException($"Cannot preserve unbound QName prefix '{prefix}' because the writer must declare that prefix for BPMN output.");
+
+        foreach (var element in root.DescendantsAndSelf())
+        {
+            if (!bindingsByElement.TryGetValue(element, out var bindings)) continue;
+            foreach (var (prefix, namespaceName) in bindings.OrderBy(binding => binding.Key, StringComparer.Ordinal))
+            {
+                if (namespaceName is null) continue;
+                if (prefix == "xmlns")
+                    throw new BpmnInterchangeException("The reserved 'xmlns' prefix cannot be restored in a retained attribute value.");
+
+                if (prefix == "xml")
+                {
+                    if (!StringComparer.Ordinal.Equals(namespaceName, XNamespace.Xml.NamespaceName))
+                        throw new BpmnInterchangeException("The reserved 'xml' prefix cannot be rebound in a retained attribute value.");
+                    continue;
+                }
+
+                var declarationName = XNamespace.Xmlns + prefix;
+                var declaredHere = (string?)element.Attribute(declarationName);
+                if (declaredHere is not null && !StringComparer.Ordinal.Equals(declaredHere, namespaceName))
+                    throw new BpmnInterchangeException($"Cannot preserve QName prefix '{prefix}' because the writer already uses it for another namespace on the same element.");
+
+                if (ReferenceEquals(element, root))
+                {
+                    var inScope = element.GetNamespaceOfPrefix(prefix)?.NamespaceName;
+                    if (inScope is not null && !StringComparer.Ordinal.Equals(inScope, namespaceName))
+                        throw new BpmnInterchangeException($"Cannot preserve QName prefix '{prefix}' because the document root already binds it to another namespace.");
+                }
+
+                if (declaredHere is null)
+                    element.SetAttributeValue(declarationName, namespaceName);
+            }
+        }
 
         void Consider(XName name)
         {
@@ -934,7 +1006,13 @@ public sealed class BpmnXmlWriter
                 Consider(attribute.Name);
         }
 
-        var taken = new HashSet<string>(StringComparer.Ordinal) { "bpmn", "bpmndi", "dc", "di", vendor.Prefix, "xml", "xmlns", "xsi" };
+        var taken = new HashSet<string>(fixedPrefixes, StringComparer.Ordinal) { "bpmn", "xml", "xmlns", "xsi" };
+        foreach (var prefix in unboundPrefixes)
+            taken.Add(prefix);
+        foreach (var declaration in root.Attributes().Where(attribute => attribute.IsNamespaceDeclaration))
+            if (declaration.Name.Namespace == XNamespace.Xmlns)
+                taken.Add(declaration.Name.LocalName);
+
         var fallback = 1;
         foreach (var ns in namespaces)
         {
@@ -946,6 +1024,32 @@ public sealed class BpmnXmlWriter
             }
 
             root.SetAttributeValue(XNamespace.Xmlns + prefix, ns);
+        }
+
+        foreach (var element in root.DescendantsAndSelf())
+        {
+            if (!bindingsByElement.TryGetValue(element, out var bindings)) continue;
+            foreach (var (prefix, expectedNamespace) in bindings.OrderBy(binding => binding.Key, StringComparer.Ordinal))
+            {
+                var actualNamespace = element.GetNamespaceOfPrefix(prefix)?.NamespaceName;
+                if (!StringComparer.Ordinal.Equals(actualNamespace, expectedNamespace))
+                {
+                    var expectation = expectedNamespace is null ? "unbound" : $"bound to '{expectedNamespace}'";
+                    throw new BpmnInterchangeException($"Cannot preserve QName prefix '{prefix}' in a retained attribute value: expected it to be {expectation}, but the writer would bind it to '{actualNamespace ?? "(unbound)"}'.");
+                }
+            }
+        }
+    }
+
+    private static void ValidateQNamePrefix(string prefix)
+    {
+        try
+        {
+            XmlConvert.VerifyNCName(prefix);
+        }
+        catch (XmlException exception)
+        {
+            throw new BpmnInterchangeException($"Cannot preserve invalid QName prefix '{prefix}' in a retained attribute value.", exception);
         }
     }
 
