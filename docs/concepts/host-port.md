@@ -295,6 +295,20 @@ is raised, before the evaluation reaches any verdict, so when the same evaluatio
 parent still hears the escalation. A scope that has already ended forwards nothing, and a fault at the
 propagation limit drops what it raised; see [the continuation](#the-continuation).
 
+**Host ordering invariant:** deliver these outward signals to the parent before reporting this
+scope's fault, or atomically together with that report. Apply the returned commands even when the
+continuation is `Fault`; dropping them would lose an escalation raised earlier in the evaluation.
+An interrupting parent catcher needs the signal before the child's fault terminalizes its work.
+The reference host applies the commands first, then queues the parent's fault callback. This is a
+host-port guarantee, with no `SignalsSurviveFault` capability or optional degradation; see
+[the decision](../adr/0009-raised-escalations-survive-a-later-fault.md).
+
+An incoming escalation that matches nothing and is re-signalled one hop outward takes a different
+path. `BubbleOrUnhandled` carries it as `PendingScopeSignal`, and the interpreter issues it only on
+a non-fault continuation. A scope holding a legacy `PendingFault` verdict absorbs the callback and
+forwards no re-signal. That deferred forwarding is distinct from the signal an escalation throw
+already raised in the current evaluation. The propagation-limit exception above remains unchanged.
+
 It carries a `Code` and an optional JSON `Payload`. There is exactly one code for escalation —
 `BpmnInterpreter.EscalationSignalCode`, which is `bpmn.escalation` — with the escalation's identity
 travelling in the payload. A host multiplexing several kinds of scope signal therefore reserves one
