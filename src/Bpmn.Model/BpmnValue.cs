@@ -49,6 +49,7 @@ public sealed record BpmnValue(
     }
 
     /// <summary>Whether the value is readable inline.</summary>
+    [JsonIgnore]
     public bool HasValue => Presence == BpmnValuePresence.Present && Json.HasValue;
 }
 

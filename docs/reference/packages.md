@@ -43,7 +43,9 @@ The four-way split exists mainly for the first row. A linter, a converter, a doc
 or a migration tool never takes the interpreter into its dependency closure, and that is the largest
 audience.
 
-## State-retention upgrade note on unreleased main
+## Upgrade notes on unreleased main
+
+### Cancellation history
 
 After the published v0.4.0 baseline, `BpmnExecutionState.Prune()` also removes canceled tokens that no
 active work references and that carry no unresolved stopped-work handle. This changes retained execution
@@ -55,6 +57,16 @@ into the next release notes; it is not part of v0.4.0.
 A non-null stopped-work handle still retains its token until its late callback is absorbed. Hosts that
 never deliver that callback can still accumulate retained records; no count or time cap is introduced.
 See [the pruning contract](../concepts/host-port.md#the-prior-state).
+
+### Host value JSON
+
+The next v0.5.0 release will also stop writing the computed `BpmnValue.HasValue` property to JSON.
+Its C# getter and three-value deconstruction remain available, and legacy JSON containing the field
+still reads with the getter recomputed from `presence` and `json`. Hosts that require the old field in
+a host-value schema must update that schema or compute the derived value. This change does not affect
+the three published payload roots or their format version. See
+[the host-port amendment](../adr/0002-the-host-port-is-synchronous-and-command-returning.md#2026-10-25-amendment-computed-host-values).
+It is not a change to the already published v0.4.0 packages.
 
 ## The zero-dependency rule
 
@@ -100,7 +112,8 @@ can paste into a bug report.
 ### The serialization is owned and versioned
 
 `Bpmn.Model` owns the JSON serialization of the model rather than leaving it to each host, and
-publishes a JSON Schema for it. Hosts **wrap** rather than replace it: a host that
+publishes a JSON Schema for the three payload roots listed below. Host-port values such as
+`BpmnValue` are outside those roots. Hosts **wrap** rather than replace it: a host that
 needs to attach its own data puts the library-owned document inside its own envelope.
 
 ```json
