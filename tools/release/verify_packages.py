@@ -339,6 +339,7 @@ def write_consumer_files(directory: Path, feed: Path, version: str, package_cons
     <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <UseAppHost>false</UseAppHost>
     <NuGetAudit>false</NuGetAudit>
   </PropertyGroup>
   <ItemGroup>
@@ -356,7 +357,18 @@ def write_consumer_files(directory: Path, feed: Path, version: str, package_cons
   <packageSources>
     <clear />
     <add key="candidate-feed" value="{escaped_feed}" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
   </packageSources>
+  <packageSourceMapping>
+    <packageSource key="candidate-feed">
+      <package pattern="Bpmn.*" />
+    </packageSource>
+    <packageSource key="nuget.org">
+      <package pattern="Microsoft.NETCore.App.Ref" />
+      <package pattern="Microsoft.AspNetCore.App.Ref" />
+      <package pattern="Microsoft.NETCore.App.Host.*" />
+    </packageSource>
+  </packageSourceMapping>
 </configuration>
 ''',
         encoding="utf-8",

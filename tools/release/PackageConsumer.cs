@@ -283,8 +283,8 @@ internal static class PackageConsumer
 
         var taskModel = imported.Definitions.FindProcess("Process")!.Elements.Single(element => element.ElementId == "Task");
         var copiedTaskModel = received.Definitions.FindProcess("Process")!.Elements.Single(element => element.ElementId == "Task");
-        var originalLocalAttribute = taskModel.Extensions.ExtensionElements.Single().Attributes.Single(attribute => attribute.Name.LocalName == "localType");
-        var copiedLocalAttribute = copiedTaskModel.Extensions.ExtensionElements.Single().Attributes.Single(attribute => attribute.Name.LocalName == "localType");
+        var originalLocalAttribute = taskModel.Extensions.ExtensionElements.Single(element => element.Name.LocalName == "vendor").Attributes.Single(attribute => attribute.Name.LocalName == "localType");
+        var copiedLocalAttribute = copiedTaskModel.Extensions.ExtensionElements.Single(element => element.Name.LocalName == "vendor").Attributes.Single(attribute => attribute.Name.LocalName == "localType");
         Require(originalLocalAttribute.Equals(copiedLocalAttribute)
                 && originalLocalAttribute.GetHashCode() == copiedLocalAttribute.GetHashCode(),
             "Nested retained attributes do not compare structurally after JSON transfer.");
