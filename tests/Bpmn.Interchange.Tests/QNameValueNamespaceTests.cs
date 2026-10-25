@@ -219,6 +219,57 @@ public sealed class QNameValueNamespaceTests
         QNameValue(written.Descendants(Acme + "legacy").Single(), Xsi + "type", "bpmn:tFormalExpression", Bpmn.NamespaceName);
     }
 
+    [Theory]
+    [InlineData("foreign-element")]
+    [InlineData("foreign-attribute")]
+    [InlineData("owned-element")]
+    public void Namespace_shadowing_on_a_foreign_element_survives_real_serialization(string nameUse)
+    {
+        const string source = """
+            <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                              xmlns:foreign="urn:foreign-one" xmlns:v="urn:foreign-one"
+                              xmlns:acme="urn:example:metadata" id="Defs"
+                              targetNamespace="urn:example:process" acme:rootType="v:Thing">
+              <bpmn:extensionElements>
+                <foreign:entry xmlns:v="urn:foreign-two" acme:childType="v:Other" acme:unboundType="p1:Thing" />
+              </bpmn:extensionElements>
+              <bpmn:process id="P">
+                <bpmn:startEvent id="Start" />
+                <bpmn:endEvent id="End" />
+                <bpmn:sequenceFlow id="Flow" sourceRef="Start" targetRef="End" />
+              </bpmn:process>
+            </bpmn:definitions>
+            """;
+
+        var sourceXml = XDocument.Parse(source);
+        var sourceEntry = sourceXml.Descendants(XName.Get("entry", "urn:foreign-one")).Single();
+        var valuePrefix = "v";
+        if (nameUse == "foreign-attribute")
+        {
+            sourceEntry.Name = Acme + "entry";
+            sourceEntry.SetAttributeValue(XName.Get("flag", "urn:foreign-one"), "kept");
+        }
+        else if (nameUse == "owned-element")
+        {
+            XNamespace geometry = "http://www.omg.org/spec/DD/20100524/DC";
+            sourceXml.Root!.SetAttributeValue(XNamespace.Xmlns + "geo", geometry.NamespaceName);
+            sourceEntry.Name = geometry + "Bounds";
+            sourceEntry.Attribute(XNamespace.Xmlns + "v")!.Remove();
+            sourceEntry.SetAttributeValue(XNamespace.Xmlns + "dc", "urn:foreign-two");
+            sourceEntry.SetAttributeValue(Acme + "childType", "dc:Other");
+            valuePrefix = "dc";
+        }
+
+        var root = XDocument.Parse(WriteAfterJsonTransfer(sourceXml.ToString())).Root!;
+        var entry = root.Element(Bpmn + "extensionElements")!.Elements(sourceEntry.Name).ShouldHaveSingleItem();
+
+        QNameValue(root, Acme + "rootType", "v:Thing", "urn:foreign-one");
+        QNameValue(entry, Acme + "childType", valuePrefix + ":Other", "urn:foreign-two");
+        QNameValue(entry, Acme + "unboundType", "p1:Thing", expectedNamespace: null);
+        if (nameUse == "foreign-attribute")
+            entry.Attribute(XName.Get("flag", "urn:foreign-one")).ShouldNotBeNull().Value.ShouldBe("kept");
+    }
+
     private string WriteAfterJsonTransfer(string xml)
     {
         var imported = _reader.Read(xml);

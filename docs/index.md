@@ -121,3 +121,7 @@ Why the library is shaped the way it is, argued rather than asserted:
 ## License
 
 MIT, stewarded by Valence Works. The library names no host, depends on no host, and assumes no host.
+
+## Release migration
+
+- [BPMN 0.5.0 migration and release notes](releases/0.5.0.md)
