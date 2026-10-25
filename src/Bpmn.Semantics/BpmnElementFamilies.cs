@@ -104,6 +104,7 @@ public static class BpmnElementFamilies
             BpmnElementTypes.BoundaryEvent => ResolveBoundaryEvent(element),
             _ => throw new BpmnExecutionException(
                 $"BPMN element '{element.ElementId}' has element type '{element.ElementType}', which this library does not support.")
+            { ElementIds = [element.ElementId] }
         };
     }
 
@@ -138,12 +139,14 @@ public static class BpmnElementFamilies
     {
         if (element.EventDefinitions.Count != 1)
             throw new BpmnExecutionException(
-                $"BPMN boundary event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.");
+                $"BPMN boundary event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.")
+            { ElementIds = [element.ElementId] };
 
         var definitionType = element.EventDefinitions.Single().Type;
         if (!SupportedBoundaryDefinitionTypes.Contains(definitionType))
             throw new BpmnExecutionException(
-                $"BPMN boundary event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, signal, error, escalation, compensation, and cancel boundary events are supported.");
+                $"BPMN boundary event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, signal, error, escalation, compensation, and cancel boundary events are supported.")
+            { ElementIds = [element.ElementId] };
 
         return BoundaryEvent;
     }
@@ -228,14 +231,16 @@ public static class BpmnElementFamilies
     {
         if (element.EventDefinitions.Count != 1)
             throw new BpmnExecutionException(
-                $"BPMN intermediate catch event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.");
+                $"BPMN intermediate catch event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.")
+            { ElementIds = [element.ElementId] };
 
         var definitionType = element.EventDefinitions.Single().Type;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Link))
             return IntermediateCatchEventLink;
         if (!SupportedCatchEventDefinitionTypes.Contains(definitionType))
             throw new BpmnExecutionException(
-                $"BPMN intermediate catch event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, signal, and link catch events are supported.");
+                $"BPMN intermediate catch event '{element.ElementId}' declares event definition type '{definitionType}'; only timer, message, signal, and link catch events are supported.")
+            { ElementIds = [element.ElementId] };
 
         return IntermediateCatchEvent;
     }
@@ -276,7 +281,8 @@ public static class BpmnElementFamilies
         }
 
         throw new BpmnExecutionException(
-            $"BPMN start event '{element.ElementId}' declares unsupported event definitions; only none, timer, message, signal, and event-subprocess (escalation/error) start events are supported (exactly one such definition).");
+            $"BPMN start event '{element.ElementId}' declares unsupported event definitions; only none, timer, message, signal, and event-subprocess (escalation/error) start events are supported (exactly one such definition).")
+        { ElementIds = [element.ElementId] };
     }
 
     /// <summary>
@@ -314,7 +320,8 @@ public static class BpmnElementFamilies
         }
 
         throw new BpmnExecutionException(
-            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, message, and signal end events are supported.");
+            $"BPMN end event '{element.ElementId}' declares unsupported event definitions; only none, terminate, compensate, cancel, escalation, error, message, and signal end events are supported.")
+        { ElementIds = [element.ElementId] };
     }
 
     /// <summary>
@@ -328,7 +335,8 @@ public static class BpmnElementFamilies
     {
         if (element.EventDefinitions.Count != 1)
             throw new BpmnExecutionException(
-                $"BPMN intermediate throw event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.");
+                $"BPMN intermediate throw event '{element.ElementId}' must declare exactly one event definition; it declares {element.EventDefinitions.Count}.")
+            { ElementIds = [element.ElementId] };
 
         var definitionType = element.EventDefinitions.Single().Type;
         if (StringComparer.Ordinal.Equals(definitionType, BpmnEventDefinitionTypes.Compensation))
@@ -343,6 +351,7 @@ public static class BpmnElementFamilies
             return IntermediateThrowEventLink;
 
         throw new BpmnExecutionException(
-            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate, escalation, message, signal, and link throw events are supported.");
+            $"BPMN intermediate throw event '{element.ElementId}' declares event definition type '{definitionType}'; only compensate, escalation, message, signal, and link throw events are supported.")
+        { ElementIds = [element.ElementId] };
     }
 }
