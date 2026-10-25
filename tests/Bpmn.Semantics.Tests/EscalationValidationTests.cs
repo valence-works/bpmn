@@ -45,11 +45,11 @@ public sealed class EscalationValidationTests
             "cannot bind work");
 
     [Fact]
-    public void An_escalation_boundary_can_only_attach_to_a_subprocess_host() =>
+    public void A_task_cannot_host_an_escalation_boundary() =>
         Rejects(
             [Start(), Task("Task", "task"), Boundary("Boundary", "Task", "E1"), End("End"), End("BoundaryEnd")],
             [("Start", "Task"), ("Task", "End"), ("Boundary", "BoundaryEnd")],
-            "may only attach to a subprocess host");
+            "may only attach to a subprocess or call activity host");
 
     [Fact]
     public void An_escalation_boundary_cannot_bind_listener_work() =>

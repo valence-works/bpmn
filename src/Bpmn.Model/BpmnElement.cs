@@ -73,7 +73,8 @@ public sealed class BpmnElement
     /// <summary>
     /// An opaque host key identifying the work this element runs, or <c>null</c> for elements the
     /// interpreter handles entirely on its own (gateways, plain start/end events). The interpreter compares
-    /// and echoes this value; it never parses or interprets it.
+    /// and echoes this value; it never parses or interprets it. Its presence declares a work requirement,
+    /// not proof that the host supplies an implementation.
     /// </summary>
     [JsonPropertyName("bindingRef")]
     public string? BindingRef { get; }

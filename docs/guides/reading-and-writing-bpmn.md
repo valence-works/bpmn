@@ -328,6 +328,50 @@ foreach (var binding in result.Bindings)
 not an error and not a dropped element — it is a task whose work the host must supply. Enumerating
 the unbound tasks in a document is how you find out what an integration still owes.
 
+### Assessing host work availability
+
+A binding is a requirement, not proof that the host has an implementation. `UnboundTask` can be
+implemented by the host; its subtype is not an unavailable-work verdict. After constructing a work
+inventory from the returned descriptors, assess it explicitly:
+
+```csharp
+// Example inventory supplied by this host, independent of the binding subtype.
+var inventory = new Dictionary<(string ProcessId, string ElementId, BpmnBindingSlot Slot), bool>
+{
+    [("Orders", "Reserve", BpmnBindingSlot.Primary)] = true,
+    [("Orders", "UndoReserve", BpmnBindingSlot.Primary)] = false
+};
+
+var assessment = BpmnWorkAvailabilityValidator.Assess(result.Bindings, binding =>
+    inventory.TryGetValue((binding.ProcessId, binding.ElementId, binding.Slot), out var available)
+        ? (available ? BpmnWorkAvailability.Available : BpmnWorkAvailability.Unavailable)
+        : BpmnWorkAvailability.Unknown);
+
+foreach (var workResult in assessment.Results)
+{
+    // Binding retains ProcessId, ElementId, BindingRef and Slot; Diagnostic is library-generated.
+    if (workResult.Diagnostic is { } diagnostic)
+        Console.WriteLine(diagnostic);
+}
+
+if (!assessment.AllWorkAvailable)
+{
+    // Resolve unknown or unavailable requirements before this host chooses to execute.
+}
+```
+
+Here `inventory` is a host-owned dictionary whose key is `(string ProcessId, string ElementId,
+BpmnBindingSlot Slot)` and whose value states whether an implementation is available. No inventory
+entry means unknown, which never counts as ready. An empty supplied set needs no work and is ready.
+Assess the full set your host intends to execute, including reachable nested work, and reassess if
+its inventory changes. This helper does not establish capability support, graph validity or durability.
+
+The assessment preserves every supplied binding and status in order. It changes no imported elements,
+associations, flows or analysis findings, including when a boundary host or compensation handler is
+known unavailable. The host owns execution policy; the library does not silently remove behavior.
+This is additive API on unreleased main after v0.4.0. See
+[ADR0013](../adr/0013-host-work-availability-is-assessed-after-import.md).
+
 ## Writing
 
 ```csharp
