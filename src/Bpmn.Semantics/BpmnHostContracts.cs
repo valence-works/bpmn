@@ -97,6 +97,10 @@ public sealed record BpmnLiveWork(string BindingRef, string? IterationId, string
 public interface IBpmnVariableReader
 {
     /// <summary>Reads a declared variable by name. Returns <c>false</c> when the host has no such variable at all.</summary>
+    /// <remarks>
+    /// Return <c>true</c> with <see cref="BpmnValue.Refused"/> when the host withholds the value;
+    /// collection-mode multi-instance evaluation then faults with the host's supplied code and message.
+    /// </remarks>
     bool TryRead(string name, out BpmnValue value);
 }
 
@@ -330,7 +334,8 @@ public abstract record BpmnContinuation
     /// <summary>The process failed deterministically and cannot continue.</summary>
     /// <param name="Code">
     /// A stable fault code: the library's reason the scope stopped, such as <c>bpmn.work.faulted</c> or
-    /// <see cref="BpmnInterpreter.ErrorThrownFaultCode"/>. Never a code a document declares.
+    /// <see cref="BpmnInterpreter.ErrorThrownFaultCode"/>, or the host's exact code for a refused
+    /// variable read. Never a BPMN error code taken from a document.
     /// </param>
     /// <param name="Message">A human-readable explanation.</param>
     public sealed record Fault(string Code, string Message) : BpmnContinuation

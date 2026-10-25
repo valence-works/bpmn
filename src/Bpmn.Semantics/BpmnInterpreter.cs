@@ -1469,7 +1469,8 @@ public sealed class BpmnInterpreter
     /// Reads a collection-mode host's collection variable once at loop start, returning the
     /// per-instance item snapshot, in array order, or a deterministic fault: the variable is unreadable (a
     /// defensive case, unreachable once the graph validated the name), holds a present non-array value, or is
-    /// held outside the inline payload. A null or absent collection resolves to an empty snapshot, which the
+    /// held outside the inline payload, or explicitly refused by the host. A refusal preserves the host fault.
+    /// A null or absent collection resolves to an empty snapshot, which the
     /// caller routes as an immediate zero-instance completion.
     /// </summary>
     private static (BpmnExecutionState State, IReadOnlyList<JsonElement>? Items, BpmnFault? Fault) ResolveCollectionInstances(
@@ -1484,6 +1485,16 @@ public sealed class BpmnInterpreter
             var message = $"BPMN multi-instance element '{element.ElementId}' could not read collection variable '{variableName}'; it is not a visible declared container-scoped variable of the process.";
             state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, message);
             return (state, null, new BpmnFault(CollectionUnreadableFaultCode, message));
+        }
+
+        if (value.Presence == BpmnValuePresence.Refused)
+        {
+            var faultCode = string.IsNullOrWhiteSpace(value.FaultCode) ? CollectionUnreadableFaultCode : value.FaultCode;
+            var fallbackMessage = $"BPMN multi-instance element '{element.ElementId}' collection variable '{variableName}' was refused by the host.";
+            var message = value.FaultMessage ?? fallbackMessage;
+            var diagnosticMessage = string.IsNullOrWhiteSpace(message) ? fallbackMessage : message;
+            state = BpmnDiagnosticAccumulator.Add(state, BpmnDiagnosticKind.Faulted, element.ElementId, null, null, diagnosticMessage);
+            return (state, null, new BpmnFault(faultCode, message));
         }
 
         // Null or absent resolves to an empty loop: complete immediately and route outbound.

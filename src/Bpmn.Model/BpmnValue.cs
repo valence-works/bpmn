@@ -16,6 +16,16 @@ public sealed record BpmnValue(
     [property: JsonPropertyName("typeHint")] string? TypeHint = null,
     [property: JsonPropertyName("json")] JsonElement? Json = null)
 {
+    /// <summary>The host's fault code when the read was refused; otherwise absent.</summary>
+    [JsonPropertyName("faultCode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FaultCode { get; init; }
+
+    /// <summary>The host's fault message when the read was refused; otherwise absent.</summary>
+    [JsonPropertyName("faultMessage")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FaultMessage { get; init; }
+
     /// <summary>A value the host does not have.</summary>
     public static BpmnValue Absent { get; } = new(BpmnValuePresence.Absent);
 
@@ -29,6 +39,14 @@ public sealed record BpmnValue(
     /// <summary>Wraps an integer, the shape multi-instance cardinality and loop indices use.</summary>
     public static BpmnValue FromInteger(int value) =>
     new(BpmnValuePresence.Present, BpmnValueTypes.Integer, JsonSerializer.SerializeToElement(value));
+
+    /// <summary>A read the host answered but refused to disclose, with its own fault verdict.</summary>
+    public static BpmnValue Refused(string faultCode, string message)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(faultCode);
+        ArgumentNullException.ThrowIfNull(message);
+        return new(BpmnValuePresence.Refused) { FaultCode = faultCode, FaultMessage = message };
+    }
 
     /// <summary>Whether the value is readable inline.</summary>
     public bool HasValue => Presence == BpmnValuePresence.Present && Json.HasValue;
@@ -51,7 +69,10 @@ public enum BpmnValuePresence
     /// Treated as unreadable rather than absent: a multi-instance collection stored this way fails with a
     /// clear diagnostic instead of silently iterating zero times.
     /// </summary>
-    StoredExternally
+    StoredExternally,
+
+    /// <summary>The host refused to disclose the value and supplied fault metadata instead.</summary>
+    Refused
 }
 
 /// <summary>Type hints the semantics core itself understands. Hosts may use any other string freely.</summary>

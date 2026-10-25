@@ -18,6 +18,7 @@ They are short and they take positions. An ADR that hedges is not worth keeping.
 | [0005](0005-the-library-owns-a-versioned-payload-format.md) | The library owns a versioned payload format |
 | [0006](0006-vendor-extensions-are-retained-as-typed-data.md) | Vendor extensions are retained as typed data |
 | [0007](0007-work-bindings-have-a-json-contract.md) | Work bindings have a JSON contract |
+| [0008](0008-variable-read-refusals-preserve-host-faults.md) | Variable read refusals preserve host faults |
 | [0010](0010-work-callbacks-echo-the-started-token.md) | Work callbacks echo the started token (proposed) |
 | [0011](0011-hosts-evaluate-condition-expressions-through-a-synchronous-port.md) | Hosts evaluate condition expressions through a synchronous port |
 | [0012](0012-hosts-and-error-end-events-name-bpmn-errors.md) | Hosts and error end events name BPMN errors |
