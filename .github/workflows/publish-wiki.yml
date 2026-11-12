@@ -21,7 +21,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # GitHub does not create the .wiki repository until a first page exists. Until someone creates
       # one through the Wiki tab, the clone 404s - which is a setup step outstanding, not a broken
@@ -29,7 +29,7 @@ jobs:
       - name: Checkout wiki
         id: wiki
         continue-on-error: true
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki-repo
